@@ -1,0 +1,585 @@
+# Virtual Folder System
+
+**Product Specification — Version 1.0**
+
+---
+
+## Contents
+
+- [Overview](#overview)
+- [Core Concepts](#core-concepts)
+  - [1. File Storage](#1-file-storage)
+  - [2. The Database](#2-the-database)
+  - [3. The Property Registry](#3-the-property-registry)
+  - [4. Views and View Persistence](#4-views-and-view-persistence)
+- [Virtual Folder Layer](#virtual-folder-layer)
+- [Key UI Features](#key-ui-features)
+- [Storage Management Features](#storage-management-features)
+- [Local Desktop Application](#local-desktop-application)
+- [Architecture Summary](#architecture-summary)
+- [UI Architecture](#ui-architecture)
+- [Future Considerations](#future-considerations)
+
+---
+
+## Overview
+
+A local desktop file management system that decouples physical file storage from logical navigation. Files are stored on disk and referenced by a single lightweight SQLite database, with all organisation, metadata, and navigation handled at the database layer. A configurable virtual folder interface sits on top, allowing users to navigate their files in any number of ways without ever moving, duplicating, or restructuring the underlying files.
+
+The system is designed to run entirely offline as a native desktop application. No account, server, or internet connection is required.
+
+---
+
+## Core Concepts
+
+### 1. File Storage
+
+Files are stored in one or more directories on the local machine — referred to as **root directories**. The physical folder structure within a root is flexible:
+
+- Files may exist in a completely flat structure (all in one directory)
+- Files may exist in an arbitrary nested folder structure carried over from prior organisation
+- The system does not require or enforce any particular physical layout
+- Files are referenced internally by a unique ID; their physical path is tracked but not semantically meaningful to the virtual layer
+
+Over time, as the virtual interface becomes the primary means of navigation, the physical structure becomes increasingly irrelevant. Users may choose to **flatten** the root directory at any point — consolidating all files into a single flat folder — with no impact on the virtual layer or user experience. This is an optional housekeeping operation, not a requirement.
+
+### 2. The Database
+
+The entire system is backed by a **single SQLite database file**. All files across all domains — photos, documents, videos, and any other type — are stored as records in one `files` table. Domain separation is handled by a `library` property on each record, not by database structure.
+
+This approach means:
+
+- There is one database to back up, move, or inspect
+- Cross-domain queries and views work without any special handling
+- New file types or domains can be introduced without any schema changes
+- The database can be fully rebuilt by re-crawling the root directories if lost
+
+#### Schema
+
+The core table is intentionally minimal:
+
+```
+files
+─────────────────────────────────────────────────────
+file_id     TEXT  PRIMARY KEY   Unique identifier
+file_path   TEXT               Absolute path to the file on disk
+file_type   TEXT               MIME type / extension
+timestamp   TEXT               Date/time the file was created or captured
+library     TEXT               Domain label (e.g. "photos", "documents")
+metadata    JSON               All additional properties — standard and custom
+```
+
+#### The Metadata JSON Column
+
+All properties beyond the core columns live in the `metadata` JSON field. This includes both properties that apply broadly across a domain and highly specific custom properties:
+
+```json
+{
+  "year": 2024,
+  "month": "March",
+  "iso": 800,
+  "focal_length": "35mm",
+  "rig": "Rig-A",
+  "component": "Component-B",
+  "angle": "Front",
+  "project": ["Apollo", "Hermes"]
+}
+```
+
+SQLite's JSON functions allow querying and filtering on any of these fields. Multi-value properties (arrays) allow a file to appear under multiple virtual folders simultaneously without duplication.
+
+There is no fixed schema for the metadata column. Each library defines the properties relevant to its domain, and new properties can be introduced at any time simply by using them. If a property becomes heavily queried, a database index can be added to the JSON path for performance — no structural changes required.
+
+#### Database as a Restorable Cache
+
+The database is treated as a derived artefact, not a primary one. Standard metadata (timestamps, file types, EXIF data) can be re-extracted automatically from the files themselves. Custom metadata — properties assigned by the user — cannot be recovered from the files and represents the only irreplaceable data in the system. Regular database backups alongside the files are strongly recommended.
+
+### 3. The Property Registry
+
+The metadata JSON column handles storage flexibly, but on its own it has no self-knowledge. The UI needs to answer questions like: what properties are valid for files in this library? What values are available for a given property? Is this property a fixed enumeration or free text? Without a vocabulary layer, these questions can only be answered by scanning all existing records at runtime — which is slow, incomplete for new properties, and provides no way to distinguish intentional structure from incidental data.
+
+To address this, the database includes a lightweight **property registry**: a small set of additional tables in the same `.db` file that describe the properties and values in use. This is a UI and navigation concern only — it does not constrain what can be stored in the JSON column, and its absence would not corrupt any file data.
+
+#### Registry Schema
+
+```
+properties
+─────────────────────────────────────────────────────
+property_id    TEXT  PRIMARY KEY
+name           TEXT               e.g. "rig", "angle", "project"
+library        TEXT  (nullable)   scoped to a library, or NULL for global
+value_type     TEXT               "enum" | "free_text" | "array" | "date"
+
+property_values
+─────────────────────────────────────────────────────
+value_id       TEXT  PRIMARY KEY
+property_id    TEXT  FK → properties
+value          TEXT               e.g. "Rig-A", "Front", "Apollo"
+```
+
+`value_type` controls how the UI presents the property. An `enum` property offers a fixed list of options; a `free_text` property accepts arbitrary input; an `array` property allows multiple values from the list (enabling multi-folder presence); a `date` property surfaces a date picker.
+
+#### Bootstrapping from Existing Data
+
+When a library is first imported, the registry can be partially populated automatically by inspecting the metadata keys already present across all ingested records. If thousands of photo records share a `"rig"` key, the system surfaces `rig` as a candidate property for the photos library without requiring the user to define it manually. The registry then makes that implicit structure explicit and editable.
+
+#### Creating Properties and Values Through Navigation
+
+Users do not need to define properties up front via a settings screen. The registry grows naturally through use. When navigating to a leaf context in a view and creating a folder at that level, the user is effectively declaring a new property value — or a new property dimension entirely:
+
+- The user is at `2024 → Rig-A → Component-B` (current leaf level)
+- They create a new folder named `Front` at this level
+- The system checks the registry: if a property already governs this layer of the view, `Front` is added as a new value for that property. If no property is yet assigned to this layer, the user is prompted to name the property (e.g. `angle`), and both the property and its first value are created together
+- Dragging files into `Front` assigns `"angle": "Front"` to those files via the contextual upload mechanism
+
+This means folder creation at any level of the virtual tree is the primary way the property vocabulary grows. The registry records the result; the user never interacts with it directly as a configuration surface.
+
+#### Registry as a Restorable Artefact
+
+Like the rest of the database, the registry can be reconstructed by crawling existing metadata values across all file records. It is not a source of truth about which values *exist* — the file records themselves carry that — but rather a description of the intended structure. If lost, it can be regenerated from the data, though any type annotations (`enum` vs `free_text`, etc.) would need to be re-applied manually.
+
+### 4. Views and View Persistence
+
+A **view** is a saved hierarchy configuration defining how files are navigated. Views are first-class records in the database — not configuration files or application preferences — so they travel with the database when it is backed up or moved.
+
+A view is not a flat list of layers. It is a **tree of layer nodes**, where each node defines the property used to group files at that depth, and where any node may fork into multiple independent sub-trees based on the values present at that level. This tree structure is what gets persisted.
+
+#### View Schema
+
+```
+views
+─────────────────────────────────────────────────────
+view_id        TEXT  PRIMARY KEY
+name           TEXT               Display name (e.g. "By Rig & Component")
+library        TEXT  (nullable)   Scoped to a library, or NULL for cross-library
+created_at     TEXT
+updated_at     TEXT
+
+view_nodes
+─────────────────────────────────────────────────────
+node_id        TEXT  PRIMARY KEY
+view_id        TEXT  FK → views
+parent_node_id TEXT  (nullable)   FK → view_nodes; NULL for root nodes
+property_id    TEXT  FK → properties
+fork_value     TEXT  (nullable)   Activates only when parent value matches
+sort_order     INTEGER            Position among siblings
+```
+
+#### Forking Hierarchies
+
+At any layer in the view, the hierarchy can split into independent branches based on the value of the current layer. Each branch then defines its own sequence of properties below it. This allows fundamentally different file types to share a common upper structure while diverging into type-appropriate properties lower down.
+
+Example — a media library that splits by file type:
+
+```
+Library: Media
+  └── Year
+        └── [any value]
+              └── Type                    ← fork point
+                    ├── "Photos" branch → Rig → Component → Angle
+                    └── "Videos" branch → Project → Scene → Take
+```
+
+In this configuration, navigating into a Photos folder presents Rig sub-folders; navigating into a Videos folder presents Project sub-folders. Both branches live in the same view, the same database, and the same library. The fork is a structural declaration in the view tree, not a separation of data.
+
+#### Completeness and Empty Properties
+
+Because a view's layer tree defines which properties are expected at each branch, the system can determine whether any given file is fully classified within that view. A file is considered **incomplete** in a view if it possesses the properties required to reach some intermediate node but is missing the properties needed to reach the leaf of its branch.
+
+This completeness model is view-relative — the same file may be complete in a shallow view and incomplete in a deeper one. There is no global notion of a complete file independent of a view.
+
+---
+
+## Virtual Folder Layer
+
+### Concept
+
+The virtual folder layer is a configurable navigation interface built entirely from database queries. It presents as a familiar folder tree to the user, but no real folders exist — each "folder" is a filtered, grouped view of the database.
+
+Because all files share a single table, views can span multiple libraries freely. A view scoped to photos only is simply a query filtered by `library = 'photos'`. A view spanning photos and documents tagged with the same project is an equally simple query with no additional complexity.
+
+### Layers
+
+A virtual folder view is constructed by stacking **layers**. Each layer corresponds to a database property and acts as a grouping/filtering dimension.
+
+- **Layer 1**: Groups all files by the chosen property. The result is a set of top-level folders, one per unique value of that property
+- **Layer 2**: Within each Layer 1 folder, further groups by a second property. The result is a set of sub-folders
+- **Layer N**: Additional layers continue to narrow and group the view
+- **Leaf level**: Files appear only at the deepest layer of the configured tree
+
+Both core columns (`file_type`, `library`, `timestamp`) and metadata JSON properties (`rig`, `project`, `author`, etc.) can be used as layer dimensions interchangeably. The property registry determines which properties are offered when configuring a new layer.
+
+Example layer configuration:
+
+| Layer | Property | Result |
+|-------|----------|--------|
+| 1 | Year | Folders: 2022, 2023, 2024 |
+| 2 | Month | Sub-folders: January, February, … |
+| 3 | Rig | Sub-sub-folders: Rig-A, Rig-B |
+| Leaf | — | Individual files |
+
+### Views
+
+A **view** is a saved configuration of layers. Users can define and name multiple views and switch between them freely.
+
+- Views are non-destructive — switching views never moves or modifies files
+- Views can be exported as configuration files and shared with others
+- Multiple views can be open simultaneously (e.g. as tabs)
+- Views may be scoped to a single library or span multiple libraries
+
+---
+
+## Key UI Features
+
+### Navigation
+
+- The virtual folder tree is navigated identically to a standard OS folder structure
+- Clicking into a folder filters the visible content to match that folder's database query
+- Breadcrumb navigation reflects the current path through the layer hierarchy
+
+### The "+" Folder
+
+At every level of the virtual folder tree, a persistent **"+" folder** appears as the last item in any folder listing. Clicking it creates a new named folder at that level:
+
+- If the current layer already has a property assigned, the new folder name is added as a new value for that property in the registry
+- If no property is yet assigned at this layer, the user is prompted to name the property first, then the folder name becomes its first value
+
+The "+" folder is the primary in-context tool for extending the property vocabulary and building out the folder hierarchy without leaving the navigation interface.
+
+### Toggling to Database View
+
+At any level of the folder tree, the user can toggle from the folder view to a **database view**. This switches the presentation from a folder listing to a tabular, filterable list of files.
+
+The database view does not default to filtering by the exact current path — since every file shown would share identical values for the path properties, those columns would be uninformative. Instead, it opens scoped to the current library (or the current view's scope), with the path context available as a pre-applied filter the user can relax or extend as needed.
+
+Within the database view, the user can:
+
+- Sort and filter by any registered property
+- Edit property values inline, with dropdown pickers constrained to registered values; each dropdown includes an inline "Add value" option that writes directly to the property registry
+- Assign a file to multiple virtual locations simultaneously — something the drag-and-drop folder tree cannot express for array-type properties
+- View and fill empty properties for any file
+
+The database view and the folder tree are two presentations of the same underlying query. Switching between them at any point does not change the current navigation context.
+
+#### Preset Views Within the Database View
+
+- **Library view**: all files in the current library, no path filters applied, all registered properties shown as columns. The starting point for bulk editing or auditing
+- **Incomplete files view**: files that are missing one or more properties required to reach the leaf layer of their branch in the current view. This is the primary tool for identifying and completing partially classified files
+
+### Importing an Existing Folder Structure
+
+On first use, a user points the application at an existing folder on their machine. The app:
+
+- Crawls the directory recursively
+- Populates a record in the single database for every file found, extracting standard metadata automatically (timestamps, EXIF, file type, etc.)
+- Assigns a `library` label based on user input or inferred from file types
+- Bootstraps the property registry from metadata keys found across the ingested records
+- Presents the library immediately through the virtual layer
+
+The physical folder structure is preserved untouched. The user is not required to restructure anything before use.
+
+### Contextual File Upload
+
+When a user drops files into a folder within the virtual tree, the system:
+
+- Copies the file into the root directory
+- Creates a new database record for the file
+- Automatically assigns metadata based on the folder path context
+
+This means the act of navigating to a location and dropping a file there is equivalent to manually filling in the corresponding metadata fields. The folder path pre-populates the metadata.
+
+At the point of drop, the UI may also present any additional properties required to reach the leaf of the current view branch that are not already resolved by the path — allowing the user to fill in remaining fields without leaving the context.
+
+Example — navigating to `2024 → Rig-A → Component-B → Front` and dropping a file automatically assigns:
+
+```json
+{
+  "year": 2024,
+  "rig": "Rig-A",
+  "component": "Component-B",
+  "angle": "Front"
+}
+```
+
+### Virtual Folder Creation
+
+- Creating a folder at an existing layer adds a new value to that layer's property (e.g. adding `Rig-C` to the `rig` property)
+- Creating a folder at a level with no assigned property prompts the user to name the property dimension, then adds the folder name as its first value
+- Folders created this way immediately appear in the virtual tree and are available as contextual metadata targets for file drops
+
+### Multi-folder Presence
+
+- A file can appear in multiple virtual folders simultaneously
+- This is achieved by assigning array values to a property (e.g. `"project": ["Apollo", "Hermes"]`)
+- No duplication of files is ever required
+- Multi-value assignment is handled in the database view; the folder tree drag-and-drop interface is constrained to single-value assignment per operation
+
+### File Operations
+
+| Operation | Behaviour |
+|-----------|-----------|
+| Add file | Copies to root; creates DB record; assigns context metadata |
+| Move file (virtual) | Updates metadata in DB record; physical file does not move |
+| Delete file | Removes from disk and DB record |
+| Rename file | Updates DB record; physical filename may remain unchanged |
+| Create folder | Adds property value to registry; no physical folder created |
+
+### View Configuration GUI
+
+Views are created and edited through a dedicated **view configuration interface**. This is a graphical tree editor — not a settings form — reflecting the fact that a view is a tree structure that may contain forks, not a simple ordered list of layers.
+
+Interactions in the view configuration GUI:
+
+- **Drag to reorder**: layer nodes can be dragged to change their position within a branch
+- **Add a layer**: append a new layer node to any branch, selecting the property from the registry
+- **Add a fork**: at any node, introduce a fork by adding multiple child branches, each keyed to a specific value of the current layer's property
+- **Label branches**: fork branches are labelled by the value that activates them (e.g. `"Photos"`, `"Videos"`)
+- **Delete a node**: removing a node collapses its children up or removes the branch, with a confirmation step if files would become unclassified
+- **Rename a view**: update the display name of the view
+- **Duplicate a view**: create a copy as a starting point for a variation
+
+Changes in the view configuration GUI are non-destructive to file data — they only modify `view_nodes` records. No files are moved or have their metadata altered when a view is reconfigured.
+
+---
+
+## Storage Management Features
+
+### Flatten Root Directory
+
+Once the virtual layer is established as the primary navigation interface, the physical folder structure within the root becomes redundant. Users can optionally run a **flatten** operation:
+
+- All files are moved into a single flat directory within the root
+- The database is updated to reflect new paths
+- The virtual layer is entirely unaffected
+- The operation is not easily reversible — users are warned before proceeding
+
+This is an optional, one-time housekeeping step with no functional benefit to the virtual layer.
+
+### Export to Folder Structure
+
+Users can **materialise** any virtual view as a real folder structure on disk. This is useful for sharing files with someone who does not have the application, archiving a snapshot of a particular view, or migrating files to another system.
+
+The export operation:
+
+- Takes a selected view (or sub-tree within a view) as input
+- Creates a real folder hierarchy on disk matching that view's layer configuration
+- Populates each folder with **copies** of the relevant files (originals are untouched)
+- Optionally generates symlinks instead of copies, to avoid duplication
+
+---
+
+## Local Desktop Application
+
+### Platform
+
+The application is a native desktop app, targeting macOS and Windows (Linux support desirable). It requires no internet connection and no user account for core functionality.
+
+### Tech Stack (Recommended)
+
+- **Shell**: Tauri (Rust + WebView) or Electron — provides native OS integration (file system access, drag-and-drop, system tray)
+- **Database**: SQLite via a local driver — single-file, zero-configuration, no server process
+- **UI**: Web-based frontend (React or similar) rendered within the desktop shell
+
+### Data Portability
+
+All user data — files and database — lives on the local file system in user-accessible locations. There is no proprietary storage format. A user can:
+
+- Back up everything by copying their root folder(s) and the single `.db` file
+- Move a library to another machine by transferring those same files
+- Inspect or query the database directly using any SQLite viewer
+
+---
+
+## Architecture Summary
+
+```
+┌─────────────────────────────────────────┐
+│         Desktop Application Shell       │
+│         (Tauri / Electron)              │
+├─────────────────────────────────────────┤
+│              User Interface             │
+│    (Virtual Folder Views + DB View)     │
+├─────────────────────────────────────────┤
+│          Single SQLite Database         │
+│   (One `files` table — all domains)     │
+│   (JSON metadata column per record)     │
+│   (Property registry tables)            │
+│   (views + view_nodes tables)           │
+├─────────────────────────────────────────┤
+│            Physical Storage             │
+│     (Local Root Directory — flexible    │
+│      flat or nested folder structure)   │
+└─────────────────────────────────────────┘
+```
+
+One database serves all file domains. Root directories may be separate per domain or shared:
+
+```
+~/Pictures/   ←─┐
+~/Documents/  ←─┼── Single virtual-folders.db
+~/Videos/     ←─┘
+```
+
+---
+
+## UI Architecture
+
+This section defines the shell structure, navigation model, view modes, and editor surfaces of the application UI. All decisions here are informed by and consistent with the data model and virtual folder concepts defined above.
+
+### Design Principle: OS-Native Navigation with a Platform Adapter
+
+The virtual folder navigation experience is designed to be indistinguishable from a conventional OS file explorer within any given view. Folder browsing, drag-and-drop, breadcrumbs, and view modes all follow native OS conventions. Platform-specific details — labels, default layouts, breadcrumb style, context menu verbs — are managed by a thin platform adapter loaded at startup, keeping all platform conditionals out of UI components.
+
+| Concern | macOS Finder | Windows Explorer | Linux (Nautilus/Dolphin) |
+|---------|-------------|-----------------|--------------------------|
+| Sidebar label | Favourites | Quick Access | Bookmarks |
+| Trash verb | Move to Trash | Delete | Move to Trash |
+| Default view | Icon grid | Details/list | Configurable |
+| Breadcrumb style | Click-through | Editable address bar | Both |
+| Address bar | Non-editable | Editable | Configurable |
+
+### Application Shell Structure
+
+The app window is divided into three persistent regions: the icon rail, the contextual sidebar, and the main pane. The icon rail is always visible; the sidebar and main pane change based on the active context.
+
+#### Icon Rail (Always Visible)
+
+A narrow vertical strip on the left edge of the window, analogous to VS Code's activity bar. Contains:
+
+- One icon per saved view, acting as a drive/volume entry point
+- A Master View Editor entry point at the bottom of the rail
+- Clicking a view icon activates that view, replacing the sidebar content with view-local navigation
+- The currently active view icon is highlighted; all others remain available for single-click switching
+
+The icon rail keeps the concept of "all views" permanently accessible without requiring a back button or nested navigation. It is never hidden.
+
+#### Contextual Sidebar
+
+The sidebar to the right of the icon rail changes based on context:
+
+- When no view is active: shows a welcome/empty state with instructions to select a view from the rail or open the master editor
+- When a view is active: shows the view-local sidebar (sub-view switcher, starred locations within the view, and any OS-standard items like Recents)
+
+#### Main Pane
+
+The primary content area. Renders the current view mode (Tiles, List, Columns, or Database) for the active folder context. Responds to navigation actions from both the sidebar and the breadcrumb toolbar.
+
+### View-Local Navigation
+
+Once a view is activated from the icon rail, the application behaves like a standard OS explorer scoped to that view's virtual hierarchy.
+
+#### View Sidebar
+
+The view sidebar contains three elements from top to bottom:
+
+- **Sub-view switcher**: if the active view has named sub-views (e.g. "By Rig" and "By Project"), these appear as a compact switcher at the top of the sidebar. Selecting one changes the layer configuration without leaving the view
+- **Starred locations**: user-bookmarked paths within this view, displayed as named shortcuts analogous to Finder favourites or Windows Explorer quick access entries. Clicking one navigates directly to that path
+- **OS-standard items**: Recents, search scope indicator, and any other platform-appropriate navigation items below the starred locations
+
+#### Toolbar
+
+The toolbar sits above the main pane and contains:
+
+- **Breadcrumb / address bar**: reflects the current navigation path through the virtual layer hierarchy (e.g. `2024 → Rig-A → Component-B`). Style is platform-adaptive — click-through on macOS, editable on Windows
+- **View mode switcher**: Tiles | List | Columns | Database. Tiles, List, and Columns follow standard OS explorer behaviour. Database is an additional mode described below
+- **Edit Structure toggle**: opens or closes the local view editor panel (see View Editor section)
+
+### View Modes
+
+#### Tiles, List, and Columns
+
+These three modes replicate standard OS explorer behaviour exactly. Folder items, file thumbnails, selection, drag-and-drop, and context menus all behave as the user would expect from their native OS. No virtual-folder-specific chrome is introduced into these modes beyond the breadcrumb path.
+
+#### Database View
+
+The database view is a fourth view mode, available alongside the standard three via the toolbar switcher. It presents files at the current folder context as an editable metadata table rather than as folder/file icons.
+
+Key characteristics:
+
+- **Scope**: opens scoped to the current library (not the exact current path), with the path context pre-applied as a relaxable filter. This avoids showing columns where every row has the same value
+- **Columns**: one column per registered property for the current library scope, plus core columns (file name, type, timestamp)
+- **Inline editing**: all metadata cells are editable inline. Each editable cell presents a dropdown picker constrained to values in the property registry for that property. The bottom of each dropdown includes an "Add value" option that immediately creates a new registry entry and selects it
+- **Multi-value properties**: array-type properties display all assigned values in the cell and support adding or removing values, enabling multi-folder presence that the drag-and-drop tree cannot express
+- **Sorting and filtering**: any column can be sorted or filtered, including JSON metadata properties
+
+#### Database View Presets
+
+- **Library view**: all files in the current library, no path filters applied, all registered properties shown as columns. The entry point for bulk editing or auditing
+- **Incomplete files view**: files that are missing one or more properties required to reach the leaf of their branch in the current view. The primary tool for identifying and filling partially classified files
+
+Switching between the database view and any folder view mode does not change the underlying navigation context. The same breadcrumb path applies in both.
+
+### View Editor
+
+The view editor is the interface for arranging and restructuring the virtual folder hierarchy. The same underlying tree editor component is used in two distinct contexts: local (in-context, as a panel) and master (full-window).
+
+#### Local View Editor (Panel)
+
+Accessed via the Edit Structure toggle in the toolbar. Opens as a drawer or side panel alongside the main pane without obscuring it.
+
+- **Default scope**: shows the view tree from the current navigation node downward (sub-tree view). This is the everyday interaction surface — "I'm here in the hierarchy, I want to adjust what's below me"
+- **Full tree toggle**: a control within the panel switches to showing the complete view tree with the current node highlighted. Useful when restructuring requires understanding the broader context
+- **Non-destructive**: changes in the local editor only modify `view_nodes` records. No file data or metadata is altered
+
+#### Master View Editor (Full Window)
+
+Accessed from the icon rail (dedicated entry point at the bottom). Opens as a full-window overlay or dedicated window, replacing the main pane.
+
+- **Scope**: the complete hierarchy of all views and all branches, with no filtering by current context
+- **Use cases**: creating new views, restructuring top-level branches, managing forks across the full hierarchy, renaming or duplicating views
+- **Admin surface**: intended for less frequent, higher-impact structural decisions. Not the everyday editing interface
+
+#### View Editor Interactions (Both Contexts)
+
+- **Drag to reorder**: layer nodes can be dragged to change their position within a branch
+- **Add a layer**: append a new layer node to any branch, selecting the property from the registry
+- **Add a fork**: at any node, split into multiple child branches each keyed to a specific property value
+- **Label branches**: fork branches are labelled by the activating value
+- **Delete a node**: collapses children up or removes the branch; confirmation required if files would become unclassified
+- **Rename / duplicate view**: available in both contexts, primary in the master editor
+
+### Full UI Structure Reference
+
+```
+App Window
+├── Icon Rail                                   [always visible, left edge]
+│   ├── 📁 Photos Library
+│   ├── 📁 Documents
+│   ├── 📁 Videos
+│   ├── [+ Add View]
+│   └── [⚙ Master View Editor]
+│
+├── Contextual Sidebar
+│   ├── Sub-view switcher               [top of sidebar, if sub-views exist]
+│   ├── Starred locations within view
+│   └── OS-standard items (Recents, etc.)
+│
+├── Toolbar
+│   ├── Breadcrumb / address bar        [platform-adaptive]
+│   ├── View mode switcher              [Tiles | List | Columns | Database]
+│   └── [Edit Structure toggle]         [opens local view editor panel]
+│
+└── Main Pane
+    ├── Tiles / List / Columns          [standard OS explorer modes]
+    └── Database view                   [editable metadata table]
+
+[Local View Editor — panel/drawer, toggled from toolbar]
+    └── Tree editor, default: sub-tree from current node
+         Toggle to: full tree with current position highlighted
+
+[Master View Editor — full-window overlay, from icon rail]
+    └── Tree editor for all views, full hierarchy
+```
+
+---
+
+## Future Considerations
+
+- **AI-assisted tagging**: Automatic metadata extraction from file content (e.g. face recognition, object detection for photos, document text extraction)
+- **Search**: Full-text and property-based search across the single database
+- **Permissions**: Per-view or per-property access controls for shared machines or team use cases
+- **Cloud sync**: Optional integration with cloud storage providers (Dropbox, S3, etc.) as the physical storage layer, with the local database remaining the source of virtual organisation
+- **JSON index promotion**: UI tooling to identify heavily-queried metadata properties and add SQLite JSON path indexes automatically
+- **Registry health tools**: Tooling to detect orphaned property values, inconsistently cased keys, and other data hygiene issues
+- **Conditional property values**: Whether valid values for a property should be constrained by the parent context. Requires UX design to determine how unrecognised or cross-context values are surfaced. To be designed.
+- **Cross-branch value visibility**: When a value exists in the registry but has no files under the current branch, how should the folder tree present it? Options include hiding entirely, greying with a disclosure toggle, or an "uncategorised" group. To be designed.
