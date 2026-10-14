@@ -135,8 +135,11 @@ export function cellBoxStyle(width: number | undefined, phase?: ColumnPhase): Re
     style.opacity = 0.3;
     style.animation = `column-arm ${COLLAPSE_ARM_MS}ms ease-in-out both`;
   } else if (phase === "closing") {
+    // Shrinks and fades away, as a Dock item does when removed, carrying on
+    // from where the warning flash ends
     style.opacity = 0;
-    style.transition = (["width", "padding", "opacity"] as const)
+    style.animation = `column-close ${COLLAPSE_ANIMATION_MS}ms ${EASE_OUT} both`;
+    style.transition = (["width", "padding"] as const)
       .map((p) => `${p} ${COLLAPSE_ANIMATION_MS}ms ${EASE_OUT}`)
       .join(", ");
   }

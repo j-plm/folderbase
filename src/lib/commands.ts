@@ -300,11 +300,6 @@ export function hapticFeedback(pattern: "alignment" | "levelChange"): void {
   invoke<void>("haptic_feedback", { pattern }).catch(() => {});
 }
 
-/** AppKit's "poof" (as when removing a Dock item) at a point in the window; no-op off macOS. */
-export function poofAt(x: number, y: number): void {
-  invoke<void>("poof_at", { x, y }).catch(() => {});
-}
-
 /** Opens several files together, the way Finder opens a multiple selection. */
 export async function openPaths(paths: string[]): Promise<void> {
   return invoke<void>("open_paths", { paths });

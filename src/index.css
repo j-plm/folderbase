@@ -213,8 +213,21 @@ button {
   }
 }
 
+/* The column then shrinks and fades away, continuing from the flash's end. */
+@keyframes column-close {
+  from {
+    opacity: 0.3;
+    transform: scale(0.85);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  [style*="column-arm"] {
+  [style*="column-arm"],
+  [style*="column-close"] {
     animation: none !important;
   }
 }

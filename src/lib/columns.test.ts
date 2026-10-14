@@ -122,6 +122,7 @@ describe("cellBoxStyle", () => {
   it("dims a held column and fades a closing one", () => {
     expect(cellBoxStyle(24, "held").opacity).toBe(0.4);
     expect(cellBoxStyle(0, "closing")).toMatchObject({ width: 0, opacity: 0 });
+    expect(cellBoxStyle(0, "closing").animation).toMatch(/^column-close /);
   });
 
   it("plays the warning flash on an armed column", () => {

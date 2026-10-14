@@ -34,7 +34,6 @@ pub fn run() {
             commands::admin::open_path,
             commands::admin::open_paths,
             commands::feedback::haptic_feedback,
-            commands::feedback::poof_at,
             commands::files::get_libraries,
             commands::icons::get_native_icon,
             commands::files::get_files,
