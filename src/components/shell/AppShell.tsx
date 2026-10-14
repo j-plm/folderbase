@@ -12,7 +12,7 @@ export default function AppShell() {
 
   return (
     <ArrangementProvider>
-      <div className="flex h-screen bg-neutral-900 text-neutral-100">
+      <div className="relative flex h-screen bg-neutral-900 text-neutral-100">
         <IconRail />
         <Sidebar />
         <div className="flex flex-col flex-1 min-w-0">

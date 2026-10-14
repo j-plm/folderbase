@@ -46,6 +46,7 @@ export default function Toolbar() {
   return (
     <div
       data-tauri-drag-region
+      style={{ paddingLeft: "calc(var(--sidebar-inset) + 16px)" }}
       className="flex items-center gap-3 px-4 h-[52px] border-b border-neutral-700/60 bg-neutral-900 shrink-0"
     >
       <div data-tauri-drag-region className="flex-1 min-w-[80px]">

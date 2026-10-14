@@ -78,6 +78,7 @@
 
 /* Light (Finder, light appearance) */
 :root {
+  --sidebar-inset: 228px; /* floating sidebar width + margin; set live by Sidebar */
   color-scheme: light;
 
   --n-50: #000000;

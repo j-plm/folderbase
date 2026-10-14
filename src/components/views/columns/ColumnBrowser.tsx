@@ -166,6 +166,7 @@ export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
         e.preventDefault();
         showContextMenu(arrangementMenu(arrangementCtx));
       }}
+      style={{ paddingLeft: "var(--sidebar-inset)", scrollPaddingLeft: "var(--sidebar-inset)" }}
       className="flex-1 flex min-h-0 overflow-x-auto overflow-y-hidden outline-none"
     >
       {arranged.map((groups, depth) => {
