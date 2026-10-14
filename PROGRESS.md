@@ -136,7 +136,7 @@ View editor — remaining gaps against the spec and known bugs:
 
 Housekeeping:
 - [ ] Delete dead `DatabaseView.tsx` (`MainPane` only renders `LocationDatabaseView`)
-- [ ] Add a lint setup — `npm run lint` is referenced in CLAUDE.md but no script exists
+- [x] Add a lint setup — ESLint (`npm run lint`): hook rules + invoke/platform convention checks
 
 ---
 

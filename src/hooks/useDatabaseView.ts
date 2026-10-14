@@ -78,6 +78,8 @@ export function useDatabaseView(
         );
       })
       .catch(() => setFilters([]));
+    // Keyed on path contents so a new array with the same segments doesn't refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewId, path.join("\0")]);
 
   // Fetch files whenever filters / sort / preset / library change

@@ -42,6 +42,8 @@ export function useVirtualFolder(
           setLoading(false);
         }
       });
+    // Keyed on path contents so a new array with the same segments doesn't refetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewId, path.join("\0")]);
 
   useEffect(() => {

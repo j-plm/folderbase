@@ -40,6 +40,7 @@ export default function OverflowBar({
 
   // Natural widths come from an invisible copy, so they don't depend on what's
   // currently visible. Re-read after every render: labels can change.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- no deps by design; setWidths is guarded
   useLayoutEffect(() => {
     const el = measureRef.current;
     if (!el) return;

@@ -59,6 +59,7 @@ export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
   const arranged = useMemo(
     () => columns.map((c) => arrangeColumn(c, arrangement)),
     // `columns` is derived from root + path, which are the real inputs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [root, path, arrangement]
   );
   const ordered = arranged.map((groups) => groups.flatMap((g) => g.nodes));
