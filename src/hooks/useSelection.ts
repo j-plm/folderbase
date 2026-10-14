@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { openPaths } from "../lib/commands";
 import { hasPrimaryModifier, isOpenShortcut, isToggleSelect } from "../lib/platform";
@@ -28,20 +28,19 @@ interface Options {
 export function useSelection(files: FileRecord[], { arrowKeys = false, onReveal }: Options = {}) {
   const [state, setState] = useState<SelectionState>(EMPTY_SELECTION);
   const cursor = useRef<string | null>(null);
-  const order = files.map((f) => f.file_id);
+  const order = useMemo(() => files.map((f) => f.file_id), [files]);
 
   // Drop selected ids that are no longer shown (filtered out, location changed)
-  const orderKey = order.join("\n");
   useEffect(() => {
-    const shown = new Set(orderKey ? orderKey.split("\n") : []);
+    const shown = new Set(order);
     setState((s) =>
       s.selected.every((id) => shown.has(id))
         ? s
         : { ...s, selected: s.selected.filter((id) => shown.has(id)), base: s.base.filter((id) => shown.has(id)) }
     );
-  }, [orderKey]);
+  }, [order]);
 
-  const selected = new Set(state.selected);
+  const selected = useMemo(() => new Set(state.selected), [state.selected]);
 
   function open(ids: string[]) {
     const byId = new Map(files.map((f) => [f.file_id, f.file_path]));

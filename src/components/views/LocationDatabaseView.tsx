@@ -330,17 +330,21 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
     showContextMenu(columnMenuEntries(), { alignKey: columnId ?? undefined, event: e });
   }
 
-  const filtered = files.filter((f) => {
-    if (!search) return true;
+  // Only re-filter and re-sort when the inputs change, not on every render
+  // (column drags and selection clicks re-render many times a second)
+  const sorted = useMemo(() => {
     const q = search.toLowerCase();
-    const name = fileName(f.file_path).toLowerCase();
-    const rel = (f.relative_path ?? "").toLowerCase();
-    return name.includes(q) || rel.includes(q);
-  });
-
-  const sorted = [...filtered].sort((a, b) =>
-    compareSortValues(sortValue(a, sort.key), sortValue(b, sort.key), sort.direction)
-  );
+    const filtered = q
+      ? files.filter(
+          (f) =>
+            fileName(f.file_path).toLowerCase().includes(q) ||
+            (f.relative_path ?? "").toLowerCase().includes(q)
+        )
+      : files;
+    return [...filtered].sort((a, b) =>
+      compareSortValues(sortValue(a, sort.key), sortValue(b, sort.key), sort.direction)
+    );
+  }, [files, search, sort]);
 
   const extraColCount = (showTags ? 1 : 0) + visibleProperties.length;
 

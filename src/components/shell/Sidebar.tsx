@@ -102,8 +102,9 @@ export default function Sidebar() {
   }
 
   return (
-    // Finder (macOS 26): the sidebar is a rounded glass panel floating over the content,
-    // inset from the window edges
+    // Finder (macOS 26): the sidebar is a rounded panel floating over the content,
+    // inset from the window edges. Solid rather than blurred: a backdrop blur
+    // re-renders on every repaint underneath it, and little shows through anyway.
     <div
       data-tauri-drag-region
       style={{ width: width + PANEL_MARGIN, padding: `${PANEL_MARGIN}px 0 ${PANEL_MARGIN}px ${PANEL_MARGIN}px` }}
@@ -114,7 +115,7 @@ export default function Sidebar() {
         onMouseDown={startResize}
         className="absolute -right-[3px] top-0 z-20 h-full w-[6px] cursor-col-resize"
       />
-      <div className="flex flex-col flex-1 min-w-0 bg-neutral-800/70 backdrop-blur-2xl backdrop-saturate-150 border border-neutral-700/50 shadow-lg rounded-[18px] overflow-hidden">
+      <div className="flex flex-col flex-1 min-w-0 bg-neutral-800 border border-neutral-700/50 shadow-lg rounded-[18px] overflow-hidden">
         {/* Title bar area: the window's traffic lights sit here (52px from the window top) */}
         <div data-tauri-drag-region className="h-[44px] shrink-0" />
         <div className="px-4 pt-1 pb-1">
