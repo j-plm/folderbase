@@ -353,8 +353,10 @@ async fn unapply_mapping_from_files(
 
 /// Applies a single mapping node's label to all matching files (merge semantics).
 /// Only writes the value when the property key is currently absent from metadata.
-/// Also removes the folder name from the tags array for the same set of files.
-pub(crate) async fn apply_mapping_to_files(
+/// A named folder is never also a tag: its name is removed from the tags of every
+/// file that takes its value, including files that already carry it (re-indexing
+/// rebuilds tags from paths, so the name comes back and must be stripped again).
+pub async fn apply_mapping_to_files(
     location_id: &str,
     root_path: &str,
     folder_path: &str,
@@ -380,13 +382,15 @@ pub(crate) async fn apply_mapping_to_files(
          ) \
          WHERE location_id = ? \
          AND (relative_path = ? OR relative_path LIKE ? || '/%') \
-         AND json_extract(metadata, ?) IS NULL",
+         AND (json_extract(metadata, ?) IS NULL OR json_extract(metadata, ?) = ?)",
     )
     .bind(&folder_name)
     .bind(location_id)
     .bind(&folder_rel)
     .bind(&folder_rel)
     .bind(&prop_key)
+    .bind(&prop_key)
+    .bind(&folder_name)
     .execute(&mut *tx)
     .await
     .map_err(|e| e.to_string())?;

@@ -1,7 +1,9 @@
 mod common;
 
 use common::setup_db;
-use folderbase_lib::commands::path_mapping::{clear_folder_label_impl, set_folder_label_impl};
+use folderbase_lib::commands::path_mapping::{
+    apply_mapping_to_files, clear_folder_label_impl, set_folder_label_impl,
+};
 use folderbase_lib::db::{run_migrations, DbPool};
 use serde_json::Value;
 
@@ -98,6 +100,25 @@ async fn clear_restores_tag_and_removes_key() {
         .await
         .unwrap();
     assert_eq!(nodes, 0);
+}
+
+#[tokio::test]
+async fn reindex_keeps_named_folder_out_of_tags() {
+    let pool = setup_db().await;
+    seed(&pool).await;
+    let folder = format!("{ROOT}/Houses/42 Burton Rd");
+    set_folder_label_impl(LOC, &folder, "Home", &pool).await.unwrap();
+
+    // Re-index rebuilds tags from the path, then re-applies each mapping.
+    sqlx::query("UPDATE files SET tags = '[\"Houses\",\"42 Burton Rd\"]' WHERE file_id = 'f1'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    apply_mapping_to_files(LOC, ROOT, &folder, "Home", &pool).await.unwrap();
+
+    let (meta, tags) = file(&pool, "f1").await;
+    assert_eq!(meta, serde_json::json!({ "Home": "42 Burton Rd" }));
+    assert_eq!(tags, vec!["Houses"]);
 }
 
 #[tokio::test]
