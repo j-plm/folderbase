@@ -113,15 +113,20 @@ function loadNativeIcon(key: string, kind: string, px: number): Promise<string |
   return pending;
 }
 
-/** Native icon for "folder" or a file extension at `size` points; null until loaded or if unsupported. */
-function useNativeIcon(kind: string, size: number): string | null {
+/**
+ * Native icon for "folder", a file extension or "symbol:<name>" at `size` points.
+ * `undefined` while loading, `null` if the OS couldn't provide one. Callers draw
+ * nothing while loading (so a fallback never flashes in before the native icon)
+ * and only fall back when it is `null`.
+ */
+function useNativeIcon(kind: string, size: number): string | null | undefined {
   const px = Math.round(size * (window.devicePixelRatio || 1));
   const key = `${kind}@${px}`;
-  const [src, setSrc] = useState<string | null>(() => loadedIcons.get(key) ?? null);
+  const [src, setSrc] = useState<string | null | undefined>(() => loadedIcons.get(key));
 
   useEffect(() => {
     let cancelled = false;
-    setSrc(loadedIcons.get(key) ?? null);
+    setSrc(loadedIcons.get(key));
     loadNativeIcon(key, kind, px).then((s) => {
       if (!cancelled) setSrc(s);
     });
@@ -145,7 +150,7 @@ export function FolderIcon({ size = 32, className = "" }: IconProps) {
     <img src={src} width={size} height={size} draggable={false} alt="" className={`shrink-0 ${className}`} />
   ) : (
     <div style={{ width: size, height: size }} className={`shrink-0 text-blue-500 ${className}`}>
-      <FallbackFolderIcon />
+      {src === null && <FallbackFolderIcon />}
     </div>
   );
 }
@@ -161,7 +166,7 @@ export function FileIcon({
     <img src={src} width={size} height={size} draggable={false} alt="" className={`shrink-0 ${className}`} />
   ) : (
     <div style={{ width: size, height: size }} className={`shrink-0 ${className}`}>
-      <FallbackFileIcon mimeType={mimeType} />
+      {src === null && <FallbackFileIcon mimeType={mimeType} />}
     </div>
   );
 }
@@ -180,7 +185,7 @@ export function SymbolIcon({
   if (!src) {
     return (
       <span style={{ width: size, height: size }} className={`inline-flex shrink-0 ${className}`}>
-        {fallback}
+        {src === null && fallback}
       </span>
     );
   }
