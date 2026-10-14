@@ -107,7 +107,7 @@ export default function Sidebar() {
     <div
       data-tauri-drag-region
       style={{ width: width + PANEL_MARGIN, padding: `${PANEL_MARGIN}px 0 ${PANEL_MARGIN}px ${PANEL_MARGIN}px` }}
-      className="absolute left-0 top-0 bottom-0 z-10 flex text-sm"
+      className="absolute left-0 top-0 bottom-0 z-40 flex text-sm"
     >
       {/* Drag the right edge to resize */}
       <div

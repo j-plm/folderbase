@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { pickDirectory, addLocation, ingestDirectory } from "../../lib/commands";
 import { useNavigation } from "../../contexts/NavigationContext";
+import Dialog, { DialogButton, DialogField, dialogTextField } from "../shared/Dialog";
+import { FolderIcon, SymbolIcon } from "../../lib/fileIcons";
 
 interface Props {
   onClose: () => void;
@@ -22,7 +24,7 @@ export default function MapLocationModal({ onClose }: Props) {
   }
 
   async function handleConfirm() {
-    if (!rootPath || !name.trim()) return;
+    if (!rootPath || !name.trim() || busy) return;
     setBusy(true);
     setError("");
     try {
@@ -38,50 +40,50 @@ export default function MapLocationModal({ onClose }: Props) {
     }
   }
 
+  const folderName = rootPath?.replace(/\\/g, "/").split("/").filter(Boolean).pop();
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="w-full max-w-sm bg-neutral-900 border border-neutral-700 rounded-lg shadow-xl p-6 flex flex-col gap-5">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-neutral-100">Map Location</h2>
-          <button
-            onClick={onClose}
-            className="text-neutral-500 hover:text-neutral-300 transition-colors text-base leading-none"
-          >
-            ✕
-          </button>
-        </div>
-
-        <div className="flex flex-col gap-3">
-          <button
-            onClick={handlePick}
-            className="px-3 py-2 bg-neutral-800 hover:bg-neutral-700 border border-neutral-700 hover:border-neutral-600 rounded-md text-sm text-left truncate transition-colors text-neutral-300"
-          >
-            {rootPath ?? "Choose a folder…"}
-          </button>
-
-          {rootPath && (
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs text-neutral-400">Location name</label>
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                className="px-3 py-2 bg-neutral-800 border border-neutral-700 rounded-md text-sm text-neutral-100 focus:outline-none focus:border-blue-500 transition-colors"
-                placeholder="My Location"
-              />
-            </div>
-          )}
-
-          <button
-            onClick={handleConfirm}
-            disabled={!rootPath || busy || !name.trim()}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-md text-sm font-medium transition-colors"
-          >
+    <Dialog
+      title="Map Location"
+      message="Choose a folder to add to Folderbase. Its files are indexed where they are; nothing on disk is moved."
+      onCancel={onClose}
+      onSubmit={handleConfirm}
+      footer={
+        <>
+          <div className="flex-1" />
+          <DialogButton onClick={onClose}>Cancel</DialogButton>
+          <DialogButton variant="default" disabled={!rootPath || busy || !name.trim()}>
             {busy ? "Mapping…" : "Map Location"}
+          </DialogButton>
+        </>
+      }
+    >
+      <div className="flex flex-col gap-2.5">
+        <DialogField label="Folder:">
+          {/* Styled as a native pop-up button, like the "Where:" control in save sheets */}
+          <button
+            type="button"
+            onClick={handlePick}
+            title={rootPath ?? undefined}
+            className="w-full h-6 flex items-center gap-1.5 pl-1.5 pr-2 rounded-[6px] bg-neutral-800 dark:bg-neutral-700 text-left"
+          >
+            {rootPath && <FolderIcon size={16} />}
+            <span className={`flex-1 truncate ${rootPath ? "" : "text-neutral-500"}`}>
+              {folderName ?? "Choose…"}
+            </span>
+            <SymbolIcon name="chevron.up.chevron.down" size={11} fallback="⌃" className="text-neutral-400" />
           </button>
-
-          {error && <p className="text-xs text-red-400">{error}</p>}
-        </div>
+        </DialogField>
+        <DialogField label="Name:">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={!rootPath}
+            className={`${dialogTextField} disabled:opacity-50`}
+          />
+        </DialogField>
+        {error && <p className="pl-[80px] text-xs text-red-500">{error}</p>}
       </div>
-    </div>
+    </Dialog>
   );
 }
