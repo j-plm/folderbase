@@ -17,7 +17,7 @@ export default function App() {
 
   if (appState === "loading") {
     return (
-      <div className="flex items-center justify-center h-screen bg-gray-950 text-gray-500 text-sm">
+      <div className="flex items-center justify-center h-screen bg-neutral-900 text-neutral-500 text-sm">
         Loading…
       </div>
     );

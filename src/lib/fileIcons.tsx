@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { getNativeIcon } from "./commands";
 
 export function isImageMime(mimeType: string | null): boolean {
   return !!mimeType && mimeType.startsWith("image/");
@@ -21,7 +22,7 @@ function iconPath(d: string, color: string): ReactNode {
   );
 }
 
-export function FolderIcon({ className = "w-8 h-8" }: { className?: string }) {
+function FallbackFolderIcon({ className }: { className?: string }) {
   return (
     <div className={className}>
       <svg
@@ -40,9 +41,9 @@ export function FolderIcon({ className = "w-8 h-8" }: { className?: string }) {
   );
 }
 
-export function FileIcon({
+function FallbackFileIcon({
   mimeType,
-  className = "w-8 h-8",
+  className,
 }: {
   mimeType: string | null;
   className?: string;
@@ -86,3 +87,109 @@ export function FileIcon({
   return <div className={className}>{icon}</div>;
 }
 
+
+/** Lowercase extension of a path's file name, without the dot ("" if none). */
+export function fileExtension(filePath: string): string {
+  const name = filePath.split(/[\\/]/).pop() ?? "";
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+// Native icons are rendered by the OS once per kind + pixel size and shared.
+const pendingIcons = new Map<string, Promise<string | null>>();
+const loadedIcons = new Map<string, string | null>();
+
+function loadNativeIcon(key: string, kind: string, px: number): Promise<string | null> {
+  let pending = pendingIcons.get(key);
+  if (!pending) {
+    pending = getNativeIcon(kind, px)
+      .catch(() => null)
+      .then((src) => {
+        loadedIcons.set(key, src);
+        return src;
+      });
+    pendingIcons.set(key, pending);
+  }
+  return pending;
+}
+
+/** Native icon for "folder" or a file extension at `size` points; null until loaded or if unsupported. */
+function useNativeIcon(kind: string, size: number): string | null {
+  const px = Math.round(size * (window.devicePixelRatio || 1));
+  const key = `${kind}@${px}`;
+  const [src, setSrc] = useState<string | null>(() => loadedIcons.get(key) ?? null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setSrc(loadedIcons.get(key) ?? null);
+    loadNativeIcon(key, kind, px).then((s) => {
+      if (!cancelled) setSrc(s);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [key, kind, px]);
+
+  return src;
+}
+
+interface IconProps {
+  /** Rendered width and height in CSS pixels. */
+  size?: number;
+  className?: string;
+}
+
+export function FolderIcon({ size = 32, className = "" }: IconProps) {
+  const src = useNativeIcon("folder", size);
+  return src ? (
+    <img src={src} width={size} height={size} draggable={false} alt="" className={`shrink-0 ${className}`} />
+  ) : (
+    <div style={{ width: size, height: size }} className={`shrink-0 text-blue-500 ${className}`}>
+      <FallbackFolderIcon />
+    </div>
+  );
+}
+
+export function FileIcon({
+  path,
+  mimeType,
+  size = 32,
+  className = "",
+}: IconProps & { path: string; mimeType: string | null }) {
+  const src = useNativeIcon(fileExtension(path), size);
+  return src ? (
+    <img src={src} width={size} height={size} draggable={false} alt="" className={`shrink-0 ${className}`} />
+  ) : (
+    <div style={{ width: size, height: size }} className={`shrink-0 ${className}`}>
+      <FallbackFileIcon mimeType={mimeType} />
+    </div>
+  );
+}
+
+/**
+ * A native SF Symbol (Finder's sidebar line icons), tinted with the current
+ * text colour: the OS-rendered glyph is used as a mask over `currentColor`.
+ */
+export function SymbolIcon({
+  name,
+  size = 16,
+  className = "",
+  fallback,
+}: IconProps & { name: string; fallback?: ReactNode }) {
+  const src = useNativeIcon(`symbol:${name}`, size);
+  if (!src) {
+    return (
+      <span style={{ width: size, height: size }} className={`inline-flex shrink-0 ${className}`}>
+        {fallback}
+      </span>
+    );
+  }
+  const mask = `url("${src}") center / contain no-repeat`;
+  return (
+    <span
+      aria-hidden
+      style={{ width: size, height: size, backgroundColor: "currentColor", mask, WebkitMask: mask }}
+      className={`inline-block shrink-0 ${className}`}
+    />
+  );
+}

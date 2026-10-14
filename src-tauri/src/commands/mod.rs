@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod database_view;
 pub mod files;
+pub mod icons;
 pub mod ingest;
 pub mod locations;
 pub mod path_mapping;

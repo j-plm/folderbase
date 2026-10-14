@@ -1,3 +1,4 @@
+pub mod appearance;
 pub mod commands;
 pub mod db;
 pub mod models;
@@ -25,12 +26,14 @@ pub fn run() {
             tauri::async_runtime::block_on(run_migrations(&pool))?;
 
             app.manage(pool);
+            appearance::setup(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::admin::clear_database,
             commands::admin::open_path,
             commands::files::get_libraries,
+            commands::icons::get_native_icon,
             commands::files::get_files,
             commands::files::get_files_for_location,
             commands::files::update_file_metadata,

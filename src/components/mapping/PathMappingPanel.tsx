@@ -66,7 +66,7 @@ export default function PathMappingPanel({ locationId, locationName, onClose }: 
           <div className="px-5 py-3 text-red-400 text-xs">{error}</div>
         )}
         {!loading && !error && tree && tree.children.length === 0 && (
-          <div className="flex items-center justify-center h-full text-neutral-600 text-sm">
+          <div className="flex items-center justify-center h-full text-neutral-500 text-sm">
             No folders found — index the location first.
           </div>
         )}

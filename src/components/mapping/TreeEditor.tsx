@@ -165,7 +165,7 @@ function FolderRow({
         </span>
 
         {/* File count */}
-        <span className="text-[10px] text-neutral-600 shrink-0 tabular-nums">
+        <span className="text-[10px] text-neutral-500 shrink-0 tabular-nums">
           {node.file_count.toLocaleString()}
         </span>
 
@@ -179,7 +179,7 @@ function FolderRow({
               onBlur={() => commit(inputValue)}
               onKeyDown={handleKeyDown}
               placeholder={suggestion ?? "Label this level…"}
-              className="w-full px-2 py-0.5 bg-neutral-800 border border-neutral-600 rounded text-xs text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-blue-500"
+              className="w-full px-2 py-0.5 bg-neutral-800 border border-neutral-600 rounded text-xs text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-blue-500"
             />
           ) : node.mapping ? (
             <button
@@ -191,14 +191,14 @@ function FolderRow({
           ) : suggestion ? (
             <button
               onClick={() => openEditor(suggestion)}
-              className="w-full px-2 py-0.5 rounded border border-dashed border-neutral-600 text-xs text-neutral-600 italic truncate text-left hover:border-neutral-500 hover:text-neutral-400 transition-colors"
+              className="w-full px-2 py-0.5 rounded border border-dashed border-neutral-600 text-xs text-neutral-500 italic truncate text-left hover:border-neutral-500 hover:text-neutral-400 transition-colors"
             >
               {suggestion}
             </button>
           ) : (
             <button
               onClick={() => openEditor("")}
-              className="w-full px-2 py-0.5 rounded text-xs text-neutral-700 text-left hover:text-neutral-500 transition-colors"
+              className="w-full px-2 py-0.5 rounded text-xs text-neutral-500 text-left hover:text-neutral-500 transition-colors"
             >
               Label this level…
             </button>

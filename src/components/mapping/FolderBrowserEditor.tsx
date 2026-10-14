@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { clearFolderLabel, setFolderLabel } from "../../lib/commands";
 import type { FolderTreeNode, PathMappingNode } from "../../lib/commands";
+import { FolderIcon } from "../../lib/fileIcons";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -68,20 +69,8 @@ function initPropNames(tree: FolderTreeNode, mappings: PathMappingNode[]): Recor
 
 // ── Sub-components ─────────────────────────────────────────────────────────
 
-function FolderIcon({ selected, muted }: { selected: boolean; muted?: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 20 16"
-      width={28}
-      height={22}
-      fill="currentColor"
-      className={`transition-colors shrink-0 ${
-        selected ? "text-blue-400" : muted ? "text-neutral-700" : "text-neutral-500"
-      }`}
-    >
-      <path d="M2 4a2 2 0 012-2h4.172a2 2 0 011.414.586l.828.828A2 2 0 0011.828 4H16a2 2 0 012 2v7a2 2 0 01-2 2H4a2 2 0 01-2-2V4z" />
-    </svg>
-  );
+function BrowserFolderIcon({ muted }: { muted?: boolean }) {
+  return <FolderIcon size={32} className={muted ? "opacity-50" : ""} />;
 }
 
 function FolderItem({
@@ -126,7 +115,7 @@ function FolderItem({
           : "border border-transparent hover:bg-neutral-800/60"
       }`}
     >
-      <FolderIcon selected={isSelected} />
+      <BrowserFolderIcon />
       <span className={`text-[10px] leading-tight text-center w-full truncate transition-colors ${isSelected ? "text-blue-300" : "text-neutral-400"}`}>
         {node.folder_name}
       </span>
@@ -150,7 +139,7 @@ function PropNameInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder="property name"
         spellCheck={false}
-        className="bg-transparent text-xs text-neutral-200 placeholder-neutral-700 outline-none border-b border-transparent focus:border-blue-400 transition-colors w-full py-px"
+        className="bg-transparent text-xs text-neutral-200 placeholder-neutral-500 outline-none border-b border-transparent focus:border-blue-400 transition-colors w-full py-px"
       />
       <span className={`text-[9px] text-green-400 leading-none transition-opacity duration-300 ${showSaved ? "opacity-100" : "opacity-0"}`}>
         saved
@@ -284,7 +273,7 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
             const isLast = i === crumbs.length - 1;
             return (
               <span key={crumb.rootPath} className="flex items-center gap-1 min-w-0">
-                {i > 0 && <span className="text-neutral-700 shrink-0">/</span>}
+                {i > 0 && <span className="text-neutral-500 shrink-0">/</span>}
                 {isLast ? (
                   <span className="text-neutral-200 font-medium truncate max-w-[160px]">{crumb.name}</span>
                 ) : (
@@ -299,7 +288,7 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
             );
           })}
         </div>
-        <span className="shrink-0 text-[10px] text-neutral-700 ml-3">
+        <span className="shrink-0 text-[10px] text-neutral-500 ml-3">
           click to expand · double-click to drill in
         </span>
       </div>
@@ -319,8 +308,8 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
                   : "cursor-pointer border border-transparent hover:bg-neutral-800/60"
               }`}
             >
-              <FolderIcon selected={false} muted={isAtRoot} />
-              <span className={`text-[10px] leading-tight text-center w-full truncate ${isAtRoot ? "text-neutral-600" : "text-neutral-400"}`}>
+              <BrowserFolderIcon muted={isAtRoot} />
+              <span className={`text-[10px] leading-tight text-center w-full truncate ${isAtRoot ? "text-neutral-500" : "text-neutral-400"}`}>
                 {currentRootName}
               </span>
             </div>
@@ -329,7 +318,7 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
 
         {/* Property level rows */}
         {levels.length === 0 ? (
-          <div className="flex items-center justify-center py-10 text-neutral-600 text-xs">
+          <div className="flex items-center justify-center py-10 text-neutral-500 text-xs">
             No subfolders here.
           </div>
         ) : (

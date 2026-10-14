@@ -209,7 +209,7 @@ export default function MetadataCell({
         {display.length > 0 ? (
           <span className="text-xs text-neutral-200">{display}</span>
         ) : (
-          <span className="text-xs text-neutral-600 italic">—</span>
+          <span className="text-xs text-neutral-500 italic">—</span>
         )}
       </div>
     );
@@ -241,7 +241,7 @@ export default function MetadataCell({
         {display.length > 0 ? (
           <span className="text-xs text-neutral-200">{display}</span>
         ) : (
-          <span className="text-xs text-neutral-600 italic">—</span>
+          <span className="text-xs text-neutral-500 italic">—</span>
         )}
       </div>
     );
@@ -258,7 +258,7 @@ export default function MetadataCell({
         {current.length > 0 ? (
           <span className="text-xs text-neutral-200">{current}</span>
         ) : (
-          <span className="text-xs text-neutral-600 italic">—</span>
+          <span className="text-xs text-neutral-500 italic">—</span>
         )}
         {open && anchorRect && (
           <Dropdown anchor={anchorRect} onClose={closeDropdown}>
@@ -331,7 +331,7 @@ export default function MetadataCell({
           ))}
         </div>
       ) : (
-        <span className="text-xs text-neutral-600 italic">—</span>
+        <span className="text-xs text-neutral-500 italic">—</span>
       )}
       {open && anchorRect && (
         <Dropdown anchor={anchorRect} onClose={closeDropdown}>

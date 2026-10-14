@@ -195,11 +195,11 @@ export default function DatabaseView(_props: ViewProps) {
         className="flex-1 overflow-auto"
       >
         {loading && files.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-neutral-600 text-sm">
+          <div className="flex items-center justify-center h-full text-neutral-500 text-sm">
             Loading…
           </div>
         ) : files.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-neutral-600 text-sm">
+          <div className="flex items-center justify-center h-full text-neutral-500 text-sm">
             {preset === "incomplete"
               ? "No incomplete files — all files are fully classified."
               : "No files match the current filters."}
@@ -246,13 +246,13 @@ export default function DatabaseView(_props: ViewProps) {
       </div>
 
       {/* Status bar */}
-      <div className="shrink-0 px-3 py-1 border-t border-neutral-700/60 text-xs text-neutral-600 flex items-center justify-between">
+      <div className="shrink-0 px-3 py-1 border-t border-neutral-700/60 text-xs text-neutral-500 flex items-center justify-between">
         <span>
           {files.length} {files.length === 1 ? "file" : "files"}
           {preset === "path" && filters.length > 0 && " (filtered)"}
         </span>
         {currentLibrary && (
-          <span className="text-neutral-700">{currentLibrary}</span>
+          <span className="text-neutral-500">{currentLibrary}</span>
         )}
       </div>
     </div>

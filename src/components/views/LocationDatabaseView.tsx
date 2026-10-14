@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -8,6 +9,21 @@ import {
 } from "../../lib/commands";
 import type { FileRecord } from "../../types";
 import PathMappingPanel from "../mapping/PathMappingPanel";
+import { FileIcon } from "../../lib/fileIcons";
+import { formatFinderDate, formatFinderSize } from "../../lib/arrange";
+import {
+  compareSortValues,
+  moveColumnId,
+  orderColumns,
+  toggleSort,
+  type ColumnDef,
+  type SortState,
+} from "../../lib/columns";
+import { showContextMenu, type MenuEntry } from "../../lib/nativeMenu";
+import OverflowBar from "../shell/OverflowBar";
+import { measureText, uiFont } from "../../lib/textMeasure";
+import { useColumnLayout } from "../../hooks/useColumnLayout";
+import TableHeader from "./shared/TableHeader";
 
 interface Props {
   files: FileRecord[];
@@ -15,34 +31,10 @@ interface Props {
   onMappingChanged?: () => void;
 }
 
-type SortDir = "asc" | "desc" | "default";
-
 interface IndexingProgress {
   location_id: string;
   files_scanned: number;
   done: boolean;
-}
-
-function formatSize(bytes: number | null | undefined): string {
-  if (bytes == null) return "—";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
-}
-
-function formatDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
 }
 
 function fileName(filePath: string): string {
@@ -55,19 +47,89 @@ function fileExtension(filePath: string): string {
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 }
 
-const STANDARD_COLS = ["Name", "Ext", "Path", "Type", "Size", "Created", "Modified"];
+// Standard columns, in display order. Name is always shown.
+const STANDARD_COLUMNS: ColumnDef[] = [
+  { id: "name", label: "Name", weight: 3, minWidth: 140, reorderable: false },
+  { id: "ext", label: "Ext", weight: 0.6, minWidth: 50 },
+  { id: "path", label: "Path", weight: 4, minWidth: 120 },
+  { id: "type", label: "Type", weight: 1.4, minWidth: 90 },
+  { id: "size", label: "Size", weight: 0.9, minWidth: 70, align: "right" },
+  { id: "created", label: "Created", weight: 1.2, minWidth: 100 },
+  { id: "modified", label: "Modified", weight: 1.2, minWidth: 100 },
+];
+const TAGS_COLUMN: ColumnDef = { id: "tags", label: "Tags", weight: 2, minWidth: 120, sortable: false };
+const PROP_PREFIX = "prop:";
 
-const COL_HEAD =
-  "px-3 py-2 text-left text-xs font-medium text-neutral-400 uppercase tracking-wide cursor-pointer select-none hover:text-neutral-200 transition-colors whitespace-nowrap";
+function propertyColumn(name: string): ColumnDef {
+  return { id: PROP_PREFIX + name, label: name, weight: 1.4, minWidth: 90 };
+}
 
-const COL_HEAD_PASSIVE =
-  "px-3 py-2 text-left text-xs font-medium text-neutral-400 uppercase tracking-wide select-none whitespace-nowrap";
+function sortValue(file: FileRecord, key: string): string | number | null | undefined {
+  if (key.startsWith(PROP_PREFIX)) {
+    const value = (file.metadata as Record<string, unknown> | null)?.[key.slice(PROP_PREFIX.length)];
+    return value == null ? null : String(value);
+  }
+  switch (key) {
+    case "name":
+      return fileName(file.file_path);
+    case "ext":
+      return fileExtension(file.file_path);
+    case "path":
+      return file.relative_path ?? file.file_path;
+    case "type":
+      return file.file_type;
+    case "size":
+      return file.file_size;
+    case "created":
+      return file.timestamp;
+    case "modified":
+      return file.modified_at;
+    default:
+      return null;
+  }
+}
+
+/** Rendered width of a cell's content, for double-click-to-fit. */
+function measureCell(file: FileRecord, key: string): number {
+  if (key === "tags") {
+    const tags = Array.isArray(file.tags) ? file.tags : [];
+    const shown = tags.slice(0, MAX_TAGS_SHOWN);
+    const pills = [...shown];
+    if (tags.length > MAX_TAGS_SHOWN) pills.push(`+${tags.length - MAX_TAGS_SHOWN}`);
+    const pillFont = uiFont(11);
+    // each pill: text + px-1.5 padding; gap-1 between pills
+    return pills.reduce((sum, p, i) => sum + measureText(p, pillFont) + 12 + (i > 0 ? 4 : 0), 0);
+  }
+  const body = uiFont(13);
+  if (key === "name") return measureText(fileName(file.file_path), body) + 22; // icon + gap
+  if (key.startsWith(PROP_PREFIX)) {
+    const value = (file.metadata as Record<string, unknown> | null)?.[key.slice(PROP_PREFIX.length)];
+    return measureText(value != null ? String(value) : "—", body);
+  }
+  const text: Record<string, string> = {
+    ext: fileExtension(file.file_path),
+    path: file.relative_path ?? file.file_path,
+    type: file.file_type ?? "",
+    size: formatFinderSize(file.file_size),
+    created: formatFinderDate(file.timestamp),
+    modified: formatFinderDate(file.modified_at),
+  };
+  return measureText(text[key] ?? "", body);
+}
+
+const CELL = "shrink-0 px-3 truncate whitespace-nowrap";
+// Finder list metrics: 20pt rows, rounded stripes inset 10px.
+const ROW_HEIGHT = 20;
+const INSET = 10;
+
+const TOOLBAR_BUTTON = "px-2.5 py-1 text-xs rounded-md border whitespace-nowrap transition-colors";
+const TOOLBAR_BUTTON_IDLE = "border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-600";
+const TOOLBAR_BUTTON_ACTIVE = "border-blue-500/60 text-blue-400 hover:text-blue-300 hover:border-blue-400";
+const DEFAULT_SORT: SortState = { key: "path", direction: "asc" };
 
 export default function LocationDatabaseView({ files, locationId, onMappingChanged }: Props) {
   const [search, setSearch] = useState("");
-  // sortKey is a standard field name or "prop:<name>"
-  const [sortKey, setSortKey] = useState<string>("relative_path");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [indexing, setIndexing] = useState<{
     scanned: number;
@@ -79,37 +141,42 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
   const [hasMappings, setHasMappings] = useState(false);
 
   // Column visibility
-  const [columnsOpen, setColumnsOpen] = useState(false);
-  const columnsRef = useRef<HTMLDivElement>(null);
+  const [hiddenStandard, setHiddenStandard] = useState<string[]>([]);
+  const [columnOrder, setColumnOrder] = useState<string[]>([]);
   const [showTags, setShowTags] = useState(false);
   const [visibleProperties, setVisibleProperties] = useState<string[]>([]);
   const [availableProperties, setAvailableProperties] = useState<string[]>([]);
 
-  const parentRef = useRef<HTMLDivElement>(null);
-  const headerScrollRef = useRef<HTMLDivElement>(null);
-
   // Reset view state and load column prefs when switching locations
   useEffect(() => {
     setSearch("");
-    setSortKey("relative_path");
-    setSortDir("asc");
+    setSort(DEFAULT_SORT);
     setSelectedId(null);
     setIndexing(null);
     setReindexing(false);
     setReindexError(null);
     setMappingOpen(false);
-    setColumnsOpen(false);
 
     const savedTags =
       localStorage.getItem(`col-tags-${locationId}`) === "true";
     let savedProps: string[] = [];
+    let savedHidden: string[] = [];
+    let savedOrder: string[] = [];
     try {
       savedProps = JSON.parse(
         localStorage.getItem(`col-props-${locationId}`) ?? "[]"
       );
+      savedHidden = JSON.parse(
+        localStorage.getItem(`col-hidden-${locationId}`) ?? "[]"
+      );
+      savedOrder = JSON.parse(
+        localStorage.getItem(`col-order-${locationId}`) ?? "[]"
+      );
     } catch {}
     setShowTags(savedTags);
     setVisibleProperties(savedProps);
+    setHiddenStandard(savedHidden);
+    setColumnOrder(savedOrder);
   }, [locationId]);
 
   useEffect(() => {
@@ -152,21 +219,6 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
     };
   }, [locationId]);
 
-  // Close columns popover on outside click
-  useEffect(() => {
-    if (!columnsOpen) return;
-    function handleOutside(e: MouseEvent) {
-      if (
-        columnsRef.current &&
-        !columnsRef.current.contains(e.target as Node)
-      ) {
-        setColumnsOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleOutside);
-    return () => document.removeEventListener("mousedown", handleOutside);
-  }, [columnsOpen]);
-
   async function handleReindex() {
     setReindexing(true);
     setReindexError(null);
@@ -178,6 +230,15 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
       setReindexing(false);
       setIndexing(null);
     }
+  }
+
+  function toggleStandard(id: string) {
+    if (id === "name") return;
+    const next = hiddenStandard.includes(id)
+      ? hiddenStandard.filter((c) => c !== id)
+      : [...hiddenStandard, id];
+    setHiddenStandard(next);
+    localStorage.setItem(`col-hidden-${locationId}`, JSON.stringify(next));
   }
 
   function toggleShowTags() {
@@ -194,22 +255,59 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
     localStorage.setItem(`col-props-${locationId}`, JSON.stringify(next));
   }
 
-  // Bi-directional scroll sync: header and body are both real scroll containers
-  // so scrollLeft assignment works in WebKit. Setting scrollLeft to an already-
-  // current value never fires another scroll event, so there is no loop.
-  useEffect(() => {
-    const header = headerScrollRef.current;
-    const body = parentRef.current;
-    if (!header || !body) return;
-    function syncBodyFromHeader() { body!.scrollLeft = header!.scrollLeft; }
-    function syncHeaderFromBody() { header!.scrollLeft = body!.scrollLeft; }
-    header.addEventListener("scroll", syncBodyFromHeader);
-    body.addEventListener("scroll", syncHeaderFromBody);
-    return () => {
-      header.removeEventListener("scroll", syncBodyFromHeader);
-      body.removeEventListener("scroll", syncHeaderFromBody);
-    };
-  }, []);
+  const columns = useMemo(
+    () =>
+      orderColumns(
+        [
+          ...STANDARD_COLUMNS.filter((c) => !hiddenStandard.includes(c.id)),
+          ...(showTags ? [TAGS_COLUMN] : []),
+          ...visibleProperties.map(propertyColumn),
+        ],
+        columnOrder
+      ),
+    [hiddenStandard, showTags, visibleProperties, columnOrder]
+  );
+
+  function handleReorder(columnId: string, targetIndex: number) {
+    const visibleIds = moveColumnId(columns.map((c) => c.id), columnId, targetIndex);
+    // Keep saved positions of currently hidden columns after the visible ones.
+    const next = [...visibleIds, ...columnOrder.filter((id) => !visibleIds.includes(id))];
+    setColumnOrder(next);
+    localStorage.setItem(`col-order-${locationId}`, JSON.stringify(next));
+  }
+  const layout = useColumnLayout(
+    columns,
+    `db-${locationId}`,
+    (key) => files.map((f) => measureCell(f, key)),
+    INSET
+  );
+
+  function columnMenuEntries(): MenuEntry[] {
+    return [
+      ...STANDARD_COLUMNS.map((c) => ({
+        type: "check" as const,
+        text: c.label,
+        checked: !hiddenStandard.includes(c.id),
+        enabled: c.id !== "name",
+        action: () => toggleStandard(c.id),
+      })),
+      { type: "separator" },
+      { type: "check", text: "Tags", checked: showTags, action: toggleShowTags },
+      ...availableProperties.map((name) => ({
+        type: "check" as const,
+        text: name,
+        checked: visibleProperties.includes(name),
+        action: () => toggleProperty(name),
+      })),
+      { type: "separator" },
+      { type: "item", text: "Size All Columns to Fit", action: layout.fitAll },
+    ];
+  }
+
+  function handleHeaderMenu(e: React.MouseEvent) {
+    e.preventDefault();
+    showContextMenu(columnMenuEntries());
+  }
 
   const filtered = files.filter((f) => {
     if (!search) return true;
@@ -219,215 +317,119 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
     return name.includes(q) || rel.includes(q);
   });
 
-  const sorted = [...filtered].sort((a, b) => {
-    if (sortDir === "default") return 0;
-
-    let av: string | number | null = null;
-    let bv: string | number | null = null;
-
-    if (sortKey.startsWith("prop:")) {
-      const propName = sortKey.slice(5);
-      const am = a.metadata as Record<string, unknown> | null;
-      const bm = b.metadata as Record<string, unknown> | null;
-      av = (am?.[propName] as string) ?? null;
-      bv = (bm?.[propName] as string) ?? null;
-      // Nulls last for asc, nulls first for desc
-      if (av == null && bv == null) return 0;
-      if (av == null) return sortDir === "asc" ? 1 : -1;
-      if (bv == null) return sortDir === "asc" ? -1 : 1;
-    } else {
-      switch (sortKey) {
-        case "file_name":
-          av = fileName(a.file_path);
-          bv = fileName(b.file_path);
-          break;
-        case "relative_path":
-          av = a.relative_path ?? a.file_path;
-          bv = b.relative_path ?? b.file_path;
-          break;
-        case "file_type":
-          av = a.file_type ?? "";
-          bv = b.file_type ?? "";
-          break;
-        case "file_size":
-          av = a.file_size ?? -1;
-          bv = b.file_size ?? -1;
-          break;
-        case "timestamp":
-          av = a.timestamp ?? "";
-          bv = b.timestamp ?? "";
-          break;
-        case "modified_at":
-          av = a.modified_at ?? "";
-          bv = b.modified_at ?? "";
-          break;
-      }
-    }
-
-    if (av == null) av = "";
-    if (bv == null) bv = "";
-    const cmp =
-      typeof av === "number" && typeof bv === "number"
-        ? av - bv
-        : String(av).localeCompare(String(bv));
-    return sortDir === "asc" ? cmp : -cmp;
-  });
-
-  function handleSortClick(key: string) {
-    if (sortKey !== key) {
-      setSortKey(key);
-      setSortDir("asc");
-    } else {
-      setSortDir((prev) =>
-        prev === "asc" ? "desc" : prev === "desc" ? "default" : "asc"
-      );
-    }
-  }
-
-  function sortIndicator(key: string) {
-    if (sortKey !== key) return null;
-    if (sortDir === "asc") return " ↑";
-    if (sortDir === "desc") return " ↓";
-    return null;
-  }
+  const sorted = [...filtered].sort((a, b) =>
+    compareSortValues(sortValue(a, sort.key), sortValue(b, sort.key), sort.direction)
+  );
 
   const extraColCount = (showTags ? 1 : 0) + visibleProperties.length;
 
-  // Minimum table width so header and body share the same horizontal scroll extent.
-  // Name=208 Ext=80 Path=240 Type=112 Size=96 Created=112 Modified=112 + optionals
-  const minTableWidth =
-    208 + 80 + 240 + 112 + 96 + 112 + 112 +
-    (showTags ? 160 : 0) +
-    visibleProperties.length * 128;
-
   const rowVirtualizer = useVirtualizer({
     count: sorted.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 36,
+    getScrollElement: () => layout.container,
+    estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
+
+  function renderCell(col: ColumnDef, file: FileRecord) {
+    const style = { width: layout.widths[col.id] };
+    if (col.id.startsWith(PROP_PREFIX)) {
+      const value = (file.metadata as Record<string, unknown> | null)?.[col.id.slice(PROP_PREFIX.length)];
+      return (
+        <div key={col.id} style={style} className={`${CELL} ${value != null ? "text-neutral-100" : "text-neutral-500"}`}>
+          {value != null ? String(value) : "—"}
+        </div>
+      );
+    }
+    switch (col.id) {
+      case "name":
+        return (
+          <div key={col.id} style={style} className={`${CELL} flex items-center gap-1.5 text-neutral-100`}>
+            <FileIcon path={file.file_path} mimeType={file.file_type} size={16} />
+            <span className="truncate">{fileName(file.file_path)}</span>
+          </div>
+        );
+      case "ext":
+        return <div key={col.id} style={style} className={`${CELL} text-neutral-400`}>{fileExtension(file.file_path)}</div>;
+      case "path":
+        return (
+          <div key={col.id} style={style} className={`${CELL} text-neutral-400`} title={file.relative_path ?? file.file_path}>
+            {file.relative_path ?? file.file_path}
+          </div>
+        );
+      case "type":
+        return <div key={col.id} style={style} className={`${CELL} text-neutral-400`}>{file.file_type ?? ""}</div>;
+      case "size":
+        return <div key={col.id} style={style} className={`${CELL} text-right text-neutral-400`}>{formatFinderSize(file.file_size)}</div>;
+      case "created":
+        return <div key={col.id} style={style} className={`${CELL} text-neutral-400`}>{formatFinderDate(file.timestamp)}</div>;
+      case "modified":
+        return <div key={col.id} style={style} className={`${CELL} text-neutral-400`}>{formatFinderDate(file.modified_at)}</div>;
+      case "tags":
+        return (
+          <div key={col.id} style={style} className={`${CELL} flex items-center`}>
+            <TagPills tags={Array.isArray(file.tags) ? file.tags : []} />
+          </div>
+        );
+      default:
+        return null;
+    }
+  }
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
       {/* Header */}
-      <div className="flex items-center gap-4 px-4 py-3 border-b border-neutral-700/60 shrink-0">
-        <div className="flex-1 min-w-0">
-          <span className="text-neutral-500 text-xs">
-            {sorted.length.toLocaleString()} files
-          </span>
-        </div>
+      <div className="flex items-center gap-3 px-4 py-2.5 border-b border-neutral-700/60 shrink-0">
+        <span className="flex-1 min-w-0 truncate whitespace-nowrap text-neutral-500 text-xs">
+          {sorted.length.toLocaleString()} files
+        </span>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search files…"
-          className="w-52 px-3 py-1.5 bg-neutral-800 border border-neutral-700 rounded-md text-xs text-neutral-100 placeholder-neutral-600 focus:outline-none focus:border-blue-500 transition-colors"
+          className="min-w-[120px] px-3 py-1 bg-neutral-800 border border-neutral-700 rounded-md text-xs text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-blue-500 transition-colors"
+          style={{ flex: "0 1 208px" }}
         />
-        <button
-          onClick={() => setMappingOpen(true)}
-          className={`px-2.5 py-1.5 text-xs rounded border transition-colors shrink-0 ${
-            hasMappings
-              ? "border-blue-500/60 text-blue-400 hover:text-blue-300 hover:border-blue-400"
-              : "border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-600"
-          }`}
-        >
-          {hasMappings ? "● Map Structure" : "Map Structure"}
-        </button>
-        <button
-          onClick={handleReindex}
-          disabled={reindexing}
-          className="px-2.5 py-1.5 text-xs rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-600 disabled:opacity-50 transition-colors shrink-0"
-        >
-          {reindexing ? "Indexing…" : "Re-index"}
-        </button>
-
-        {/* Columns button + popover */}
-        <div ref={columnsRef} className="relative shrink-0">
-          <button
-            onClick={() => setColumnsOpen((v) => !v)}
-            className={`px-2.5 py-1.5 text-xs rounded border transition-colors ${
-              extraColCount > 0 || columnsOpen
-                ? "border-blue-500/60 text-blue-400 hover:text-blue-300 hover:border-blue-400"
-                : "border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-600"
-            }`}
-          >
-            {extraColCount > 0 ? `Columns (${extraColCount})` : "Columns"}
-          </button>
-
-          {columnsOpen && (
-            <div className="absolute right-0 top-full mt-1 z-20 w-56 bg-neutral-900 border border-neutral-700/60 rounded-lg shadow-xl py-2">
-              {/* Standard section */}
-              <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-neutral-600">
-                Standard
-              </div>
-              {STANDARD_COLS.map((label) => (
-                <div
-                  key={label}
-                  className="flex items-center gap-2 px-3 py-1.5 opacity-40"
+        <OverflowBar
+          items={[
+            {
+              id: "map",
+              node: (
+                <button
+                  onClick={() => setMappingOpen(true)}
+                  className={`${TOOLBAR_BUTTON} ${hasMappings ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
                 >
-                  <span className="w-3.5 h-3.5 rounded border border-neutral-500 flex items-center justify-center text-[9px] text-neutral-300 shrink-0">
-                    ✓
-                  </span>
-                  <span className="text-xs text-neutral-400">{label}</span>
-                </div>
-              ))}
-
-              <div className="my-1.5 border-t border-neutral-800" />
-
-              {/* Metadata section */}
-              <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-widest text-neutral-600">
-                Metadata
-              </div>
-              <label className="flex items-center gap-2 px-3 py-1.5 hover:bg-neutral-800/60 cursor-pointer">
-                <span
-                  className={`w-3.5 h-3.5 rounded border flex items-center justify-center text-[9px] shrink-0 transition-colors ${
-                    showTags
-                      ? "bg-blue-500 border-blue-500 text-white"
-                      : "border-neutral-600 text-transparent"
-                  }`}
+                  {hasMappings ? "● Map Structure" : "Map Structure"}
+                </button>
+              ),
+              menu: [{ type: "item", text: "Map Structure…", action: () => setMappingOpen(true) }],
+            },
+            {
+              id: "reindex",
+              node: (
+                <button
+                  onClick={handleReindex}
+                  disabled={reindexing}
+                  className={`${TOOLBAR_BUTTON} ${TOOLBAR_BUTTON_IDLE} disabled:opacity-50`}
                 >
-                  ✓
-                </span>
-                <span className="text-xs text-neutral-300">Tags</span>
-                <input
-                  type="checkbox"
-                  className="sr-only"
-                  checked={showTags}
-                  onChange={toggleShowTags}
-                />
-              </label>
-              {availableProperties.length === 0 ? (
-                <p className="px-3 pt-1 pb-2 text-[11px] text-neutral-600 leading-snug">
-                  No properties mapped yet — use Map Structure to assign folder
-                  levels
-                </p>
-              ) : (
-                availableProperties.map((name) => (
-                  <label
-                    key={name}
-                    className="flex items-center gap-2 px-3 py-1.5 hover:bg-neutral-800/60 cursor-pointer"
-                  >
-                    <span
-                      className={`w-3.5 h-3.5 rounded border flex items-center justify-center text-[9px] shrink-0 transition-colors ${
-                        visibleProperties.includes(name)
-                          ? "bg-blue-500 border-blue-500 text-white"
-                          : "border-neutral-600 text-transparent"
-                      }`}
-                    >
-                      ✓
-                    </span>
-                    <span className="text-xs text-neutral-300">{name}</span>
-                    <input
-                      type="checkbox"
-                      className="sr-only"
-                      checked={visibleProperties.includes(name)}
-                      onChange={() => toggleProperty(name)}
-                    />
-                  </label>
-                ))
-              )}
-            </div>
-          )}
-        </div>
+                  {reindexing ? "Indexing…" : "Re-index"}
+                </button>
+              ),
+              menu: [{ type: "item", text: "Re-index", enabled: !reindexing, action: handleReindex }],
+            },
+            {
+              id: "columns",
+              node: (
+                <button
+                  onClick={() => showContextMenu(columnMenuEntries())}
+                  className={`${TOOLBAR_BUTTON} ${extraColCount > 0 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
+                >
+                  {extraColCount > 0 ? `Columns (${extraColCount})` : "Columns"}
+                </button>
+              ),
+              menu: [{ type: "submenu", text: "Columns", items: columnMenuEntries() }],
+            },
+          ]}
+        />
       </div>
 
       {reindexError && (
@@ -446,170 +448,69 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
         </div>
       )}
 
-      <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      {/* Table header — real scroll container so scrollLeft is writable in WebKit;
-          scrollbar hidden via .scrollbar-none; position driven by body scroll */}
-      <div
-        ref={headerScrollRef}
-        className="scrollbar-none shrink-0 border-b border-neutral-700/60 bg-neutral-800/30 overflow-x-scroll overflow-y-hidden"
-      >
-        <div className="flex" style={{ minWidth: minTableWidth }}>
-          <button
-            className={`${COL_HEAD} w-52 shrink-0`}
-            onClick={() => handleSortClick("file_name")}
-          >
-            Name{sortIndicator("file_name")}
-          </button>
-          <div className={`${COL_HEAD_PASSIVE} w-20 shrink-0`}>Ext</div>
-          <button
-            className={`${COL_HEAD} flex-1 min-w-0`}
-            onClick={() => handleSortClick("relative_path")}
-          >
-            Path{sortIndicator("relative_path")}
-          </button>
-          <button
-            className={`${COL_HEAD} w-28 shrink-0`}
-            onClick={() => handleSortClick("file_type")}
-          >
-            Type{sortIndicator("file_type")}
-          </button>
-          <button
-            className={`${COL_HEAD} w-24 shrink-0 text-right`}
-            onClick={() => handleSortClick("file_size")}
-          >
-            Size{sortIndicator("file_size")}
-          </button>
-          <button
-            className={`${COL_HEAD} w-28 shrink-0`}
-            onClick={() => handleSortClick("timestamp")}
-          >
-            Created{sortIndicator("timestamp")}
-          </button>
-          <button
-            className={`${COL_HEAD} w-28 shrink-0`}
-            onClick={() => handleSortClick("modified_at")}
-          >
-            Modified{sortIndicator("modified_at")}
-          </button>
-          {showTags && (
-            <div className={`${COL_HEAD_PASSIVE} w-40 shrink-0`}>Tags</div>
-          )}
-          {visibleProperties.map((name) => (
-            <button
-              key={name}
-              className={`${COL_HEAD} w-32 shrink-0`}
-              onClick={() => handleSortClick(`prop:${name}`)}
-            >
-              {name}
-              {sortIndicator(`prop:${name}`)}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Body */}
-      {sorted.length === 0 && (
-        <div className="flex items-center justify-center flex-1 text-neutral-600 text-sm">
-          {files.length === 0
-            ? indexing && !indexing.done
-              ? "Indexing…"
-              : "No files indexed. Try Re-index."
-            : "No files match your search"}
-        </div>
-      )}
-      {sorted.length > 0 && (
-        <div ref={parentRef} className="flex-1 overflow-auto">
-          <div
-            style={{
-              height: `${rowVirtualizer.getTotalSize()}px`,
-              position: "relative",
-              minWidth: minTableWidth,
-            }}
-          >
-            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-              const file = sorted[virtualRow.index];
-              const isSelected = file.file_id === selectedId;
-              const name = fileName(file.file_path);
-              const tags = Array.isArray(file.tags) ? file.tags : [];
-              const metadata = file.metadata as Record<
-                string,
-                unknown
-              > | null;
-              return (
-                <div
-                  key={file.file_id}
-                  style={{
-                    position: "absolute",
-                    top: 0,
-                    left: 0,
-                    width: "100%",
-                    height: `${virtualRow.size}px`,
-                    transform: `translateY(${virtualRow.start}px)`,
-                  }}
-                  onClick={() =>
-                    setSelectedId(isSelected ? null : file.file_id)
-                  }
-                  className={`flex items-center border-b border-neutral-800/60 cursor-default transition-colors ${
-                    isSelected ? "bg-blue-900/30" : "hover:bg-neutral-800/40"
-                  }`}
-                >
-                  <div className="w-52 px-3 text-xs text-neutral-200 truncate shrink-0">
-                    {name}
-                  </div>
-                  <div className="w-20 px-3 shrink-0">
-                    {fileExtension(file.file_path) && (
-                      <span className="font-mono text-[10px] text-neutral-500 bg-neutral-800 px-1.5 py-0.5 rounded">
-                        {fileExtension(file.file_path)}
-                      </span>
-                    )}
-                  </div>
-                  <div
-                    className="flex-1 min-w-0 px-3 text-xs text-neutral-500 truncate"
-                    title={file.relative_path ?? file.file_path}
-                  >
-                    {file.relative_path ?? file.file_path}
-                  </div>
-                  <div className="w-28 px-3 shrink-0">
-                    {file.file_type && (
-                      <span className="font-mono text-[10px] text-neutral-500 bg-neutral-800 px-1.5 py-0.5 rounded truncate block max-w-full">
-                        {file.file_type}
-                      </span>
-                    )}
-                  </div>
-                  <div className="w-24 px-3 text-xs text-neutral-500 text-right shrink-0">
-                    {formatSize(file.file_size)}
-                  </div>
-                  <div className="w-28 px-3 text-xs text-neutral-500 shrink-0">
-                    {formatDate(file.timestamp)}
-                  </div>
-                  <div className="w-28 px-3 text-xs text-neutral-500 shrink-0">
-                    {formatDate(file.modified_at)}
-                  </div>
-                  {showTags && (
-                    <div className="w-40 px-3 shrink-0">
-                      <TagPills tags={tags} />
-                    </div>
-                  )}
-                  {visibleProperties.map((propName) => (
-                    <div
-                      key={propName}
-                      className="w-32 px-3 shrink-0 text-xs truncate"
-                    >
-                      {metadata?.[propName] != null ? (
-                        <span className="text-neutral-300">
-                          {String(metadata[propName])}
-                        </span>
-                      ) : (
-                        <span className="text-neutral-600">—</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
+      {/* Table: one scroll container, sticky header, virtualised rows */}
+      <div ref={layout.setContainer} className="flex-1 min-h-0 overflow-auto">
+        <TableHeader
+          columns={columns}
+          widths={layout.widths}
+          contentWidth={layout.contentWidth}
+          sort={sort}
+          onSort={(key) => setSort((s) => toggleSort(s, key))}
+          onResizeStart={layout.startResize}
+          onResetColumn={layout.resetColumn}
+          onContextMenu={handleHeaderMenu}
+          onReorder={handleReorder}
+          inset={INSET}
+        />
+        {sorted.length === 0 ? (
+          <div className="flex items-center justify-center py-16 text-neutral-500 text-sm">
+            {files.length === 0
+              ? indexing && !indexing.done
+                ? "Indexing…"
+                : "No files indexed. Try Re-index."
+              : "No files match your search"}
           </div>
-        </div>
-      )}
+        ) : (
+          <div style={{ paddingLeft: INSET, paddingRight: INSET }}>
+            <div
+              style={{
+                height: `${rowVirtualizer.getTotalSize()}px`,
+                width: layout.contentWidth,
+                position: "relative",
+              }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const file = sorted[virtualRow.index];
+                const isSelected = file.file_id === selectedId;
+                return (
+                  <div
+                    key={file.file_id}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      height: `${virtualRow.size}px`,
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                    onClick={() =>
+                      setSelectedId(isSelected ? null : file.file_id)
+                    }
+                    className={`flex items-center rounded-md text-body cursor-default ${
+                      isSelected
+                        ? "native-selected"
+                        : virtualRow.index % 2 === 1
+                          ? "bg-neutral-850"
+                          : ""
+                    }`}
+                  >
+                    {columns.map((col) => renderCell(col, file))}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {mappingOpen && (
@@ -641,17 +542,17 @@ function TagPills({ tags }: { tags: string[] }) {
   const shown = tags.slice(0, MAX_TAGS_SHOWN);
   const overflow = tags.length - MAX_TAGS_SHOWN;
   return (
-    <div className="flex flex-wrap gap-1 overflow-hidden">
+    <div className="flex flex-nowrap items-center gap-1 overflow-hidden">
       {shown.map((tag) => (
         <span
           key={tag}
-          className="font-mono text-[10px] text-neutral-400 bg-neutral-800 px-1.5 py-0.5 rounded whitespace-nowrap shrink-0"
+          className="inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 text-neutral-300"
         >
           {tag}
         </span>
       ))}
       {overflow > 0 && (
-        <span className="font-mono text-[10px] text-neutral-600 bg-neutral-800/60 px-1.5 py-0.5 rounded shrink-0">
+        <span className="inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 text-neutral-500">
           +{overflow}
         </span>
       )}

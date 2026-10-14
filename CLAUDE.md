@@ -64,6 +64,7 @@ Core constraint: files on disk are never moved or renamed by virtual folder oper
 - State management: React context + useReducer — do not introduce an external state library unless complexity demands it
 - No component should compute virtual folder membership — components receive folder contents as data from Rust commands and render them
 - Platform-specific behaviour (sidebar label, breadcrumb style, trash verb) lives in `platform.ts` — never branch on `navigator.platform` inline in a component
+- **Always use the OS defaults** (see "Native Fidelity Standard" in the spec): system font and sizes, the OS palette (Tailwind's neutral/blue/… scales are remapped to Finder colours in `index.css` — don't hardcode colours), native file/folder icons via `FileIcon`/`FolderIcon`, SF Symbols via `SymbolIcon` (never hand-drawn SVG glyphs, except as fallbacks), native menus via `showContextMenu`. Match metrics against the native file manager rather than guessing
 
 ---
 

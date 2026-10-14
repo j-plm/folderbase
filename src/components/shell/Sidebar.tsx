@@ -1,11 +1,44 @@
 import { useEffect, useState } from "react";
+import type React from "react";
 import { useNavigation } from "../../contexts/NavigationContext";
 import { getLocations, clearDatabase, deleteLocation } from "../../lib/commands";
 import type { Location } from "../../lib/commands";
 import MapLocationModal from "./MapLocationModal";
+import { SymbolIcon } from "../../lib/fileIcons";
+
+const MIN_WIDTH = 150;
+const MAX_WIDTH = 400;
+const DEFAULT_WIDTH = 220;
+const WIDTH_KEY = "sidebar-width";
+
+function loadWidth(): number {
+  const saved = Number(localStorage.getItem(WIDTH_KEY));
+  return saved >= MIN_WIDTH && saved <= MAX_WIDTH ? saved : DEFAULT_WIDTH;
+}
 
 export default function Sidebar() {
   const { activeLocationId, setActiveLocation } = useNavigation();
+  const [width, setWidth] = useState(loadWidth);
+
+  function startResize(e: React.MouseEvent) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = width;
+    let latest = startWidth;
+    function onMove(ev: MouseEvent) {
+      latest = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + ev.clientX - startX));
+      setWidth(latest);
+    }
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      localStorage.setItem(WIDTH_KEY, String(latest));
+    }
+    document.body.style.cursor = "col-resize";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
   const [locations, setLocations] = useState<Location[]>([]);
   const [mapOpen, setMapOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
@@ -63,16 +96,24 @@ export default function Sidebar() {
   }
 
   return (
-    <div className="w-[220px] shrink-0 bg-neutral-800 border-r border-neutral-700/60 flex flex-col text-sm">
-      <div className="px-3 pt-3 pb-1">
-        <p className="text-neutral-500 text-xs uppercase tracking-wide font-medium">
-          Locations
-        </p>
+    <div
+      style={{ width }}
+      className="relative shrink-0 bg-neutral-800 border-r border-neutral-700/60 flex flex-col text-sm"
+    >
+      {/* Drag the right edge to resize */}
+      <div
+        onMouseDown={startResize}
+        className="absolute -right-[3px] top-0 z-20 h-full w-[6px] cursor-col-resize"
+      />
+      {/* Title bar area: the window's traffic lights sit here */}
+      <div data-tauri-drag-region className="h-[52px] shrink-0" />
+      <div className="px-4 pt-1 pb-1">
+        <p className="text-neutral-500 text-[11px] font-semibold">Locations</p>
       </div>
 
       <div className="flex flex-col gap-px px-2 flex-1 overflow-y-auto py-1">
         {locations.length === 0 && (
-          <p className="text-neutral-600 text-xs px-2 py-1">No locations mapped</p>
+          <p className="text-neutral-500 text-xs px-2 py-1">No locations mapped</p>
         )}
         {locations.map((loc) => {
           const isActive = loc.location_id === activeLocationId;
@@ -110,31 +151,19 @@ export default function Sidebar() {
             <div key={loc.location_id} className="group relative flex items-center">
               <button
                 onClick={() => setActiveLocation(loc.location_id)}
-                className={`flex items-center gap-2 w-full text-left px-2 py-1.5 rounded transition-colors pr-7 ${
-                  isActive
-                    ? "bg-neutral-700 text-neutral-100"
-                    : "text-neutral-400 hover:text-neutral-200 hover:bg-neutral-700/50"
+                className={`flex items-center gap-2 w-full text-left px-2 h-7 rounded-md pr-7 ${
+                  isActive ? "bg-neutral-700 text-blue-500" : "text-neutral-100"
                 }`}
               >
-                <svg
-                  className="shrink-0 w-3.5 h-3.5"
-                  viewBox="0 0 16 16"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <path
-                    d="M2 4a1 1 0 011-1h3.586a1 1 0 01.707.293L8.414 4.5H13a1 1 0 011 1V12a1 1 0 01-1 1H3a1 1 0 01-1-1V4z"
-                    fill="currentColor"
-                  />
-                </svg>
-                <span className="truncate text-xs">{loc.name}</span>
+                <SymbolIcon name="folder" size={17} className={isActive ? "text-blue-500" : "text-neutral-400"} />
+                <span className="truncate text-body">{loc.name}</span>
               </button>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   setConfirmDeleteId(loc.location_id);
                 }}
-                className="absolute right-1 opacity-0 group-hover:opacity-100 p-1 text-neutral-600 hover:text-red-400 transition-all text-sm leading-none"
+                className="absolute right-1 opacity-0 group-hover:opacity-100 p-1 text-neutral-500 hover:text-red-400 transition-all text-sm leading-none"
                 title="Remove location"
               >
                 ×
@@ -149,7 +178,7 @@ export default function Sidebar() {
           onClick={() => setMapOpen(true)}
           className="w-full flex items-center gap-1.5 px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-300 hover:bg-neutral-700/40 rounded transition-colors"
         >
-          <span className="text-base leading-none">+</span>
+          <SymbolIcon name="plus" size={12} fallback={<span className="text-base leading-none">+</span>} />
           <span>Map Location</span>
         </button>
 

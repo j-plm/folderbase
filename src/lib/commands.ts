@@ -338,3 +338,8 @@ export async function getMappingNodes(locationId: string): Promise<PathMappingNo
 export async function getLocationProperties(locationId: string): Promise<string[]> {
   return invoke<string[]>("get_location_properties", { locationId });
 }
+
+/** Native OS icon for a folder ("folder") or a file extension, as a PNG data URL. */
+export async function getNativeIcon(kind: string, size: number): Promise<string> {
+  return invoke<string>("get_native_icon", { kind, size });
+}

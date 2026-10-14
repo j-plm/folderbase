@@ -438,6 +438,24 @@ The virtual folder navigation experience is designed to be indistinguishable fro
 | Breadcrumb style | Click-through | Editable address bar | Both |
 | Address bar | Non-editable | Editable | Configurable |
 
+### Native Fidelity Standard
+
+The application must look and feel like the host operating system's own file manager — Finder on macOS, File Explorer on Windows. A user moving between the two should notice no difference in typography, spacing, colour, iconography, or control behaviour. **The rule is: always use the OS defaults.** Where the OS provides something, the app uses it rather than recreating it; where it must be recreated, it is measured against the native file manager and matched.
+
+| Concern | Standard | macOS implementation |
+|---------|----------|----------------------|
+| Fonts | The system UI font at the system's sizes and weights | SF Pro (`-apple-system`); 13pt body text, 11pt sidebar section headings, window title bold |
+| Colours | The system palette, including accent and selection colours | Finder's label, secondary-label, separator, sidebar and selection colours; solid accent-blue selection with white text in lists |
+| Appearance | Light and dark both supported, following the OS by default | View ▸ Appearance: Use System Setting / Light / Dark |
+| File and folder icons | The OS's own icon for each file type and for folders, never a drawn substitute | Rendered by the OS (`NSWorkspace` / `NSImage`) and cached per type and size |
+| Interface glyphs | The OS's symbol set for sidebar items, toolbar buttons, chevrons and similar | SF Symbols rendered by the OS and tinted with the current text colour |
+| Menus | Native OS menus for context menus, overflow and option menus | Native `NSMenu` (via Tauri), including checkmarks and submenus |
+| Window chrome | The OS's title bar and window controls, integrated as the native app does | Unified toolbar: traffic lights over the sidebar, toolbar draggable across its full width |
+| Metrics | Row heights, icon sizes, spacing and insets measured from the native file manager | List rows 20pt with 16pt icons and rounded stripes inset 10pt; icon view 64pt icons in fixed-width cells with fixed spacing |
+| Behaviour | Native interaction conventions | Click headers to sort, drag dividers to resize, double-click a divider to fit, right-click headers for column options, items that don't fit the toolbar move into a » menu |
+
+Windows follows the same rule with its own defaults: Segoe UI Variable, the Fluent palette and accent colour, shell icons (`SHGetFileInfo`), Fluent icon glyphs, and File Explorer's metrics. Platform differences live in the platform adapter and the native icon command, never in individual components.
+
 ### Application Shell Structure
 
 The app window is divided into three persistent regions: the icon rail, the contextual sidebar, and the main pane. The icon rail is always visible; the sidebar and main pane change based on the active context.
@@ -482,6 +500,7 @@ The toolbar sits above the main pane and contains:
 
 - **Breadcrumb / address bar**: reflects the current navigation path through the virtual layer hierarchy (e.g. `2024 → Rig-A → Component-B`). Style is platform-adaptive — click-through on macOS, editable on Windows
 - **View mode switcher**: Tiles | List | Columns | Database. Tiles, List, and Columns follow standard OS explorer behaviour. Database is an additional mode described below
+- **Group button**: the OS file manager's grouping and sorting menu, shown for Tiles, List and Columns
 - **Edit Structure toggle**: opens or closes the local view editor panel (see View Editor section)
 
 ### View Modes
@@ -489,6 +508,8 @@ The toolbar sits above the main pane and contains:
 #### Tiles, List, and Columns
 
 These three modes replicate standard OS explorer behaviour exactly. Folder items, file thumbnails, selection, drag-and-drop, and context menus all behave as the user would expect from their native OS. No virtual-folder-specific chrome is introduced into these modes beyond the breadcrumb path.
+
+All three share the native **Sort By** and **Group By** options, chosen from the toolbar's group button or by right-clicking the view's background. Grouping follows the OS file manager's buckets — on macOS, Kind (Documents, Images, PDF Documents, Movies, Music, Presentations, Spreadsheets, Developer, Other), Name, Date Modified, Date Created and Size.
 
 #### Database View
 

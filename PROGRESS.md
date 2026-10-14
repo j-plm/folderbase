@@ -1,6 +1,6 @@
 # Folderbase — Build Progress
 
-**Status: Metadata blob cleaned up — filesystem fields moved to dedicated columns; LocationDatabaseView polished**
+**Status: Native macOS look pass (light/dark, Finder colours, native icons, unified title bar); view editor bugs outstanding**
 
 ---
 
@@ -73,10 +73,70 @@
   - [x] `visibleProperties` filtered against `availableProperties` on every fetch — stale localStorage entries can no longer render phantom columns
   - [x] `Extension` added as a fixed standard column (derived from `file_path` in JS, rendered as monospace pill)
 
+- [x] **View editor** — tree editor for configuring views
+  - [x] `commands/views.rs` — `get_views`, `get_view_nodes`, `create_view`, `rename_view`, `delete_view` (cascades nodes), `create_view_node`, `update_view_node`, `delete_view_node` (deletes descendants), `reorder_view_nodes` (batch, transactional)
+  - [x] 8 integration tests in `tests/view_editor_tests.rs`; 55 total Rust tests passing
+  - [x] Shared tree components — `ViewTree`, `TreeNode` (add layer, add fork with branch value, move up/down, delete with confirmation), `PropertyPicker`
+  - [x] `LocalViewEditor` — side panel toggled by Edit Structure; "Current level" / "Full tree" scope toggle with current-node highlight; rename view
+  - [x] `MasterViewEditor` — full-window overlay from the icon rail; view list with create, rename, duplicate, delete (with confirmation); full tree editor; Escape closes
+  - [x] Both editors wired into `AppShell`
+
+- [x] **Native macOS look (pass 1)** — the app should map visually to the host OS file manager (Finder on macOS, File Explorer on Windows)
+  - [x] Light + dark appearance — View ▸ Appearance menu (Use System Setting / Light / Dark), default Light, persisted to `appearance` in the app config dir (`src-tauri/src/appearance.rs`, 4 unit tests); window theme drives `prefers-color-scheme`
+  - [x] Finder palette — `src/index.css` remaps Tailwind's neutral/gray/blue/red/green/amber scales to Finder colours via CSS variables, inverted in light mode, so existing dark-first class names work in both appearances
+  - [x] System font (SF), 13px body (`text-body`), dim greys raised to tertiary-label contrast
+  - [x] Unified title bar — `titleBarStyle: Overlay`, hidden title, traffic lights over the sidebar; 52px toolbar draggable across its full width (`data-tauri-drag-region` must be on the clicked element itself, so the title/breadcrumb elements carry it too); current location shown as bold window title
+  - [x] Native icons — `get_native_icon` command renders the real macOS icon (NSWorkspace / NSImageNameFolder) as PNG; `FileIcon` / `FolderIcon` in `fileIcons.tsx` cache per kind+size and fall back to SVG on other platforms; used in Tiles, List, Columns, Database and the Map Structure folder browser
+  - [x] Finder-style lists — 24px rows, alternating stripes, solid accent selection with white text, plain secondary-colour metadata, sentence-case column headers
+  - [x] 63 Rust tests + 10 frontend tests passing
+- [x] **Finder-style tables and tiles**
+  - [x] `src/lib/columns.ts` — `fitColumnWidths` (fit to width by weight, respecting min widths and user-resized columns), `resizeColumn`, `contentFitWidth`, `toggleSort`, `compareSortValues` (natural order, empties last); 12 Vitest tests
+  - [x] `useColumnLayout` hook — measures the scroll container, drag-to-resize dividers (a drag pins every column at its current width, so only the dragged column changes and the table can outgrow the window and scroll), double-click a divider to size that column to its widest content (canvas text measurement via `src/lib/textMeasure.ts`, works with virtualised rows), widths persisted per table in localStorage (`colw-<key>`)
+  - [x] Shared `TableHeader` — sticky, click to sort with chevron, resize handles; text never wraps (cells truncate)
+  - [x] `FileTable` — List view's Finder-order table (Columns originally shared it; now has its own column browser) (Name, Date Modified, Size, Kind) with sorting, selection, and a "Size All Columns to Fit" header menu. Columns view is still a table placeholder, not Miller columns
+  - [x] Database view rebuilt on the same header — single scroll container (replaces header/body scroll sync); every standard column except Name can be hidden (`col-hidden-<locationId>`); right-clicking the header opens a native context menu (`src/lib/nativeMenu.ts`) to toggle columns, Tags and properties, or fit all columns
+  - [x] Resizable sidebar — drag its right edge (150–400px), width persisted (`sidebar-width`)
+  - [x] Toolbar overflow — `OverflowBar` measures its items with an invisible copy; items that don't fit move, from the end, into a » button that opens a native menu (`src/lib/overflow.ts`, 3 Vitest tests; `nativeMenu.ts` now supports submenus). Used for the view switcher (→ View ▸ as Tiles/List/…) and the Database bar (Map Structure, Re-index, Columns ▸). Search stays visible and shrinks to 120px
+  - [x] Database view: drag a header to reorder columns (Name stays first); blue drop indicator; order persisted per location (`col-order-<locationId>`). Helpers `orderColumns`, `moveColumnId`, `dropIndexAt` in `columns.ts` with tests
+  - [x] Database Columns button now opens the same native menu as right-clicking the header (HTML popover removed)
+  - [x] Sort + Group (Tiles, List, Columns) — `src/lib/arrange.ts` (`sortFiles`, `groupFiles`, `kindCategory`; 7 Vitest tests) and `ArrangementContext` (shared, persisted as `arrangement`). Toolbar group button (hidden in Database view) opens Group By options + Sort By ▸; right-clicking a view's background opens Group By ▸ / Sort By ▸. List header clicks drive the same sort. Groups: Kind (Documents, Images, PDF Documents, Movies, Music, Presentations, Spreadsheets, Developer, Other), Name (0–9, A–Z), Date Modified/Created (Today, Yesterday, Previous 7/30 Days, month, year), Size (ranges, largest first)
+  - [x] Finder metrics pass — List/Columns: 20pt rows and 16pt icons (measured from Finder), rounded stripes inset 10px, 28px header, quiet 56px group headings; Finder date ("Today at 05:58", "13 Aug 2026 at 13:07"), decimal sizes ("1.7 MB"), Finder kind names (`formatFinderDate`, `formatFinderSize`, `kindLabel` in `arrange.ts`). Tiles: 106px cells / 9px gap, 15px group headings with separators between groups, two-line labels with middle truncation keeping the extension (`src/lib/tileLabel.ts`, 4 tests). Group button uses Finder's outlined grid glyph
+  - [x] Native SF Symbols — `get_native_icon` accepts `symbol:<name>` (NSImage systemSymbolName, aspect-fitted); `SymbolIcon` uses the PNG as a CSS mask over `currentColor` so it takes our text colours. Sidebar locations use the native `folder` symbol; selected item turns accent blue like Finder
+  - [x] Native glyphs everywhere — group button (`square.grid.3x2` + `chevron.down`), overflow (`chevron.forward.2`), header sort (`chevron.up/down`), sidebar `plus` are SF Symbols; SVGs kept only as non-macOS fallbacks. Database view now uses Finder's 20pt rows, inset rounded stripes, and Finder date/size formats
+  - [x] **Standard adopted: always use the OS defaults** — written into the spec ("Native Fidelity Standard") and CLAUDE.md frontend conventions
+  - [x] Database tag pills — 16px tall in the system font (11px) so they sit inside 20pt rows
+  - [x] **Columns view rebuilt as Finder column view** (`components/views/columns/ColumnBrowser.tsx`, logic in `src/lib/columnBrowser.ts` with 9 tests): name-only rows (22pt, no stripes/metadata, single-line middle truncation via `middleTruncate`), folders show a chevron and open a new column, files open Finder's preview column, which fills the remaining width with the icon/image scaled to fit (native icon re-rendered in 32pt steps up to 512pt), then name, kind - size, Information with long dates (`formatLongDate`) and Tags; group headings have Finder's 25px gap above and no rule; active-column selection blue, ancestor selections grey; drag a column edge to resize, double-click to fit; new columns inherit the width of the column to their left; root width persisted; arrow-key navigation (↑↓ within a column, → into a folder, ← back, ⌘↓ opens); Sort By / Group By applied per column with folders on top (own "Folders" group when grouping). Takes a generic `BrowserNode` tree — locations currently supply a flat file list, so folders will appear once folder data is passed in
+  - [x] Tiles view — fixed 100px cells and fixed gaps (`repeat(auto-fill, 100px)`), so resizing changes how many tiles fit per row, not the spacing; Finder-style selection (grey icon backing, blue label)
+
 ---
 
 ## Up Next
-- [ ] View editor — tree editor for configuring views
+
+File opening & previews (one feature — both are about showing/opening file content the native way):
+- [ ] Content previews via Quick Look thumbnails (`QLThumbnailGenerator`) instead of type icons: Tiles, List/Columns row icons, and the Columns preview column (first page of PDFs/documents, image thumbnails); render on the Rust side like `get_native_icon`, cached
+- [ ] Quick Look panel: Space bar previews the selected file in every view
+- [ ] Consistent opening: double-click / ⌘↓ / ⌘O open with the default app in every view (Tiles, List, Columns, Database); Open With submenu; file context menu (Open, Quick Look, Get Info, Show in Finder)
+- [ ] Editable "Add Tags…" in the preview column
+
+Native look — next passes:
+- [ ] Windows: native icons via `SHGetFileInfo` and a File Explorer palette/layout (currently SVG fallback + mac palette)
+- [ ] Sidebar vibrancy (translucent sidebar like Finder) and SF Symbols-style sidebar glyphs
+- [ ] Finder-style toolbar controls (back/forward, icon segmented view switcher, search field)
+- [ ] Sweep remaining panels/modals (view editors, mapping panel, welcome, filter/preset bars) for native control styles
+- [ ] Tiles view selection styling (grey icon backing + blue label pill)
+
+View editor — remaining gaps against the spec and known bugs:
+- [ ] **Bug: reordering fails** — `reorderViewNodes` sends `{ nodeId, sortOrder }` but Rust `ReorderItem` expects `node_id` / `sort_order` (nested struct fields aren't auto-converted from camelCase), so ↑/↓ never persists
+- [ ] **Bug: duplicating a view can flatten it** — `handleDuplicate` in `MasterViewEditor` only sorts roots first, not parents-before-children, so deeper nodes whose parent hasn't been copied yet get attached at the root. Fix with a topological copy (ideally a single `duplicate_view` Rust command in a transaction, with tests)
+- [ ] **Bug: local editor ignores forks** — `findCurrentNodeId` in `LocalViewEditor` always takes the first non-fork child instead of matching path segments to `fork_value`, so "Current level" can show the wrong subtree in forked views
+- [ ] Delete node: offer "collapse children up" as well as removing the branch; warn only when files would become unclassified (currently always removes the whole branch with a generic confirmation)
+- [ ] Drag to reorder (currently ↑/↓ buttons only)
+- [ ] Duplicate view from the local editor (master editor only today)
+- [ ] Errors from editor commands are unhandled (no user feedback)
+
+Housekeeping:
+- [ ] Delete dead `DatabaseView.tsx` (`MainPane` only renders `LocationDatabaseView`)
+- [ ] Add a lint setup — `npm run lint` is referenced in CLAUDE.md but no script exists
 
 ---
 
@@ -90,6 +150,7 @@
 - `UNIQUE INDEX` on `files.file_path` enforces deduplication; `INSERT OR IGNORE` silently skips already-ingested files
 - Property bootstrapping uses `infer_value_type` heuristic: RFC3339/ISO-8601 values → "date", >20 distinct values → "free_text", otherwise → "enum"
 - `DatabaseView.tsx` is dead code — `MainPane` renders `LocationDatabaseView` exclusively; edits to `DatabaseView.tsx` have no effect
+- `.gitignore` excludes `node_modules/`, `dist/`, `src-tauri/target/`, `.DS_Store`; repo pushed to https://github.com/j-plm/folderbase (2026-10-13)
 - `files.metadata` blob is for user-defined and EXIF properties only — filesystem fields (`file_name`, `extension`, `size_bytes`, `created_at`) belong in dedicated columns; `get_location_properties` reads keys from the blob directly, so anything written there surfaces as a user-visible column
 
 ---

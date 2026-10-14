@@ -19,7 +19,7 @@ export default function MainPane() {
 
   if (loading && files.length === 0) {
     return (
-      <div className="flex items-center justify-center flex-1 text-neutral-600 text-sm">
+      <div className="flex items-center justify-center flex-1 text-neutral-500 text-sm">
         Loading…
       </div>
     );

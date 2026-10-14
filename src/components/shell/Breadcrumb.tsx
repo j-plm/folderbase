@@ -15,12 +15,12 @@ export default function Breadcrumb({ viewName }: Props) {
   function renderCrumb(label: string, crumbIndex: number) {
     const isCurrent = crumbIndex === lastIndex;
     return (
-      <span key={crumbIndex} className="flex items-center gap-1 min-w-0">
+      <span key={crumbIndex} data-tauri-drag-region className="flex items-center gap-1 min-w-0">
         {crumbIndex > 0 && (
-          <span className="text-neutral-600 shrink-0">/</span>
+          <span data-tauri-drag-region className="text-neutral-500 shrink-0">/</span>
         )}
         {isCurrent ? (
-          <span className="text-neutral-300 truncate">{label}</span>
+          <span data-tauri-drag-region className="text-[15px] font-semibold text-neutral-100 truncate">{label}</span>
         ) : (
           <button
             onClick={() => popToIndex(crumbIndex)}
@@ -35,6 +35,7 @@ export default function Breadcrumb({ viewName }: Props) {
 
   return (
     <nav
+      data-tauri-drag-region
       aria-label="breadcrumb"
       className="flex items-center gap-0.5 min-w-0 overflow-hidden text-sm"
     >

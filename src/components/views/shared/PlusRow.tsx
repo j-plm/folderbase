@@ -60,10 +60,10 @@ export default function PlusRow({ onConfirm, display }: PlusRowProps) {
         onClick={() => setEditing(true)}
         className="flex flex-col items-center gap-1 p-2 rounded-lg border border-dashed border-neutral-700 hover:border-neutral-500 hover:bg-neutral-800/50 transition-colors cursor-pointer"
       >
-        <div className="w-10 h-10 flex items-center justify-center text-neutral-600 hover:text-neutral-400 text-2xl leading-none">
+        <div className="w-10 h-10 flex items-center justify-center text-neutral-500 hover:text-neutral-400 text-2xl leading-none">
           +
         </div>
-        <span className="text-xs text-neutral-600">New folder</span>
+        <span className="text-xs text-neutral-500">New folder</span>
       </button>
     );
   }
@@ -89,7 +89,7 @@ export default function PlusRow({ onConfirm, display }: PlusRowProps) {
   return (
     <button
       onClick={() => setEditing(true)}
-      className="flex items-center gap-2 px-3 py-1.5 w-full text-left text-neutral-600 hover:text-neutral-400 hover:bg-neutral-800/50 transition-colors"
+      className="flex items-center gap-2 px-3 py-1.5 w-full text-left text-neutral-500 hover:text-neutral-400 hover:bg-neutral-800/50 transition-colors"
     >
       <span className="text-lg leading-none">+</span>
       <span className="text-sm">New folder</span>

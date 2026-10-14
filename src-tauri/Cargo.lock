@@ -910,9 +910,14 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 name = "folderbase"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "kamadak-exif",
  "mime_guess",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-graphics",
+ "objc2-foundation",
  "opener",
  "serde",
  "serde_json",
@@ -2300,6 +2305,7 @@ dependencies = [
  "block2",
  "objc2",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation",
 ]
 
