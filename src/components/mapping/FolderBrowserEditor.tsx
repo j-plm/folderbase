@@ -1,20 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { clearFolderLabel, setFolderLabel } from "../../lib/commands";
 import type { FolderTreeNode, PathMappingNode } from "../../lib/commands";
-import { FolderIcon } from "../../lib/fileIcons";
+import { SymbolIcon } from "../../lib/fileIcons";
+import { levelNodes, type FolderGroup, type Level, type LevelRendererProps } from "./levels";
+import MappingColumns from "./MappingColumns";
+import MappingTiles from "./MappingTiles";
 
-// ── Types ──────────────────────────────────────────────────────────────────
+type Mode = "tiles" | "columns";
 
-interface FolderGroup {
-  parentPath: string;
-  nodes: FolderTreeNode[];
-}
-
-interface Level {
-  depth: number;
-  groups: FolderGroup[];
-  selected: string[];
-}
+const MODE_KEY = "mapping-editor-mode";
+const MODES: { mode: Mode; label: string }[] = [
+  { mode: "tiles", label: "Tiles" },
+  { mode: "columns", label: "Columns" },
+];
 
 interface HistoryEntry {
   rootPath: string;
@@ -38,176 +36,72 @@ function findNode(tree: FolderTreeNode, path: string): FolderTreeNode | null {
   return null;
 }
 
-function getNodesAtRelativeDepth(root: FolderTreeNode, relDepth: number): FolderTreeNode[] {
-  if (relDepth <= 0) return [];
-  if (relDepth === 1) return root.children;
-  return root.children.flatMap((c) => getNodesAtRelativeDepth(c, relDepth - 1));
-}
-
 function buildInitialLevels(rootPath: string, tree: FolderTreeNode): Level[] {
   const root = findNode(tree, rootPath);
   if (!root || root.children.length === 0) return [];
-  return [{ depth: 1, groups: [{ parentPath: rootPath, nodes: root.children }], selected: [] }];
+  return [{ groups: [{ parentPath: rootPath, nodes: root.children }], selected: [] }];
 }
 
-function pKey(rootPath: string, levelDepth: number) {
-  return `${rootPath}::${levelDepth}`;
-}
-
-function initPropNames(tree: FolderTreeNode, mappings: PathMappingNode[]): Record<string, string> {
-  const result: Record<string, string> = {};
-  const seen = new Map<number, string>();
-  for (const m of mappings) {
-    if (!seen.has(m.depth)) seen.set(m.depth, m.property_name);
+function loadMode(): Mode {
+  try {
+    return localStorage.getItem(MODE_KEY) === "columns" ? "columns" : "tiles";
+  } catch {
+    return "tiles";
   }
-  for (const [absDepth, name] of seen) {
-    const editorDepth = absDepth - tree.depth;
-    if (editorDepth > 0) result[pKey(tree.folder_path, editorDepth)] = name;
-  }
-  return result;
-}
-
-// ── Sub-components ─────────────────────────────────────────────────────────
-
-function BrowserFolderIcon({ muted }: { muted?: boolean }) {
-  return <FolderIcon size={32} className={muted ? "opacity-50" : ""} />;
-}
-
-function FolderItem({
-  node,
-  isSelected,
-  onSelect,
-  onDrillIn,
-}: {
-  node: FolderTreeNode;
-  isSelected: boolean;
-  onSelect: () => void;
-  onDrillIn: () => void;
-}) {
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
-
-  function handleClick() {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    } else {
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        onSelect();
-      }, 220);
-    }
-  }
-
-  function handleDoubleClick() {
-    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-    onDrillIn();
-  }
-
-  return (
-    <div
-      onClick={handleClick}
-      onDoubleClick={handleDoubleClick}
-      title={node.folder_name}
-      className={`flex flex-col items-center gap-0.5 p-1.5 rounded cursor-pointer select-none transition-colors w-16 ${
-        isSelected
-          ? "bg-blue-500/15 border border-blue-500/40"
-          : "border border-transparent hover:bg-neutral-800/60"
-      }`}
-    >
-      <BrowserFolderIcon />
-      <span className={`text-[10px] leading-tight text-center w-full truncate transition-colors ${isSelected ? "text-blue-300" : "text-neutral-400"}`}>
-        {node.folder_name}
-      </span>
-    </div>
-  );
-}
-
-function PropNameInput({
-  value,
-  showSaved,
-  onChange,
-}: {
-  value: string;
-  showSaved: boolean;
-  onChange: (v: string) => void;
-}) {
-  return (
-    <div className="w-40 shrink-0 border-r border-neutral-700/60 px-3 py-2 flex flex-col gap-0.5">
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="property name"
-        spellCheck={false}
-        className="bg-transparent text-xs text-neutral-200 placeholder-neutral-500 outline-none border-b border-transparent focus:border-blue-400 transition-colors w-full py-px"
-      />
-      <span className={`text-[9px] text-green-400 leading-none transition-opacity duration-300 ${showSaved ? "opacity-100" : "opacity-0"}`}>
-        saved
-      </span>
-    </div>
-  );
 }
 
 // ── Main component ─────────────────────────────────────────────────────────
 
+/**
+ * Maps folder levels to property names. Owns the levels, selection and
+ * per-folder names; Tiles and Columns are two renderings of the same state.
+ */
 export default function FolderBrowserEditor({ locationId, rootNode, initialMappings }: Props) {
+  const [mode, setMode] = useState<Mode>(loadMode);
   const [currentRootPath, setCurrentRootPath] = useState(rootNode.folder_path);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [levels, setLevels] = useState<Level[]>(() => buildInitialLevels(rootNode.folder_path, rootNode));
-  const [propNames, setPropNames] = useState<Record<string, string>>(() => initPropNames(rootNode, initialMappings));
-  const [savedKeys, setSavedKeys] = useState<Set<string>>(new Set());
-  const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  // Property name per folder path — mappings are stored per folder, never per depth.
+  const [labels, setLabels] = useState<Record<string, string>>(() =>
+    Object.fromEntries(initialMappings.map((m) => [m.folder_path, m.property_name]))
+  );
+  const [savedLevel, setSavedLevel] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => () => { Object.values(saveTimers.current).forEach(clearTimeout); }, []);
+  useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
 
-  const isAtRoot = history.length === 0;
-  const currentRootName =
-    findNode(rootNode, currentRootPath)?.folder_name ??
-    currentRootPath.split("/").pop() ??
-    currentRootPath;
+  function folderName(path: string): string {
+    return findNode(rootNode, path)?.folder_name ?? path.split("/").pop() ?? path;
+  }
 
-  // Breadcrumb: all history rootPaths + current root
   const crumbs = [
-    ...history.map((h) => ({
-      name: findNode(rootNode, h.rootPath)?.folder_name ?? h.rootPath.split("/").pop() ?? h.rootPath,
-      rootPath: h.rootPath,
-    })),
-    { name: currentRootName, rootPath: currentRootPath },
+    ...history.map((h) => ({ name: folderName(h.rootPath), rootPath: h.rootPath })),
+    { name: folderName(currentRootPath), rootPath: currentRootPath },
   ];
 
+  function changeMode(next: Mode) {
+    setMode(next);
+    try {
+      localStorage.setItem(MODE_KEY, next);
+    } catch {
+      // ignore
+    }
+  }
+
   function navigateToCrumb(crumbIndex: number) {
-    // crumbIndex < history.length means it's an ancestor in history
-    if (crumbIndex >= history.length) return;
+    if (crumbIndex < 0 || crumbIndex >= history.length) return;
     const entry = history[crumbIndex];
     setCurrentRootPath(entry.rootPath);
     setLevels(entry.levels);
     setHistory(history.slice(0, crumbIndex));
   }
 
-  function goBack() {
-    if (history.length === 0) return;
-    const prev = history[history.length - 1];
-    setHistory((h) => h.slice(0, -1));
-    setCurrentRootPath(prev.rootPath);
-    setLevels(prev.levels);
-  }
-
   function drillIn(folderPath: string) {
-    const node = findNode(rootNode, folderPath);
-    if (!node) return;
+    if (!findNode(rootNode, folderPath)) return;
     setHistory((prev) => [...prev, { rootPath: currentRootPath, levels }]);
     setCurrentRootPath(folderPath);
     setLevels(buildInitialLevels(folderPath, rootNode));
-
-    const patch: Record<string, string> = {};
-    for (let d = 1; d <= 6; d++) {
-      const nodes = getNodesAtRelativeDepth(node, d);
-      for (const n of nodes) {
-        const m = initialMappings.find((m) => m.folder_path === n.folder_path);
-        if (m) { patch[pKey(folderPath, d)] = m.property_name; break; }
-      }
-    }
-    if (Object.keys(patch).length > 0) setPropNames((prev) => ({ ...prev, ...patch }));
   }
 
   function toggleSelection(levelIndex: number, folderPath: string) {
@@ -219,7 +113,6 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
         : [...level.selected, folderPath];
 
       const base: Level[] = [...prev.slice(0, levelIndex), { ...level, selected: newSelected }];
-      if (newSelected.length === 0) return base;
 
       const newGroups: FolderGroup[] = newSelected.flatMap((selPath) => {
         const selNode = findNode(rootNode, selPath);
@@ -229,57 +122,80 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
       });
 
       if (newGroups.length === 0) return base;
-      return [...base, { depth: levelIndex + 2, groups: newGroups, selected: [] }];
+      return [...base, { groups: newGroups, selected: [] }];
     });
   }
 
-  const doSave = useCallback(
-    async (levelDepth: number, name: string, rootPath: string) => {
-      const root = findNode(rootNode, rootPath);
-      if (!root) return;
-      const nodes = getNodesAtRelativeDepth(root, levelDepth);
-      if (name.trim()) {
-        await Promise.allSettled(nodes.map((n) => setFolderLabel(locationId, n.folder_path, name.trim())));
-      } else {
-        await Promise.allSettled(nodes.map((n) => clearFolderLabel(locationId, n.folder_path)));
+  /** Names exactly the folders shown in this level, i.e. the children of the selected parents. */
+  async function commitLevelName(levelIndex: number, name: string) {
+    const trimmed = name.trim();
+    const nodes = levelNodes(levels[levelIndex]);
+    const targets = trimmed
+      ? nodes.filter((n) => labels[n.folder_path] !== trimmed)
+      : nodes.filter((n) => labels[n.folder_path]);
+    if (targets.length === 0) return;
+
+    setError(null);
+    const done: Record<string, string> = {};
+    const cleared: string[] = [];
+    // Sequential: each call is its own SQLite write transaction.
+    for (const n of targets) {
+      try {
+        if (trimmed) {
+          await setFolderLabel(locationId, n.folder_path, trimmed);
+          done[n.folder_path] = trimmed;
+        } else {
+          await clearFolderLabel(locationId, n.folder_path);
+          cleared.push(n.folder_path);
+        }
+      } catch (e) {
+        setError(String(e));
       }
-      const key = pKey(rootPath, levelDepth);
-      setSavedKeys((prev) => new Set(prev).add(key));
-      setTimeout(() => setSavedKeys((prev) => { const s = new Set(prev); s.delete(key); return s; }), 1400);
-    },
-    [locationId, rootNode]
-  );
+    }
+    setLabels((prev) => {
+      const next = { ...prev, ...done };
+      for (const p of cleared) delete next[p];
+      return next;
+    });
 
-  function handlePropNameChange(levelIndex: number, value: string) {
-    const depth = levels[levelIndex].depth;
-    const key = pKey(currentRootPath, depth);
-    setPropNames((prev) => ({ ...prev, [key]: value }));
-
-    if (saveTimers.current[key]) clearTimeout(saveTimers.current[key]);
-    const capturedRoot = currentRootPath;
-    const capturedDepth = depth;
-    saveTimers.current[key] = setTimeout(() => {
-      delete saveTimers.current[key];
-      doSave(capturedDepth, value, capturedRoot);
-    }, 400);
+    setSavedLevel(levelIndex);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSavedLevel(null), 1400);
   }
+
+  const rendererProps: LevelRendererProps = {
+    levels,
+    labels,
+    savedLevel,
+    folderName,
+    onToggle: toggleSelection,
+    onCommit: commitLevelName,
+  };
 
   return (
     <div className="flex flex-col h-full">
-      {/* Breadcrumb */}
-      <div className="shrink-0 flex items-center justify-between px-3 py-2 border-b border-neutral-700/60 bg-neutral-800/30">
-        <div className="flex items-center gap-1 text-xs min-w-0 flex-1 flex-wrap">
+      {/* Breadcrumb + mode switch */}
+      <div className="shrink-0 flex items-center gap-2 px-3 h-9 border-b border-neutral-700/60">
+        <button
+          onClick={() => navigateToCrumb(history.length - 1)}
+          disabled={history.length === 0}
+          title="Back"
+          className="flex items-center justify-center w-6 h-6 rounded-md text-neutral-300 hover:bg-neutral-700/60 disabled:opacity-30 disabled:hover:bg-transparent"
+        >
+          <SymbolIcon name="chevron.left" size={12} fallback="‹" />
+        </button>
+        <div className="flex items-center gap-1 text-[13px] min-w-0 flex-1">
           {crumbs.map((crumb, i) => {
             const isLast = i === crumbs.length - 1;
             return (
               <span key={crumb.rootPath} className="flex items-center gap-1 min-w-0">
-                {i > 0 && <span className="text-neutral-500 shrink-0">/</span>}
+                {i > 0 && <SymbolIcon name="chevron.right" size={9} fallback="›" className="text-neutral-500" />}
                 {isLast ? (
-                  <span className="text-neutral-200 font-medium truncate max-w-[160px]">{crumb.name}</span>
+                  <span className="text-neutral-100 font-medium truncate">{crumb.name}</span>
                 ) : (
                   <button
                     onClick={() => navigateToCrumb(i)}
-                    className="text-neutral-500 hover:text-blue-400 transition-colors truncate max-w-[160px]"
+                    className="text-neutral-400 hover:text-neutral-100 truncate"
                   >
                     {crumb.name}
                   </button>
@@ -288,72 +204,39 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
             );
           })}
         </div>
-        <span className="shrink-0 text-[10px] text-neutral-500 ml-3">
-          click to expand · double-click to drill in
+        <span className="min-w-0 truncate text-[11px] text-neutral-500">
+          {mode === "tiles"
+            ? "Click to expand · double-click to open"
+            : "Click to expand · select several to group"}
         </span>
-      </div>
-
-      {/* Rows */}
-      <div className="flex-1 overflow-y-auto">
-        {/* Current root folder */}
-        <div className="flex">
-          <div className="w-40 shrink-0 border-r border-neutral-700/60" />
-          <div className="flex-1 py-2 px-2">
-            <div
-              onClick={isAtRoot ? undefined : goBack}
-              title={isAtRoot ? currentRootName : "Back to previous view"}
-              className={`flex flex-col items-center gap-0.5 p-1.5 rounded w-16 select-none transition-colors ${
-                isAtRoot
-                  ? "cursor-default border border-transparent"
-                  : "cursor-pointer border border-transparent hover:bg-neutral-800/60"
+        <div className="shrink-0 flex items-center gap-px bg-neutral-800 dark:bg-neutral-700/60 rounded-md p-0.5">
+          {MODES.map(({ mode: m, label }) => (
+            <button
+              key={m}
+              onClick={() => changeMode(m)}
+              className={`px-2.5 py-0.5 text-xs rounded-[5px] whitespace-nowrap ${
+                mode === m
+                  ? "bg-white dark:bg-neutral-500/70 text-neutral-100 shadow-sm"
+                  : "text-neutral-300 hover:text-neutral-100"
               }`}
             >
-              <BrowserFolderIcon muted={isAtRoot} />
-              <span className={`text-[10px] leading-tight text-center w-full truncate ${isAtRoot ? "text-neutral-500" : "text-neutral-400"}`}>
-                {currentRootName}
-              </span>
-            </div>
-          </div>
+              {label}
+            </button>
+          ))}
         </div>
+      </div>
 
-        {/* Property level rows */}
+      {error && <div className="shrink-0 px-5 py-2 text-xs text-red-500">{error}</div>}
+
+      <div className="flex-1 min-h-0">
         {levels.length === 0 ? (
-          <div className="flex items-center justify-center py-10 text-neutral-500 text-xs">
+          <div className="flex items-center justify-center py-10 text-neutral-500 text-[13px]">
             No subfolders here.
           </div>
+        ) : mode === "tiles" ? (
+          <MappingTiles {...rendererProps} onDrillIn={drillIn} />
         ) : (
-          levels.map((level, levelIndex) => {
-            const key = pKey(currentRootPath, level.depth);
-            return (
-              <div key={key} className="flex">
-                <PropNameInput
-                  value={propNames[key] ?? ""}
-                  showSaved={savedKeys.has(key)}
-                  onChange={(v) => handlePropNameChange(levelIndex, v)}
-                />
-                <div className="flex-1 overflow-x-auto flex items-start py-2 px-2">
-                  {level.groups.map((group, gi) => (
-                    <div key={group.parentPath} className="flex items-start">
-                      {gi > 0 && (
-                        <div className="self-stretch w-px bg-neutral-700/50 mx-2 shrink-0" />
-                      )}
-                      <div className="flex flex-wrap gap-1">
-                        {group.nodes.map((node) => (
-                          <FolderItem
-                            key={node.folder_path}
-                            node={node}
-                            isSelected={level.selected.includes(node.folder_path)}
-                            onSelect={() => toggleSelection(levelIndex, node.folder_path)}
-                            onDrillIn={() => drillIn(node.folder_path)}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            );
-          })
+          <MappingColumns {...rendererProps} />
         )}
       </div>
     </div>

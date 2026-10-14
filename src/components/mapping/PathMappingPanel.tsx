@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getFolderTree,
   getMappingNodes,
@@ -6,6 +6,19 @@ import {
   type PathMappingNode,
 } from "../../lib/commands";
 import FolderBrowserEditor from "./FolderBrowserEditor";
+
+const WIDTH_KEY = "mapping-panel-width";
+const MIN_WIDTH = 420;
+const DEFAULT_WIDTH = 640;
+
+function storedWidth(): number {
+  try {
+    const n = Number(localStorage.getItem(WIDTH_KEY));
+    return n >= MIN_WIDTH ? n : DEFAULT_WIDTH;
+  } catch {
+    return DEFAULT_WIDTH;
+  }
+}
 
 interface Props {
   locationId: string;
@@ -19,6 +32,34 @@ export default function PathMappingPanel({ locationId, locationName, onClose }: 
   const [mappings, setMappings] = useState<PathMappingNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [width, setWidth] = useState(storedWidth);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Drag the left edge to resize; the panel can grow to nearly the full pane.
+  function startResize(e: React.PointerEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = width;
+    const maxWidth = (panelRef.current?.parentElement?.clientWidth ?? window.innerWidth) - 40;
+    let latest = startWidth;
+    const onMove = (ev: PointerEvent) => {
+      latest = Math.min(maxWidth, Math.max(MIN_WIDTH, startWidth + startX - ev.clientX));
+      setWidth(latest);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+      try {
+        localStorage.setItem(WIDTH_KEY, String(latest));
+      } catch {
+        // ignore
+      }
+    };
+    document.body.style.cursor = "col-resize";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
 
   useEffect(() => {
     const t = setTimeout(() => setVisible(true), 10);
@@ -34,10 +75,18 @@ export default function PathMappingPanel({ locationId, locationName, onClose }: 
 
   return (
     <div
-      className={`absolute right-0 top-0 h-full w-[640px] flex flex-col bg-neutral-900 border-l border-neutral-700/60 shadow-2xl z-50 transition-transform duration-300 ${
+      ref={panelRef}
+      style={{ width, maxWidth: "calc(100% - 40px)" }}
+      className={`absolute right-0 top-0 h-full flex flex-col bg-neutral-900 border-l border-neutral-700/60 shadow-2xl z-50 transition-transform duration-300 ${
         visible ? "translate-x-0" : "translate-x-full"
       }`}
     >
+      <div
+        onPointerDown={startResize}
+        className="absolute left-0 top-0 h-full w-1.5 -translate-x-1/2 cursor-col-resize z-10"
+        aria-hidden
+      />
+
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4 border-b border-neutral-700/60 shrink-0">
         <div>

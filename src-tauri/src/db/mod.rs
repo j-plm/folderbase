@@ -256,5 +256,87 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
         }
     }
 
+    prune_orphan_mapping_keys(pool).await?;
+
+    Ok(())
+}
+
+/// Removes metadata keys left behind by earlier builds, which saved the folder
+/// mapping name on every keystroke ("Ho", "Hom", "Home"). A key is an orphan when,
+/// on a file under a mapped folder, it holds that folder's name alongside the
+/// folder's current property, and no mapping in the location uses the key.
+async fn prune_orphan_mapping_keys(pool: &DbPool) -> Result<(), sqlx::Error> {
+    use sqlx::Row;
+    use std::collections::{HashMap, HashSet};
+
+    let mapping_rows = sqlx::query(
+        "SELECT pmn.location_id, pmn.folder_path, pmn.property_name, l.root_path \
+         FROM path_mapping_nodes pmn \
+         JOIN locations l USING (location_id)",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut names_by_location: HashMap<String, HashSet<String>> = HashMap::new();
+    for row in &mapping_rows {
+        names_by_location
+            .entry(row.try_get("location_id")?)
+            .or_default()
+            .insert(row.try_get("property_name")?);
+    }
+
+    for row in &mapping_rows {
+        let location_id: String = row.try_get("location_id")?;
+        let folder_path: String = row.try_get("folder_path")?;
+        let property_name: String = row.try_get("property_name")?;
+        let root_path: String = row.try_get("root_path")?;
+
+        let folder_rel = folder_path
+            .strip_prefix(&root_path)
+            .map(|s| s.trim_start_matches('/').to_string())
+            .unwrap_or_else(|| folder_path.clone());
+        let folder_name = folder_rel.split('/').last().unwrap_or("").to_string();
+        if folder_name.is_empty() {
+            continue;
+        }
+        let mapped_names = &names_by_location[&location_id];
+
+        let files = sqlx::query(
+            "SELECT file_id, metadata FROM files \
+             WHERE location_id = ? \
+             AND (relative_path = ? OR relative_path LIKE ? || '/%') \
+             AND json_extract(metadata, '$.' || ?) = ?",
+        )
+        .bind(&location_id)
+        .bind(&folder_rel)
+        .bind(&folder_rel)
+        .bind(&property_name)
+        .bind(&folder_name)
+        .fetch_all(pool)
+        .await?;
+
+        for file in files {
+            let file_id: String = file.try_get("file_id")?;
+            let raw: String = file.try_get("metadata")?;
+            let Ok(serde_json::Value::Object(mut meta)) = serde_json::from_str(&raw) else {
+                continue;
+            };
+            let before = meta.len();
+            meta.retain(|key, value| {
+                key.starts_with('_')
+                    || mapped_names.contains(key)
+                    || value.as_str() != Some(folder_name.as_str())
+            });
+            if meta.len() == before {
+                continue;
+            }
+            sqlx::query("UPDATE files SET metadata = ? WHERE file_id = ?")
+                .bind(serde_json::Value::Object(meta).to_string())
+                .bind(&file_id)
+                .execute(pool)
+                .await?;
+        }
+    }
+
     Ok(())
 }

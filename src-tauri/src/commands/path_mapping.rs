@@ -144,19 +144,51 @@ pub async fn set_folder_label(
     property_name: String,
     db: State<'_, DbPool>,
 ) -> Result<(), String> {
+    set_folder_label_impl(&location_id, &folder_path, &property_name, db.inner()).await
+}
+
+/// Labels one folder. Relabelling replaces the previous property: its key is
+/// stripped from the files before the new one is written, so no stale keys remain.
+pub async fn set_folder_label_impl(
+    location_id: &str,
+    folder_path: &str,
+    property_name: &str,
+    pool: &DbPool,
+) -> Result<(), String> {
+    let property_name = property_name.trim();
+    if property_name.is_empty() {
+        return Err("property name must not be empty".to_string());
+    }
+
     let root_path: String =
         sqlx::query_scalar("SELECT root_path FROM locations WHERE location_id = ?")
-            .bind(&location_id)
-            .fetch_one(db.inner())
+            .bind(location_id)
+            .fetch_one(pool)
             .await
             .map_err(|e| e.to_string())?;
 
-    let folder_rel = folder_rel_from_abs(&root_path, &folder_path)?;
+    let folder_rel = folder_rel_from_abs(&root_path, folder_path)?;
     let depth = if folder_rel.is_empty() {
         0i64
     } else {
         folder_rel.split('/').filter(|s| !s.is_empty()).count() as i64
     };
+
+    let previous: Option<String> = sqlx::query_scalar(
+        "SELECT property_name FROM path_mapping_nodes WHERE location_id = ? AND folder_path = ?",
+    )
+    .bind(location_id)
+    .bind(folder_path)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    if previous.as_deref() == Some(property_name) {
+        return Ok(());
+    }
+    if let Some(old) = &previous {
+        unapply_mapping_from_files(location_id, &root_path, folder_path, old, pool).await?;
+    }
 
     let now = Utc::now().to_rfc3339();
     let node_id = Uuid::new_v4().to_string();
@@ -171,20 +203,17 @@ pub async fn set_folder_label(
          updated_at = excluded.updated_at",
     )
     .bind(&node_id)
-    .bind(&location_id)
-    .bind(&folder_path)
-    .bind(&property_name)
+    .bind(location_id)
+    .bind(folder_path)
+    .bind(property_name)
     .bind(depth)
     .bind(&now)
     .bind(&now)
-    .execute(db.inner())
+    .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
 
-    apply_mapping_to_files(&location_id, &root_path, &folder_path, &property_name, db.inner())
-        .await?;
-
-    Ok(())
+    apply_mapping_to_files(location_id, &root_path, folder_path, property_name, pool).await
 }
 
 #[tauri::command]
@@ -193,76 +222,40 @@ pub async fn clear_folder_label(
     folder_path: String,
     db: State<'_, DbPool>,
 ) -> Result<(), String> {
+    clear_folder_label_impl(&location_id, &folder_path, db.inner()).await
+}
+
+pub async fn clear_folder_label_impl(
+    location_id: &str,
+    folder_path: &str,
+    pool: &DbPool,
+) -> Result<(), String> {
     let row: Option<String> = sqlx::query_scalar(
         "SELECT property_name FROM path_mapping_nodes WHERE location_id = ? AND folder_path = ?",
     )
-    .bind(&location_id)
-    .bind(&folder_path)
-    .fetch_optional(db.inner())
+    .bind(location_id)
+    .bind(folder_path)
+    .fetch_optional(pool)
     .await
     .map_err(|e| e.to_string())?;
 
     if let Some(property_name) = row {
         let root_path: String =
             sqlx::query_scalar("SELECT root_path FROM locations WHERE location_id = ?")
-                .bind(&location_id)
-                .fetch_one(db.inner())
+                .bind(location_id)
+                .fetch_one(pool)
                 .await
                 .map_err(|e| e.to_string())?;
-
-        let folder_rel = folder_rel_from_abs(&root_path, &folder_path)?;
-        let folder_name = folder_path
-            .replace('\\', "/")
-            .split('/')
-            .last()
-            .unwrap_or("")
-            .to_string();
-        let prop_key = format!("$.{}", property_name);
-
-        let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
-
-        sqlx::query(
-            "UPDATE files \
-             SET tags = json_insert(tags, '$[#]', ?) \
-             WHERE location_id = ? \
-             AND (relative_path = ? OR relative_path LIKE ? || '/%') \
-             AND json_extract(metadata, ?) = ?",
-        )
-        .bind(&folder_name)
-        .bind(&location_id)
-        .bind(&folder_rel)
-        .bind(&folder_rel)
-        .bind(&prop_key)
-        .bind(&folder_name)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        sqlx::query(
-            "UPDATE files SET metadata = json_remove(metadata, ?) \
-             WHERE location_id = ? \
-             AND (relative_path = ? OR relative_path LIKE ? || '/%') \
-             AND json_extract(metadata, ?) = ?",
-        )
-        .bind(&prop_key)
-        .bind(&location_id)
-        .bind(&folder_rel)
-        .bind(&folder_rel)
-        .bind(&prop_key)
-        .bind(&folder_name)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        tx.commit().await.map_err(|e| e.to_string())?;
+        unapply_mapping_from_files(location_id, &root_path, folder_path, &property_name, pool)
+            .await?;
     }
 
     sqlx::query(
         "DELETE FROM path_mapping_nodes WHERE location_id = ? AND folder_path = ?",
     )
-    .bind(&location_id)
-    .bind(&folder_path)
-    .execute(db.inner())
+    .bind(location_id)
+    .bind(folder_path)
+    .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -300,6 +293,62 @@ fn folder_rel_from_abs(root_path: &str, folder_path: &str) -> Result<String, Str
             folder_path, root_path
         ))
     }
+}
+
+/// Reverses `apply_mapping_to_files`: removes the property key from files whose value
+/// came from this folder, and restores the folder name to their tags.
+async fn unapply_mapping_from_files(
+    location_id: &str,
+    root_path: &str,
+    folder_path: &str,
+    property_name: &str,
+    pool: &DbPool,
+) -> Result<(), String> {
+    let folder_rel = folder_rel_from_abs(root_path, folder_path)?;
+    let folder_name = folder_path
+        .replace('\\', "/")
+        .split('/')
+        .last()
+        .unwrap_or("")
+        .to_string();
+    let prop_key = format!("$.{}", property_name);
+
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "UPDATE files \
+         SET tags = json_insert(tags, '$[#]', ?) \
+         WHERE location_id = ? \
+         AND (relative_path = ? OR relative_path LIKE ? || '/%') \
+         AND json_extract(metadata, ?) = ?",
+    )
+    .bind(&folder_name)
+    .bind(location_id)
+    .bind(&folder_rel)
+    .bind(&folder_rel)
+    .bind(&prop_key)
+    .bind(&folder_name)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    sqlx::query(
+        "UPDATE files SET metadata = json_remove(metadata, ?) \
+         WHERE location_id = ? \
+         AND (relative_path = ? OR relative_path LIKE ? || '/%') \
+         AND json_extract(metadata, ?) = ?",
+    )
+    .bind(&prop_key)
+    .bind(location_id)
+    .bind(&folder_rel)
+    .bind(&folder_rel)
+    .bind(&prop_key)
+    .bind(&folder_name)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    tx.commit().await.map_err(|e| e.to_string())
 }
 
 /// Applies a single mapping node's label to all matching files (merge semantics).
