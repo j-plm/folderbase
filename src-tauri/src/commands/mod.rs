@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod database_view;
+pub mod feedback;
 pub mod files;
 pub mod icons;
 pub mod ingest;

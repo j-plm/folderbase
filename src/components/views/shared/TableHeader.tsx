@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import type React from "react";
-import { dropIndexAt, type ColumnDef, type SortState } from "../../../lib/columns";
+import { cellBoxStyle, dropIndexAt, type ColumnDef, type ColumnPhase, type SortState } from "../../../lib/columns";
 import { SymbolIcon } from "../../../lib/fileIcons";
 
 interface Props {
@@ -11,11 +11,14 @@ interface Props {
   onSort: (columnId: string) => void;
   onResizeStart: (columnId: string, e: React.MouseEvent) => void;
   onResetColumn: (columnId: string) => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
+  /** Right-click on the header; `columnId` is the column under the pointer, if any. */
+  onContextMenu?: (e: React.MouseEvent, columnId: string | null) => void;
   /** Enables drag-to-reorder; called with the column and its insertion index. */
   onReorder?: (columnId: string, targetIndex: number) => void;
   /** Side padding matching the table body's inset. */
   inset?: number;
+  /** Collapse state of a column being dragged closed (see useColumnLayout). */
+  phaseOf?: (columnId: string) => ColumnPhase | undefined;
 }
 
 /** Pointer movement before a press on a header becomes a drag rather than a click. */
@@ -39,6 +42,7 @@ export default function TableHeader({
   onContextMenu,
   onReorder,
   inset = 0,
+  phaseOf,
 }: Props) {
   const rowRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -87,9 +91,15 @@ export default function TableHeader({
 
   return (
     <div
+      data-table-header
       className="sticky top-0 z-10 bg-neutral-900 border-b border-neutral-700/60"
       style={{ width: contentWidth + inset * 2, paddingLeft: inset, paddingRight: inset }}
-      onContextMenu={onContextMenu}
+      onContextMenu={(e) =>
+        onContextMenu?.(
+          e,
+          (e.target as HTMLElement).closest<HTMLElement>("[data-column-id]")?.dataset.columnId ?? null
+        )
+      }
     >
       <div ref={rowRef} className="relative flex h-7" style={{ width: contentWidth }}>
         {columns.map((col) => {
@@ -98,8 +108,9 @@ export default function TableHeader({
           return (
             <div
               key={col.id}
+              data-column-id={col.id}
               style={{
-                width: widths[col.id],
+                ...cellBoxStyle(widths[col.id], phaseOf?.(col.id)),
                 transform: isDragged ? `translateX(${drag!.offset}px)` : undefined,
               }}
               onMouseDown={(e) => startDrag(col, e)}

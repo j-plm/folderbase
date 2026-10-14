@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen } from "@tauri-apps/api/event";
@@ -12,6 +12,7 @@ import PathMappingPanel from "../mapping/PathMappingPanel";
 import { FileIcon } from "../../lib/fileIcons";
 import { formatFinderDate, formatFinderSize } from "../../lib/arrange";
 import {
+  cellBoxStyle,
   compareSortValues,
   moveColumnId,
   orderColumns,
@@ -24,6 +25,8 @@ import OverflowBar from "../shell/OverflowBar";
 import { measureText, uiFont } from "../../lib/textMeasure";
 import { useColumnLayout } from "../../hooks/useColumnLayout";
 import TableHeader from "./shared/TableHeader";
+import { useSelection } from "../../hooks/useSelection";
+import MenuPopover from "../shared/MenuPopover";
 
 interface Props {
   files: FileRecord[];
@@ -49,7 +52,7 @@ function fileExtension(filePath: string): string {
 
 // Standard columns, in display order. Name is always shown.
 const STANDARD_COLUMNS: ColumnDef[] = [
-  { id: "name", label: "Name", weight: 3, minWidth: 140, reorderable: false },
+  { id: "name", label: "Name", weight: 3, minWidth: 140, reorderable: false, hideable: false },
   { id: "ext", label: "Ext", weight: 0.6, minWidth: 50 },
   { id: "path", label: "Path", weight: 4, minWidth: 120 },
   { id: "type", label: "Type", weight: 1.4, minWidth: 90 },
@@ -130,7 +133,6 @@ const DEFAULT_SORT: SortState = { key: "path", direction: "asc" };
 export default function LocationDatabaseView({ files, locationId, onMappingChanged }: Props) {
   const [search, setSearch] = useState("");
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [indexing, setIndexing] = useState<{
     scanned: number;
     done: boolean;
@@ -138,6 +140,8 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
   const [reindexing, setReindexing] = useState(false);
   const [reindexError, setReindexError] = useState<string | null>(null);
   const [mappingOpen, setMappingOpen] = useState(false);
+  /** The Columns button while its checklist is open. */
+  const [columnsAnchor, setColumnsAnchor] = useState<HTMLElement | null>(null);
   const [hasMappings, setHasMappings] = useState(false);
 
   // Column visibility
@@ -151,11 +155,11 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
   useEffect(() => {
     setSearch("");
     setSort(DEFAULT_SORT);
-    setSelectedId(null);
     setIndexing(null);
     setReindexing(false);
     setReindexError(null);
     setMappingOpen(false);
+    setColumnsAnchor(null);
 
     const savedTags =
       localStorage.getItem(`col-tags-${locationId}`) === "true";
@@ -279,8 +283,20 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
     columns,
     `db-${locationId}`,
     (key) => files.map((f) => measureCell(f, key)),
-    INSET
+    INSET,
+    hideColumn
   );
+
+  /** Hides a column the way its menu checkbox does. */
+  function hideColumn(id: string) {
+    if (id === TAGS_COLUMN.id) {
+      if (showTags) toggleShowTags();
+    } else if (id.startsWith(PROP_PREFIX)) {
+      if (visibleProperties.includes(id.slice(PROP_PREFIX.length))) toggleProperty(id.slice(PROP_PREFIX.length));
+    } else if (!hiddenStandard.includes(id)) {
+      toggleStandard(id);
+    }
+  }
 
   function columnMenuEntries(): MenuEntry[] {
     return [
@@ -290,23 +306,28 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
         checked: !hiddenStandard.includes(c.id),
         enabled: c.id !== "name",
         action: () => toggleStandard(c.id),
+        key: c.id,
       })),
       { type: "separator" },
-      { type: "check", text: "Tags", checked: showTags, action: toggleShowTags },
+      { type: "check", text: "Tags", checked: showTags, action: toggleShowTags, key: TAGS_COLUMN.id },
       ...availableProperties.map((name) => ({
         type: "check" as const,
         text: name,
         checked: visibleProperties.includes(name),
         action: () => toggleProperty(name),
+        key: propertyColumn(name).id,
       })),
       { type: "separator" },
       { type: "item", text: "Size All Columns to Fit", action: layout.fitAll },
     ];
   }
 
-  function handleHeaderMenu(e: React.MouseEvent) {
+  const closeColumnsMenu = useCallback(() => setColumnsAnchor(null), []);
+
+  // Opens with the clicked column's entry under the pointer, ready to untick
+  function handleHeaderMenu(e: React.MouseEvent, columnId: string | null) {
     e.preventDefault();
-    showContextMenu(columnMenuEntries());
+    showContextMenu(columnMenuEntries(), { alignKey: columnId ?? undefined, event: e });
   }
 
   const filtered = files.filter((f) => {
@@ -330,8 +351,13 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
     overscan: 10,
   });
 
+  const selection = useSelection(sorted, {
+    arrowKeys: true,
+    onReveal: (index) => rowVirtualizer.scrollToIndex(index),
+  });
+
   function renderCell(col: ColumnDef, file: FileRecord) {
-    const style = { width: layout.widths[col.id] };
+    const style = cellBoxStyle(layout.widths[col.id], layout.phaseOf(col.id));
     if (col.id.startsWith(PROP_PREFIX)) {
       const value = (file.metadata as Record<string, unknown> | null)?.[col.id.slice(PROP_PREFIX.length)];
       return (
@@ -420,7 +446,10 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
               id: "columns",
               node: (
                 <button
-                  onClick={() => showContextMenu(columnMenuEntries())}
+                  onClick={(e) => {
+                    const button = e.currentTarget;
+                    setColumnsAnchor((open) => (open ? null : button));
+                  }}
                   className={`${TOOLBAR_BUTTON} ${extraColCount > 0 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
                 >
                   {extraColCount > 0 ? `Columns (${extraColCount})` : "Columns"}
@@ -449,7 +478,15 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
       )}
 
       {/* Table: one scroll container, sticky header, virtualised rows */}
-      <div ref={layout.setContainer} className="flex-1 min-h-0 overflow-auto">
+      <div
+        ref={layout.setContainer}
+        tabIndex={0}
+        onKeyDown={selection.onKeyDown}
+        onClick={(e) => {
+          if (!(e.target as HTMLElement).closest("[data-table-header]")) selection.clear();
+        }}
+        className="flex-1 min-h-0 overflow-auto outline-none"
+      >
         <TableHeader
           columns={columns}
           widths={layout.widths}
@@ -461,6 +498,7 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
           onContextMenu={handleHeaderMenu}
           onReorder={handleReorder}
           inset={INSET}
+          phaseOf={layout.phaseOf}
         />
         {sorted.length === 0 ? (
           <div className="flex items-center justify-center py-16 text-neutral-500 text-sm">
@@ -481,7 +519,10 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
             >
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                 const file = sorted[virtualRow.index];
-                const isSelected = file.file_id === selectedId;
+                const isSelected = selection.isSelected(file.file_id);
+                // Adjacent selected rows join into one block, as in Finder
+                const joinsAbove = isSelected && selection.isSelected(sorted[virtualRow.index - 1]?.file_id);
+                const joinsBelow = isSelected && selection.isSelected(sorted[virtualRow.index + 1]?.file_id);
                 return (
                   <div
                     key={file.file_id}
@@ -493,10 +534,11 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                     }}
-                    onClick={() =>
-                      setSelectedId(isSelected ? null : file.file_id)
-                    }
+                    onClick={(e) => selection.onItemClick(e, file.file_id)}
+                    onDoubleClick={(e) => selection.onItemDoubleClick(e, file.file_id)}
                     className={`flex items-center rounded-md text-body cursor-default ${
+                      joinsAbove ? "rounded-t-none" : ""
+                    } ${joinsBelow ? "rounded-b-none" : ""} ${
                       isSelected
                         ? "native-selected"
                         : virtualRow.index % 2 === 1
@@ -512,6 +554,14 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
           </div>
         )}
       </div>
+
+      {columnsAnchor && (
+        <MenuPopover
+          anchor={columnsAnchor}
+          entries={columnMenuEntries()}
+          onClose={closeColumnsMenu}
+        />
+      )}
 
       {mappingOpen && (
         <PathMappingPanel

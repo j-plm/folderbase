@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareSortValues, contentFitWidth, dropIndexAt, fitColumnWidths, moveColumnId, orderColumns, resizeColumn, toggleSort, type ColumnDef } from "./columns";
+import { cellBoxStyle, compareSortValues, contentFitWidth, dropIndexAt, fitColumnWidths, moveColumnId, orderColumns, resizeColumn, toggleSort, type ColumnDef } from "./columns";
 
 const cols: ColumnDef[] = [
   { id: "name", label: "Name", weight: 3, minWidth: 100 },
@@ -111,5 +111,24 @@ describe("column reordering", () => {
     expect(dropIndexAt([100, 50, 50], 140, 1)).toBe(2);
     expect(dropIndexAt([100, 50, 50], 10, 1)).toBe(1);
     expect(dropIndexAt([100, 50, 50], 999, 1)).toBe(3);
+  });
+});
+
+describe("cellBoxStyle", () => {
+  it("keeps normal padding at ordinary widths", () => {
+    expect(cellBoxStyle(120)).toEqual({ width: 120 });
+  });
+
+  it("dims a held column and fades a closing one", () => {
+    expect(cellBoxStyle(24, "held").opacity).toBe(0.4);
+    expect(cellBoxStyle(0, "closing")).toMatchObject({ width: 0, opacity: 0 });
+  });
+
+  it("plays the warning flash on an armed column", () => {
+    expect(cellBoxStyle(24, "armed").animation).toMatch(/^column-arm /);
+  });
+
+  it("shrinks the padding with a column dragged towards zero", () => {
+    expect(cellBoxStyle(0)).toEqual({ width: 0, paddingLeft: 0, paddingRight: 0, overflow: "hidden" });
   });
 });

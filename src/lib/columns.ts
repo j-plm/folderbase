@@ -1,3 +1,4 @@
+import type React from "react";
 // Finder-style table columns: fit to the available width, user-resizable,
 // sortable by header click. Pure helpers here; React wiring in useColumnLayout.
 
@@ -12,6 +13,8 @@ export interface ColumnDef {
   sortable?: boolean;
   /** False keeps the column in place (e.g. Name stays first). */
   reorderable?: boolean;
+  /** False stops the column being dragged to zero width to hide it (e.g. Name). */
+  hideable?: boolean;
 }
 
 export type SortDirection = "asc" | "desc";
@@ -95,6 +98,53 @@ export function resizeColumn(
 
 /** Horizontal padding of a cell (px-3 on both sides). */
 export const CELL_PADDING = 24;
+
+/**
+ * Dragging a hideable column below its minimum: it follows the pointer down to
+ * this width and stops there ("held"). Held there it then flashes ("armed")
+ * and closes, unless released first.
+ */
+export const COLLAPSE_DETENT = 24;
+/** Time held at the detent before the column flashes. */
+export const COLLAPSE_HOLD_MS = 300;
+/** Length of the flash; the column closes when it ends. Matches `column-arm` in index.css. */
+export const COLLAPSE_ARM_MS = 350;
+/** Duration of the closing animation. */
+export const COLLAPSE_ANIMATION_MS = 180;
+
+/**
+ * "held": stopped at the detent. "armed": flashing, about to close.
+ * "closing": animating to zero width.
+ */
+export type ColumnPhase = "held" | "armed" | "closing";
+
+/**
+ * Style for a cell `width` wide. Below the normal padding the padding shrinks
+ * with it so the cell can reach 0; a held column dims and a closing one
+ * animates its width and fades out.
+ */
+export function cellBoxStyle(width: number | undefined, phase?: ColumnPhase): React.CSSProperties {
+  const style: React.CSSProperties = { width };
+  if (width != null && width < CELL_PADDING) {
+    Object.assign(style, { paddingLeft: width / 2, paddingRight: width / 2, overflow: "hidden" });
+  }
+  if (phase === "held") {
+    style.opacity = 0.4;
+    style.transition = `opacity 120ms ${EASE_OUT}`;
+  } else if (phase === "armed") {
+    style.opacity = 0.3;
+    style.animation = `column-arm ${COLLAPSE_ARM_MS}ms ease-in-out both`;
+  } else if (phase === "closing") {
+    style.opacity = 0;
+    style.transition = (["width", "padding", "opacity"] as const)
+      .map((p) => `${p} ${COLLAPSE_ANIMATION_MS}ms ${EASE_OUT}`)
+      .join(", ");
+  }
+  return style;
+}
+
+/** Core Animation's default ease-out timing curve. */
+const EASE_OUT = "cubic-bezier(0, 0, 0.58, 1)";
 /** Header padding plus room for the sort chevron. */
 const HEADER_CHROME = CELL_PADDING + 14;
 

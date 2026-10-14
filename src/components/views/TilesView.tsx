@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { FileIcon, isImageMime } from "../../lib/fileIcons";
-import { openPath } from "../../lib/commands";
+import { useSelection } from "../../hooks/useSelection";
 import type { FileRecord } from "../../types";
 import { fileName, groupFiles } from "../../lib/arrange";
 import { showContextMenu } from "../../lib/nativeMenu";
@@ -20,21 +20,14 @@ const COLUMN_GAP = 9;
 const LABEL_WIDTH = TILE_WIDTH - 8;
 
 export default function TilesView({ files }: Props) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const arrangementCtx = useArrangement();
   const labelFont = useMemo(() => uiFont(12), []);
   const groups = useMemo(
     () => groupFiles(files, arrangementCtx.arrangement),
     [files, arrangementCtx.arrangement]
   );
-
-  async function handleOpen(filePath: string) {
-    try {
-      await openPath(filePath);
-    } catch {
-      // ignore
-    }
-  }
+  const shown = useMemo(() => groups.flatMap((g) => g.files), [groups]);
+  const selection = useSelection(shown);
 
   if (files.length === 0) {
     return (
@@ -46,8 +39,10 @@ export default function TilesView({ files }: Props) {
 
   return (
     <div
-      className="flex-1 overflow-auto"
-      onClick={() => setSelectedId(null)}
+      className="flex-1 overflow-auto outline-none"
+      tabIndex={0}
+      onKeyDown={selection.onKeyDown}
+      onClick={selection.clear}
       onContextMenu={(e) => {
         e.preventDefault();
         showContextMenu(arrangementMenu(arrangementCtx));
@@ -70,15 +65,12 @@ export default function TilesView({ files }: Props) {
           >
             {group.files.map((file) => {
               const name = fileName(file.file_path);
-              const isSelected = file.file_id === selectedId;
+              const isSelected = selection.isSelected(file.file_id);
               return (
                 <div
                   key={file.file_id}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setSelectedId(file.file_id);
-                  }}
-                  onDoubleClick={() => handleOpen(file.file_path)}
+                  onClick={(e) => selection.onItemClick(e, file.file_id)}
+                  onDoubleClick={(e) => selection.onItemDoubleClick(e, file.file_id)}
                   className="flex flex-col items-center gap-1 cursor-default select-none"
                   style={{ width: TILE_WIDTH }}
                 >
@@ -103,18 +95,12 @@ export default function TilesView({ files }: Props) {
                       <FileIcon path={file.file_path} mimeType={file.file_type} size={64} />
                     )}
                   </div>
-                  <span
-                    className={`max-w-full px-1 rounded text-xs text-center whitespace-nowrap leading-[15px] ${
-                      isSelected ? "bg-blue-600 text-white" : "text-neutral-100"
-                    }`}
+                  <TileLabel
+                    lines={twoLineLabel(name, LABEL_WIDTH, (t) => measureText(t, labelFont))}
+                    selected={isSelected}
                     title={name}
-                  >
-                    {twoLineLabel(name, LABEL_WIDTH, (t) => measureText(t, labelFont)).map((line, i) => (
-                      <span key={i} className="block">
-                        {line}
-                      </span>
-                    ))}
-                  </span>
+                    measure={(t) => measureText(t, labelFont)}
+                  />
                 </div>
               );
             })}
@@ -122,5 +108,42 @@ export default function TilesView({ files }: Props) {
         </section>
       ))}
     </div>
+  );
+}
+
+/**
+ * A tile's name, highlighted line by line when selected as Finder does: each
+ * line's highlight hugs its own text, and where a narrower line meets a wider
+ * one its joining corners are square so the two read as one shape.
+ */
+function TileLabel({
+  lines,
+  selected,
+  title,
+  measure,
+}: {
+  lines: string[];
+  selected: boolean;
+  title: string;
+  measure: (text: string) => number;
+}) {
+  const widths = lines.map(measure);
+  return (
+    <span className="flex flex-col items-center max-w-full text-xs leading-[15px]" title={title}>
+      {lines.map((line, i) => {
+        const squareTop = i > 0 && widths[i] <= widths[i - 1];
+        const squareBottom = i < lines.length - 1 && widths[i] <= widths[i + 1];
+        return (
+          <span
+            key={i}
+            className={`max-w-full px-1 whitespace-nowrap rounded-[4px] ${
+              selected ? "bg-blue-600 text-white" : "text-neutral-100"
+            } ${squareTop ? "rounded-t-none" : ""} ${squareBottom ? "rounded-b-none" : ""}`}
+          >
+            {line}
+          </span>
+        );
+      })}
+    </span>
   );
 }

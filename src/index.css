@@ -190,3 +190,31 @@ button {
     display: none;
   }
 }
+
+/*
+ * A column dragged to its hide detent and held: a quick flash and zoom
+ * (in, then out) warns that it is about to disappear. See cellBoxStyle.
+ */
+@keyframes column-arm {
+  0% {
+    opacity: 0.4;
+    transform: scale(1);
+    background-color: transparent;
+  }
+  35% {
+    opacity: 1;
+    transform: scale(1.15);
+    background-color: var(--blue-tint);
+  }
+  100% {
+    opacity: 0.3;
+    transform: scale(0.85);
+    background-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [style*="column-arm"] {
+    animation: none !important;
+  }
+}

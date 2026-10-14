@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
-import { contentFitWidth, fitColumnWidths, resizeColumn, type ColumnDef } from "../lib/columns";
+import {
+  COLLAPSE_ANIMATION_MS,
+  COLLAPSE_ARM_MS,
+  COLLAPSE_DETENT,
+  COLLAPSE_HOLD_MS,
+  contentFitWidth,
+  fitColumnWidths,
+  resizeColumn,
+  type ColumnDef,
+  type ColumnPhase,
+} from "../lib/columns";
+import { hapticFeedback, poofAt } from "../lib/commands";
 import { measureText, uiFont } from "../lib/textMeasure";
 
 function loadFixed(storageKey: string): Record<string, number> {
@@ -21,13 +32,21 @@ function saveFixed(storageKey: string, fixed: Record<string, number>) {
  *
  * `measureCells(columnId)` returns the rendered content width of every cell in
  * that column; double-clicking a divider sizes the column to the widest.
+ *
+ * With `onCollapse`, a hideable column can be dragged below its minimum width.
+ * It stops at a small detent (with a trackpad haptic) and dims; held there it
+ * flashes as a warning, then closes with AppKit's poof (as when a Dock item is
+ * removed) and is handed to `onCollapse` to hide. Its saved width is dropped so
+ * it comes back at its automatic size. Released before it closes, or dragged
+ * back out, it returns to normal resizing.
  */
 export function useColumnLayout(
   columns: ColumnDef[],
   storageKey: string,
   measureCells: (columnId: string) => number[],
   /** Horizontal padding (each side) between the container edge and the table. */
-  inset = 0
+  inset = 0,
+  onCollapse?: (columnId: string) => void
 ) {
   const measureRef = useRef(measureCells);
   measureRef.current = measureCells;
@@ -50,10 +69,15 @@ export function useColumnLayout(
     return () => observer.disconnect();
   }, [container, inset]);
 
-  const widths = useMemo(
-    () => fitColumnWidths(columns, available, fixed),
-    [columns, available, fixed]
+  /** A column being dragged below its minimum width, towards hiding. */
+  const [collapsing, setCollapsing] = useState<{ id: string; width: number; phase?: ColumnPhase } | null>(
+    null
   );
+
+  const widths = useMemo(() => {
+    const fitted = fitColumnWidths(columns, available, fixed);
+    return collapsing ? { ...fitted, [collapsing.id]: collapsing.width } : fitted;
+  }, [columns, available, fixed, collapsing]);
   const totalWidth = columns.reduce((sum, c) => sum + (widths[c.id] ?? 0), 0);
 
   const startResize = useCallback(
@@ -65,21 +89,78 @@ export function useColumnLayout(
       const startX = e.clientX;
       const startWidths = widths;
       const startWidth = widths[columnId] ?? column.minWidth;
+      const canCollapse = !!onCollapse && column.hideable !== false;
+      let holdTimer: number | undefined;
+      let pointer = { x: e.clientX, y: e.clientY };
 
-      function onMove(ev: MouseEvent) {
-        setFixed(resizeColumn(columns, startWidths, columnId, startWidth + ev.clientX - startX));
+      function cancelHold() {
+        window.clearTimeout(holdTimer);
+        holdTimer = undefined;
       }
-      function onUp() {
+
+      function endDrag() {
+        cancelHold();
         window.removeEventListener("mousemove", onMove);
         window.removeEventListener("mouseup", onUp);
         document.body.style.cursor = "";
+      }
+
+      function arm() {
+        setCollapsing({ id: columnId, width: COLLAPSE_DETENT, phase: "armed" });
+        holdTimer = window.setTimeout(close, COLLAPSE_ARM_MS);
+      }
+
+      function close() {
+        endDrag();
+        hapticFeedback("levelChange");
+        poofAt(pointer.x, pointer.y);
+        setCollapsing({ id: columnId, width: 0, phase: "closing" });
+        const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        window.setTimeout(() => {
+          const rest = Object.fromEntries(Object.entries(fixedRef.current).filter(([id]) => id !== columnId));
+          setFixed(rest);
+          saveFixed(storageKey, rest);
+          setCollapsing(null);
+          onCollapse!(columnId);
+        }, reduceMotion ? 0 : COLLAPSE_ANIMATION_MS);
+      }
+
+      function onMove(ev: MouseEvent) {
+        pointer = { x: ev.clientX, y: ev.clientY };
+        const width = startWidth + ev.clientX - startX;
+        setFixed(resizeColumn(columns, startWidths, columnId, width));
+        if (!canCollapse || width >= column!.minWidth) {
+          cancelHold();
+          document.body.style.cursor = "col-resize";
+          setCollapsing(null);
+          return;
+        }
+        if (width > COLLAPSE_DETENT) {
+          cancelHold();
+          document.body.style.cursor = "col-resize";
+          setCollapsing({ id: columnId, width: Math.round(width) });
+          return;
+        }
+        // At the detent the column stops; holding it there flashes it, then closes it
+        if (holdTimer === undefined) {
+          hapticFeedback("alignment");
+          // The column can't shrink further: show the one-way resize cursor, as AppKit does at a limit
+          document.body.style.cursor = "e-resize";
+          setCollapsing({ id: columnId, width: COLLAPSE_DETENT, phase: "held" });
+          holdTimer = window.setTimeout(arm, COLLAPSE_HOLD_MS);
+        }
+      }
+      function onUp() {
+        endDrag();
+        // Released before closing: it settles at its minimum width
+        setCollapsing(null);
         saveFixed(storageKey, fixedRef.current);
       }
       document.body.style.cursor = "col-resize";
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     },
-    [columns, widths, storageKey]
+    [columns, widths, storageKey, onCollapse]
   );
 
   /** Double-clicking a divider sizes that column to its widest content, leaving the others alone. */
@@ -106,6 +187,9 @@ export function useColumnLayout(
     setContainer,
     container,
     widths,
+    /** Hide-by-dragging state of the column being collapsed, for its cells' styling. */
+    phaseOf: (columnId: string): ColumnPhase | undefined =>
+      collapsing?.id === columnId ? collapsing.phase : undefined,
     /** Width of the table content: at least the container, wider if columns overflow. */
     contentWidth: Math.max(totalWidth, available),
     startResize,

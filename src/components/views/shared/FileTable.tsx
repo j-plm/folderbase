@@ -1,7 +1,7 @@
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useMemo } from "react";
 import type React from "react";
 import { FileIcon } from "../../../lib/fileIcons";
-import { openPath } from "../../../lib/commands";
+import { useSelection } from "../../../hooks/useSelection";
 import type { ColumnDef } from "../../../lib/columns";
 import {
   fileName,
@@ -60,7 +60,6 @@ interface Props {
 export default function FileTable({ files, storageKey }: Props) {
   const arrangementCtx = useArrangement();
   const { arrangement, toggleSortKey } = arrangementCtx;
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const layout = useColumnLayout(COLUMNS, storageKey, (key) => {
     const font = uiFont(13);
     const extra = key === "name" ? NAME_ICON_WIDTH : 0;
@@ -68,14 +67,14 @@ export default function FileTable({ files, storageKey }: Props) {
   }, INSET);
 
   const groups = useMemo(() => groupFiles(files, arrangement), [files, arrangement]);
-
-  async function handleOpen(filePath: string) {
-    try {
-      await openPath(filePath);
-    } catch {
-      // ignore
-    }
-  }
+  const shown = useMemo(() => groups.flatMap((g) => g.files), [groups]);
+  const selection = useSelection(shown, {
+    arrowKeys: true,
+    onReveal: (index) =>
+      layout.container
+        ?.querySelector(`[data-file-id="${shown[index].file_id}"]`)
+        ?.scrollIntoView({ block: "nearest" }),
+  });
 
   function handleHeaderMenu(e: React.MouseEvent) {
     e.preventDefault();
@@ -85,7 +84,15 @@ export default function FileTable({ files, storageKey }: Props) {
   const width = (id: string) => ({ width: layout.widths[id] });
 
   return (
-    <div ref={layout.setContainer} className="flex-1 overflow-auto pb-2">
+    <div
+      ref={layout.setContainer}
+      tabIndex={0}
+      onKeyDown={selection.onKeyDown}
+      onClick={(e) => {
+        if (!(e.target as HTMLElement).closest("[data-table-header]")) selection.clear();
+      }}
+      className="flex-1 overflow-auto pb-2 outline-none"
+    >
       <TableHeader
         columns={COLUMNS}
         widths={layout.widths}
@@ -116,14 +123,20 @@ export default function FileTable({ files, storageKey }: Props) {
               </div>
             )}
             {group.files.map((file, i) => {
-              const isSelected = file.file_id === selectedId;
+              const isSelected = selection.isSelected(file.file_id);
+              // Adjacent selected rows join into one block, as in Finder
+              const joinsAbove = isSelected && selection.isSelected(group.files[i - 1]?.file_id);
+              const joinsBelow = isSelected && selection.isSelected(group.files[i + 1]?.file_id);
               return (
                 <div
                   key={file.file_id}
-                  onClick={() => setSelectedId(file.file_id)}
-                  onDoubleClick={() => handleOpen(file.file_path)}
+                  data-file-id={file.file_id}
+                  onClick={(e) => selection.onItemClick(e, file.file_id)}
+                  onDoubleClick={(e) => selection.onItemDoubleClick(e, file.file_id)}
                   style={{ width: layout.contentWidth, height: ROW_HEIGHT }}
                   className={`flex items-center rounded-md text-body cursor-default ${
+                    joinsAbove ? "rounded-t-none" : ""
+                  } ${joinsBelow ? "rounded-b-none" : ""} ${
                     isSelected ? "native-selected" : i % 2 === 1 ? "bg-neutral-850" : ""
                   }`}
                 >
