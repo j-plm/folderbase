@@ -108,7 +108,8 @@ properties
 property_id    TEXT  PRIMARY KEY
 name           TEXT               e.g. "rig", "angle", "project"
 library        TEXT  (nullable)   scoped to a library, or NULL for global
-value_type     TEXT               "enum" | "free_text" | "array" | "date"
+value_type     TEXT               "free_text" | "number" | "date" | "enum" | "array"
+config         JSON  (nullable)   Type options, e.g. {"format": "currency", "currency": "GBP"}
 
 property_values
 ─────────────────────────────────────────────────────
@@ -117,7 +118,19 @@ property_id    TEXT  FK → properties
 value          TEXT               e.g. "Rig-A", "Front", "Apollo"
 ```
 
-`value_type` controls how the UI presents the property. An `enum` property offers a fixed list of options; a `free_text` property accepts arbitrary input; an `array` property allows multiple values from the list (enabling multi-folder presence); a `date` property surfaces a date picker.
+`value_type` controls how the UI presents and edits the property. The user-facing names are the standard database field types:
+
+| Type (UI) | `value_type` | Stored as | Editing |
+|-----------|--------------|-----------|---------|
+| Text | `free_text` | JSON string | Free text input |
+| Number | `number` | JSON number | Numeric input; `config.format` is `generic`, `currency` (with `config.currency`, an ISO 4217 code) or `percent` (stored as a fraction, 0.25 = 25%) |
+| Date | `date` | ISO date string (`YYYY-MM-DD`) | Date picker |
+| Dropdown | `enum` | JSON string | One value from the registered list, with "Add value" |
+| Multi-select | `array` | JSON array of strings | Any number of values from the registered list, with "Add value". The type that gives multi-folder presence |
+
+Changing a property's type converts the values already stored, never discarding them: a single value becomes a one-item list, a list becomes its values joined with commas, and text that reads as a number becomes a number. Values that cannot be converted are kept as they are and shown as entered.
+
+Formula fields and units on numbers are deferred, not rejected; `config` is where they will live.
 
 #### Bootstrapping from Existing Data
 
@@ -237,6 +250,24 @@ A **view** is a saved configuration of layers. Users can define and name multipl
 - Clicking into a folder filters the visible content to match that folder's database query
 - Breadcrumb navigation reflects the current path through the layer hierarchy
 
+#### Navigation versus configuration
+
+The app has three distinct activities, and each has its own surface:
+
+| Activity | Question it answers | Surface |
+|----------|--------------------|---------|
+| **Mapping a location** | "Which files on disk does Folderbase know about, and what does their existing folder structure already tell us?" | Location setup (see [Mapping a Location](#mapping-a-location)), a dedicated, occasional task per drive or folder |
+| **Configuring a view** | "Which properties make up the levels of this folder tree?" | The view editors (local panel and master editor) |
+| **Navigating a view** | "Show me my files organised this way." | Tiles, List, Columns and Database modes |
+
+Tiles, List and Columns are the base navigation of a configured view. They never expose layer or property configuration directly. Editing in them is still meaningful, because in a virtual tree a folder path *is* a set of property values:
+
+- Each level of the tree represents a property; the folder name at that level is a value of it
+- Creating a folder at some level adds a value to that level's property
+- Putting a file into a folder assigns the file every property value along the path. Dropping a file into `2024 → Rig-A → Front` sets `year = 2024`, `rig = Rig-A` and `angle = Front`
+
+The user therefore classifies files simply by filing them, without seeing the properties underneath.
+
 ### The "+" Folder
 
 At every level of the virtual folder tree, a persistent **"+" folder** appears as the last item in any folder listing. Clicking it creates a new named folder at that level:
@@ -278,6 +309,18 @@ On first use, a user points the application at an existing folder on their machi
 
 The physical folder structure is preserved untouched. The user is not required to restructure anything before use.
 
+### Mapping a Location
+
+Mapping is the ingestion side of the app: bringing a new drive or folder into Folderbase, and treating its existing folder structure as an initial source of metadata. It is a dedicated function, used once per location and revisited rarely, and it lives on its own surface. It is not a control in everyday navigation or in the database view.
+
+The flow:
+
+1. **Add the location**: choose a folder on disk; it is crawled and indexed (see above)
+2. **Map the structure**: the location's real folder tree is shown, and the user names what folders represent. Naming a folder level `client`, for example, means each folder at that level (`Acme`, `Globex`) becomes a value of `client` for every file beneath it. Names apply only to the folders the user named; sibling folders added later are not inherited automatically
+3. **Re-index** when the files on disk change. Mapped values are re-applied to new files, and values the user has since edited are never overwritten
+
+After mapping, the location's files carry property values derived from their paths, and views can be built over those properties like any others. Folder names that are not mapped are kept as unstructured **tags**.
+
 ### Contextual File Upload
 
 When a user drops files into a folder within the virtual tree, the system:
@@ -309,10 +352,12 @@ Example — navigating to `2024 → Rig-A → Component-B → Front` and droppin
 
 ### Multi-folder Presence
 
-- A file can appear in multiple virtual folders simultaneously
-- This is achieved by assigning array values to a property (e.g. `"project": ["Apollo", "Hermes"]`)
+- A file can appear in multiple virtual folders simultaneously, including several sibling folders of the same property: a file can belong to both `Apollo` and `Hermes` under `project`
+- This is achieved by assigning array values to a property (e.g. `"project": ["Apollo", "Hermes"]`); the property must be of type Multi-select
 - No duplication of files is ever required
-- Multi-value assignment is handled in the database view; the folder tree drag-and-drop interface is constrained to single-value assignment per operation
+- Multi-value assignment is available in both presentations:
+  - **Database view**: the Multi-select cell adds and removes values freely, and fill and paste apply values across many files
+  - **Folder views**: following the OS convention that a plain drag moves and an Option-drag (Ctrl-drag on Windows) copies, a plain drag into a sibling folder *replaces* the file's value for that property, and an Option-drag *adds* the folder's value, so the file then appears in both places. "Remove from this folder" removes only the current folder's value. On a single-value property, an Option-drag behaves as a move
 
 ### File Operations
 
@@ -478,6 +523,10 @@ The sidebar to the right of the icon rail changes based on context:
 - When no view is active: shows a welcome/empty state with instructions to select a view from the rail or open the master editor
 - When a view is active: shows the view-local sidebar (sub-view switcher, starred locations within the view, and any OS-standard items like Recents)
 
+#### Locations
+
+Mapped locations (drives and folders brought into Folderbase) are listed in the sidebar, as Finder lists Locations. Opening one shows its files as indexed. Mapping a location's structure and re-indexing it are location actions in the location's context menu and its setup sheet; they do not appear in navigation toolbars or in the database view (see [Mapping a Location](#mapping-a-location)).
+
 #### Main Pane
 
 The primary content area. Renders the current view mode (Tiles, List, Columns, or Database) for the active folder context. Responds to navigation actions from both the sidebar and the breadcrumb toolbar.
@@ -520,8 +569,52 @@ Key characteristics:
 - **Scope**: opens scoped to the current library (not the exact current path), with the path context pre-applied as a relaxable filter. This avoids showing columns where every row has the same value
 - **Columns**: one column per registered property for the current library scope, plus core columns (file name, type, timestamp)
 - **Inline editing**: all metadata cells are editable inline. Each editable cell presents a dropdown picker constrained to values in the property registry for that property. The bottom of each dropdown includes an "Add value" option that immediately creates a new registry entry and selects it
-- **Multi-value properties**: array-type properties display all assigned values in the cell and support adding or removing values, enabling multi-folder presence that the drag-and-drop tree cannot express
+- **Multi-value properties**: array-type properties display all assigned values in the cell and support adding or removing values, enabling multi-folder presence
 - **Sorting and filtering**: any column can be sorted or filtered, including JSON metadata properties
+
+#### Native and custom columns
+
+Columns are of two kinds, and they behave differently:
+
+- **Native columns** describe the file itself: Name, Extension, Path, Kind, Size, Created, Modified, Tags, and values extracted from the file (EXIF). They are read-only in the table
+- **Custom columns** are properties in the registry. Their cells are editable
+
+#### Adding and managing properties
+
+- A **"+" button** sits at the right end of the header row. Clicking it opens a native menu of types: Text, Number, Currency, Percentage, Date, Dropdown, Multi-select. Choosing one immediately adds a column of that type, registered for the current library. The new column is named after its type ("Text"; "Text 2", "Text 3"… if the name is taken), and its header name is open for editing with the text selected, so the user can type a name straight away or press Return to keep the default
+- **Right-clicking a header** opens the column menu: Sort Ascending, Sort Descending, Filter by this column, and for custom columns Rename (edits the name in place in the header, as does double-clicking a custom column's header), Property Type and Delete, followed by the show/hide column list. Deleting a property asks for confirmation, because it removes the property's values from every file
+
+#### Selection and editing
+
+Selection follows spreadsheet conventions:
+
+- **Clicking a native cell** (including Name) selects the whole row, as in a Finder list. Row selection supports Shift and Cmd as usual
+- **Clicking a custom cell** selects that cell only. A cell selection is drawn as an accent-colour outline around the whole selected block (rounded at its outer corners), as in Numbers, rather than filled. Cmd-click adds or removes single cells; Shift-click selects the rectangle from the anchor cell. The arrow keys move the selection
+- **Editing**: double-click a selected cell, press Return or just start typing to edit it in place with the editor for its type. Return commits, Escape cancels, Tab commits and moves right. Delete clears the selected cells
+- **Fill handle**: a selection of cells shows a small accent dot straddling its bottom-right corner. Dragging it up or down repeats the selected values into the cells it covers, as in Excel or Numbers
+- **Copy and paste**: Cmd-C copies the selected cells; Cmd-V pastes. A single copied value fills every selected cell; a block of values pastes from the anchor cell downward and to the right. Pasted text is converted to each column's type, and new Dropdown or Multi-select values are added to the registry
+
+#### Filter and Sort
+
+- **Header click** cycles that column through ascending, descending and unsorted
+- Separate **Filter** and **Sort** buttons, side by side to the left of the search field, each open a panel for detailed control:
+  - **Filter**: a list of rules (column, condition, value), combined with *all* or *any*. Conditions depend on the column type: contains / is / is not / is empty / is not empty for text; = ≠ > < ≥ ≤ for numbers; is / before / after for dates; has any of / has none of for Dropdown and Multi-select
+  - **Sort**: an ordered list of sort keys (then by…), each ascending or descending
+- Each button shows how many rules or sort levels are active, so a filtered table is never mistaken for a complete one
+
+#### Undo and redo
+
+Every change made in the database view can be undone with Cmd-Z and redone with Shift-Cmd-Z (Ctrl-Z / Ctrl-Y on Windows and Linux), as in any document-based app:
+
+- Cell edits, fills, pastes and clears. Undo restores the previous values and selects the affected cells
+- Adding, renaming and deleting a property, and changing its type. Undoing a type change restores every file's original value, even where the conversion merged values (a list joined into text)
+- Deleting a Dropdown or Multi-select value. Undo re-registers the value and puts it back on every file that had it
+
+Changes and their reversals are applied strictly in order. While a text field has focus, Cmd-Z undoes typing in that field instead. History covers the current location's database view and is cleared when another location is opened. View settings (column visibility, order, widths, filters) are preferences, not changes, and are not part of the history.
+
+#### Frozen Name column
+
+The Name column is frozen at the left edge by default, so the file a row belongs to stays visible while scrolling across many properties. Freezing can be turned off from the header menu.
 
 #### Database View Presets
 
@@ -573,7 +666,8 @@ App Window
 ├── Contextual Sidebar
 │   ├── Sub-view switcher               [top of sidebar, if sub-views exist]
 │   ├── Starred locations within view
-│   └── OS-standard items (Recents, etc.)
+│   ├── OS-standard items (Recents, etc.)
+│   └── Locations                       [mapped drives/folders; setup + mapping via context menu]
 │
 ├── Toolbar
 │   ├── Breadcrumb / address bar        [platform-adaptive]

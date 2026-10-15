@@ -58,6 +58,70 @@ pub(crate) fn extract_file_data(
     Some((file_type, timestamp, file_size, created_at, metadata))
 }
 
+/// Files per indexing batch: one blocking scan and one database transaction each.
+const INGEST_BATCH: usize = 500;
+
+type Walker = walkdir::FilterEntry<walkdir::IntoIter, fn(&walkdir::DirEntry) -> bool>;
+
+/// A file found while indexing, ready to insert.
+struct ScannedFile {
+    file_path: String,
+    relative_path: Option<String>,
+    file_type: Option<String>,
+    timestamp: Option<String>,
+    created_at: Option<String>,
+    file_size: i64,
+    metadata: Map<String, Value>,
+    tags_json: String,
+}
+
+/// Hidden files and folders (dot-names) are skipped, as Finder hides them.
+fn not_hidden(entry: &walkdir::DirEntry) -> bool {
+    !entry
+        .file_name()
+        .to_str()
+        .map(|s| s.starts_with('.'))
+        .unwrap_or(false)
+}
+
+/// A file's folder names, as the JSON tags array.
+fn folder_tags(relative_path: &str) -> String {
+    let parts: Vec<&str> = relative_path.split('/').collect();
+    serde_json::to_string(&parts[..parts.len().saturating_sub(1)]).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Reads up to INGEST_BATCH files from the walk (blocking I/O). An empty batch means the walk is done.
+fn scan_batch(mut iter: Walker, root: &std::path::Path) -> (Walker, Vec<ScannedFile>) {
+    let mut batch = Vec::with_capacity(INGEST_BATCH);
+    while batch.len() < INGEST_BATCH {
+        let Some(entry) = iter.next() else { break };
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Some((file_type, timestamp, file_size, created_at, metadata)) = extract_file_data(entry.path()) else {
+            continue;
+        };
+        let relative_path = entry
+            .path()
+            .strip_prefix(root)
+            .ok()
+            .map(|p| p.to_string_lossy().replace('\\', "/"));
+        let tags_json = relative_path.as_deref().map(folder_tags).unwrap_or_else(|| "[]".to_string());
+        batch.push(ScannedFile {
+            file_path: entry.path().to_string_lossy().to_string(),
+            relative_path,
+            file_type,
+            timestamp,
+            created_at,
+            file_size,
+            metadata,
+            tags_json,
+        });
+    }
+    (iter, batch)
+}
+
 #[tauri::command]
 pub async fn ingest_directory(
     location_id: String,
@@ -80,92 +144,70 @@ async fn ingest_location(
     .await
     .map_err(|e| e.to_string())?;
 
-    let root = std::path::Path::new(&location.root_path);
     let mut files_scanned: u64 = 0;
     let mut new_records: Vec<Map<String, Value>> = Vec::new();
 
-    for entry in WalkDir::new(&location.root_path)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            !e.file_name()
-                .to_str()
-                .map(|s| s.starts_with('.'))
-                .unwrap_or(false)
-        })
-    {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+    // Walking a drive and reading EXIF is slow, blocking I/O: it runs on a
+    // blocking thread, a batch at a time, and each batch is written in one
+    // transaction rather than one commit per file.
+    let root = std::path::PathBuf::from(&location.root_path);
+    let mut walker = Some(
+        WalkDir::new(&location.root_path)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(not_hidden as fn(&walkdir::DirEntry) -> bool),
+    );
 
-        if !entry.file_type().is_file() {
-            continue;
+    while let Some(iter) = walker.take() {
+        let batch_root = root.clone();
+        let (iter, batch) = tauri::async_runtime::spawn_blocking(move || scan_batch(iter, &batch_root))
+            .await
+            .map_err(|e| e.to_string())?;
+        if batch.is_empty() {
+            break;
         }
+        walker = Some(iter);
 
-        let file_path = entry.path().to_string_lossy().to_string();
-
-        let relative_path = entry
-            .path()
-            .strip_prefix(root)
-            .ok()
-            .map(|p| p.to_string_lossy().replace('\\', "/"));
-
-        let (file_type, timestamp, file_size, created_at, metadata) = match extract_file_data(entry.path()) {
-            Some(data) => data,
-            None => continue,
-        };
-
-        let file_size: Option<i64> = Some(file_size);
-        let modified_at = timestamp.clone();
-
-        let metadata_json = serde_json::to_string(&metadata).unwrap_or_default();
-        let file_id = Uuid::new_v4().to_string();
-
-        let tags_json = relative_path.as_deref().map(|rp| {
-            let parts: Vec<&str> = rp.split('/').collect();
-            let folder_parts = &parts[..parts.len().saturating_sub(1)];
-            serde_json::to_string(folder_parts).unwrap_or_else(|_| "[]".to_string())
-        }).unwrap_or_else(|| "[]".to_string());
-
-        let result = sqlx::query(
-            "INSERT OR IGNORE INTO files \
-             (file_id, file_path, file_type, timestamp, library, metadata, \
-              location_id, relative_path, file_size, modified_at, created_at, tags) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&file_id)
-        .bind(&file_path)
-        .bind(&file_type)
-        .bind(&timestamp)
-        .bind(&location.library)
-        .bind(&metadata_json)
-        .bind(location_id)
-        .bind(&relative_path)
-        .bind(file_size)
-        .bind(&modified_at)
-        .bind(&created_at)
-        .bind(&tags_json)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        if result.rows_affected() > 0 {
-            files_scanned += 1;
-            new_records.push(metadata);
-        }
-
-        if files_scanned > 0 && files_scanned % 100 == 0 {
-            app.emit(
-                "indexing_progress",
-                serde_json::json!({
-                    "location_id": location_id,
-                    "files_scanned": files_scanned,
-                    "done": false
-                }),
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+        for file in batch {
+            let result = sqlx::query(
+                "INSERT OR IGNORE INTO files \
+                 (file_id, file_path, file_type, timestamp, library, metadata, \
+                  location_id, relative_path, file_size, modified_at, created_at, tags) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .ok();
+            .bind(Uuid::new_v4().to_string())
+            .bind(&file.file_path)
+            .bind(&file.file_type)
+            .bind(&file.timestamp)
+            .bind(&location.library)
+            .bind(serde_json::to_string(&file.metadata).unwrap_or_default())
+            .bind(location_id)
+            .bind(&file.relative_path)
+            .bind(file.file_size)
+            .bind(&file.timestamp)
+            .bind(&file.created_at)
+            .bind(&file.tags_json)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+
+            if result.rows_affected() > 0 {
+                files_scanned += 1;
+                new_records.push(file.metadata);
+            }
         }
+        tx.commit().await.map_err(|e| e.to_string())?;
+
+        app.emit(
+            "indexing_progress",
+            serde_json::json!({
+                "location_id": location_id,
+                "files_scanned": files_scanned,
+                "done": false
+            }),
+        )
+        .ok();
     }
 
     bootstrap_properties(&location.library, &new_records, pool).await?;
@@ -184,20 +226,18 @@ async fn ingest_location(
         .await
         .map_err(|e| e.to_string())?;
 
+        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
         for row in &rows {
             let file_id: String = row.get("file_id");
             let rel_path: String = row.get("relative_path");
-            let parts: Vec<&str> = rel_path.split('/').collect();
-            let folder_parts = &parts[..parts.len().saturating_sub(1)];
-            let tags_json = serde_json::to_string(folder_parts)
-                .unwrap_or_else(|_| "[]".to_string());
             sqlx::query("UPDATE files SET tags = ? WHERE file_id = ?")
-                .bind(&tags_json)
+                .bind(folder_tags(&rel_path))
                 .bind(&file_id)
-                .execute(pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(|e| e.to_string())?;
         }
+        tx.commit().await.map_err(|e| e.to_string())?;
     }
 
     // Re-apply any existing path mapping nodes so newly ingested files are classified.
@@ -392,4 +432,42 @@ async fn bootstrap_properties(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn walker(root: &std::path::Path) -> Walker {
+        WalkDir::new(root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(not_hidden as fn(&walkdir::DirEntry) -> bool)
+    }
+
+    fn fixtures() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+    }
+
+    #[test]
+    fn folder_tags_lists_parent_folders() {
+        assert_eq!(folder_tags("Finance/Receipts/a.pdf"), r#"["Finance","Receipts"]"#);
+        assert_eq!(folder_tags("a.pdf"), "[]");
+    }
+
+    #[test]
+    fn scan_batch_finds_every_file_with_relative_paths() {
+        let root = fixtures();
+        let (iter, batch) = scan_batch(walker(&root), &root);
+        let expected = WalkDir::new(&root)
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_file() && !e.file_name().to_string_lossy().starts_with('.'))
+            .count();
+        assert_eq!(batch.len(), expected);
+        assert!(batch.iter().all(|f| f.relative_path.as_deref().is_some_and(|p| !p.starts_with('/'))));
+        // The walk is exhausted: the next batch is empty
+        let (_, rest) = scan_batch(iter, &root);
+        assert!(rest.is_empty());
+    }
 }

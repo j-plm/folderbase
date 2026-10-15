@@ -35,7 +35,7 @@ export default function MainPane() {
       {viewMode === "list" && <ListView files={files} />}
       {viewMode === "columns" && <ColumnsView files={files} />}
       {viewMode === "database" && (
-        <LocationDatabaseView files={files} locationId={activeLocationId} onMappingChanged={refresh} />
+        <LocationDatabaseView files={files} locationId={activeLocationId} onChanged={refresh} />
       )}
     </div>
   );

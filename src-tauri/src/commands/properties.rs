@@ -3,14 +3,15 @@ use crate::models::{Property, PropertyValue};
 use tauri::State;
 use uuid::Uuid;
 
-const VALID_VALUE_TYPES: &[&str] = &["enum", "free_text", "array", "date"];
+const VALID_VALUE_TYPES: &[&str] = &["enum", "free_text", "array", "date", "number"];
 
-fn validate_value_type(value_type: &str) -> Result<(), String> {
+pub fn validate_value_type(value_type: &str) -> Result<(), String> {
     if VALID_VALUE_TYPES.contains(&value_type) {
         Ok(())
     } else {
         Err(format!(
-            "invalid value_type '{value_type}'; must be one of: enum, free_text, array, date"
+            "invalid value_type '{value_type}'; must be one of: {}",
+            VALID_VALUE_TYPES.join(", ")
         ))
     }
 }
@@ -58,9 +59,14 @@ pub async fn create_property(
     name: String,
     library: Option<String>,
     value_type: String,
+    config: Option<String>,
     db: State<'_, DbPool>,
 ) -> Result<Property, String> {
     validate_value_type(&value_type)?;
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("property name cannot be empty".into());
+    }
 
     let existing: i64 = match &library {
         Some(lib) => sqlx::query_scalar(
@@ -88,12 +94,13 @@ pub async fn create_property(
 
     let property_id = Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO properties (property_id, name, library, value_type) VALUES (?, ?, ?, ?)",
+        "INSERT INTO properties (property_id, name, library, value_type, config) VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&property_id)
     .bind(&name)
     .bind(&library)
     .bind(&value_type)
+    .bind(&config)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
@@ -103,25 +110,25 @@ pub async fn create_property(
         name,
         library,
         value_type,
+        config,
     })
 }
 
+/// Changes a property's type and options, converting the values files already hold.
 #[tauri::command]
 pub async fn update_property_type(
     property_id: String,
     value_type: String,
+    config: Option<String>,
     db: State<'_, DbPool>,
 ) -> Result<(), String> {
-    validate_value_type(&value_type)?;
-
-    sqlx::query("UPDATE properties SET value_type = ? WHERE property_id = ?")
-        .bind(&value_type)
-        .bind(&property_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(())
+    crate::commands::metadata::change_property_type_impl(
+        db.inner(),
+        &property_id,
+        &value_type,
+        config.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]

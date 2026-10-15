@@ -1,22 +1,31 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen } from "@tauri-apps/api/event";
 import {
+  createProperty,
+  createPropertyValue,
+  deletePropertyValue,
+  deleteProperty,
   getLocationProperties,
+  getLocations,
   getMappingNodes,
+  getProperties,
+  getPropertyValues,
   ingestDirectory,
+  renameProperty,
+  setMetadataCells,
+  type CellEdit,
+  updatePropertyType,
 } from "../../lib/commands";
-import type { FileRecord } from "../../types";
+import type { FileRecord, Property, PropertyConfig, PropertyValue, ValueType } from "../../types";
 import PathMappingPanel from "../mapping/PathMappingPanel";
-import { FileIcon } from "../../lib/fileIcons";
+import { FileIcon, SymbolIcon } from "../../lib/fileIcons";
 import { formatFinderDate, formatFinderSize } from "../../lib/arrange";
 import {
   cellBoxStyle,
-  compareSortValues,
   moveColumnId,
   orderColumns,
-  toggleSort,
   type ColumnDef,
   type SortState,
 } from "../../lib/columns";
@@ -26,12 +35,52 @@ import { measureText, uiFont } from "../../lib/textMeasure";
 import { useColumnLayout } from "../../hooks/useColumnLayout";
 import TableHeader from "./shared/TableHeader";
 import { useSelection } from "../../hooks/useSelection";
+import { useUndo } from "../../hooks/useUndo";
 import MenuPopover from "../shared/MenuPopover";
+import Dialog, { DialogButton } from "../shared/Dialog";
+import { hasPrimaryModifier, isToggleSelect } from "../../lib/platform";
+import {
+  CURRENCIES,
+  EXTRACTED_KEYS,
+  coerceValue,
+  dateKey,
+  defaultCurrency,
+  editText,
+  formatValue,
+  listValues,
+  newPropertyKinds,
+  uniqueName,
+  parseConfig,
+  parseInput,
+  valueToText,
+} from "../../lib/propertyTypes";
+import { applyFilters, cycleSort, multiSort, newRule, type ColumnKind, type FilterMatch, type FilterRule } from "../../lib/dbTable";
+import {
+  EMPTY_CELLS,
+  cellKey,
+  clickCell,
+  copyGrid,
+  fillWrites,
+  isSolidRect,
+  moveCell,
+  parseCellKey,
+  parseTsv,
+  pasteWrites,
+  pruneCells,
+  rectCells,
+  toTsv,
+  type CellRef,
+  type CellSelection,
+  type CellWrite,
+} from "../../lib/cellSelection";
+import FilterSortPopover, { type FilterColumn } from "./db/FilterSortPopover";
+import { HeaderNameEditor, ListCellEditor, PropertyValueView, TextCellEditor, type CommitMove } from "./db/CellEditors";
 
 interface Props {
   files: FileRecord[];
   locationId: string;
-  onMappingChanged?: () => void;
+  /** Called after file data changes here (edits, mapping, property changes) so the files reload. */
+  onChanged?: () => void;
 }
 
 interface IndexingProgress {
@@ -61,17 +110,44 @@ const STANDARD_COLUMNS: ColumnDef[] = [
   { id: "modified", label: "Modified", weight: 1.2, minWidth: 100 },
 ];
 const TAGS_COLUMN: ColumnDef = { id: "tags", label: "Tags", weight: 2, minWidth: 120, sortable: false };
+/** The trailing header cell holding "+" (add property). */
+const ADD_COLUMN: ColumnDef = {
+  id: "__add",
+  label: "",
+  weight: 0,
+  minWidth: 32,
+  sortable: false,
+  reorderable: false,
+  hideable: false,
+  resizable: false,
+};
 const PROP_PREFIX = "prop:";
+const propName = (columnId: string) => columnId.slice(PROP_PREFIX.length);
 
-function propertyColumn(name: string): ColumnDef {
-  return { id: PROP_PREFIX + name, label: name, weight: 1.4, minWidth: 90 };
+const NATIVE_KINDS: Record<string, ColumnKind> = {
+  name: "text",
+  ext: "text",
+  path: "text",
+  type: "text",
+  size: "number",
+  created: "date",
+  modified: "date",
+  tags: "list",
+};
+const KIND_BY_TYPE: Record<ValueType, ColumnKind> = {
+  free_text: "text",
+  number: "number",
+  date: "date",
+  enum: "list",
+  array: "list",
+};
+
+function propertyColumn(name: string, type: ValueType): ColumnDef {
+  return { id: PROP_PREFIX + name, label: name, weight: 1.4, minWidth: 90, align: type === "number" ? "right" : undefined };
 }
 
-function sortValue(file: FileRecord, key: string): string | number | null | undefined {
-  if (key.startsWith(PROP_PREFIX)) {
-    const value = (file.metadata as Record<string, unknown> | null)?.[key.slice(PROP_PREFIX.length)];
-    return value == null ? null : String(value);
-  }
+/** A native column's value for filtering. */
+function nativeValue(file: FileRecord, key: string): unknown {
   switch (key) {
     case "name":
       return fileName(file.file_path);
@@ -87,38 +163,18 @@ function sortValue(file: FileRecord, key: string): string | number | null | unde
       return file.timestamp;
     case "modified":
       return file.modified_at;
+    case "tags":
+      return Array.isArray(file.tags) ? file.tags : [];
     default:
       return null;
   }
 }
 
-/** Rendered width of a cell's content, for double-click-to-fit. */
-function measureCell(file: FileRecord, key: string): number {
-  if (key === "tags") {
-    const tags = Array.isArray(file.tags) ? file.tags : [];
-    const shown = tags.slice(0, MAX_TAGS_SHOWN);
-    const pills = [...shown];
-    if (tags.length > MAX_TAGS_SHOWN) pills.push(`+${tags.length - MAX_TAGS_SHOWN}`);
-    const pillFont = uiFont(11);
-    // each pill: text + px-1.5 padding; gap-1 between pills
-    return pills.reduce((sum, p, i) => sum + measureText(p, pillFont) + 12 + (i > 0 ? 4 : 0), 0);
-  }
-  const body = uiFont(13);
-  if (key === "name") return measureText(fileName(file.file_path), body) + 22; // icon + gap
-  if (key.startsWith(PROP_PREFIX)) {
-    const value = (file.metadata as Record<string, unknown> | null)?.[key.slice(PROP_PREFIX.length)];
-    return measureText(value != null ? String(value) : "—", body);
-  }
-  const text: Record<string, string> = {
-    ext: fileExtension(file.file_path),
-    path: file.relative_path ?? file.file_path,
-    type: file.file_type ?? "",
-    size: formatFinderSize(file.file_size),
-    created: formatFinderDate(file.timestamp),
-    modified: formatFinderDate(file.modified_at),
-  };
-  return measureText(text[key] ?? "", body);
+function metaValue(file: FileRecord | undefined, key: string): unknown {
+  return (file?.metadata as Record<string, unknown> | null | undefined)?.[key] ?? null;
 }
+
+const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 const CELL = "shrink-0 px-3 truncate whitespace-nowrap";
 // Finder list metrics: 20pt rows, rounded stripes inset 10px.
@@ -130,18 +186,60 @@ const TOOLBAR_BUTTON_IDLE = "border-neutral-700 text-neutral-300 hover:text-neut
 const TOOLBAR_BUTTON_ACTIVE = "border-blue-500/60 text-blue-400 hover:text-blue-300 hover:border-blue-400";
 const DEFAULT_SORT: SortState = { key: "path", direction: "asc" };
 
-export default function LocationDatabaseView({ files, locationId, onMappingChanged }: Props) {
+const ARROWS: Record<string, [number, number]> = {
+  ArrowUp: [-1, 0],
+  ArrowDown: [1, 0],
+  ArrowLeft: [0, -1],
+  ArrowRight: [0, 1],
+};
+const MOVES: Record<CommitMove, [number, number]> = {
+  down: [1, 0],
+  up: [-1, 0],
+  right: [0, 1],
+  left: [0, -1],
+  none: [0, 0],
+};
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw == null ? fallback : (JSON.parse(raw) as T);
+  } catch {
+    return fallback;
+  }
+}
+
+function saveJson(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Column preferences are a convenience; ignore storage failures
+  }
+}
+
+export default function LocationDatabaseView({ files, locationId, onChanged }: Props) {
   const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<SortState>(DEFAULT_SORT);
+  const [sorts, setSorts] = useState<SortState[]>([DEFAULT_SORT]);
+  const [rules, setRules] = useState<FilterRule[]>([]);
+  const [match, setMatch] = useState<FilterMatch>("all");
   const [indexing, setIndexing] = useState<{
     scanned: number;
     done: boolean;
   } | null>(null);
   const [reindexing, setReindexing] = useState(false);
-  const [reindexError, setReindexError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [mappingOpen, setMappingOpen] = useState(false);
   /** The Columns button while its checklist is open. */
   const [columnsAnchor, setColumnsAnchor] = useState<HTMLElement | null>(null);
+  /** The Filter or Sort panel, while open. */
+  const [panel, setPanel] = useState<"filter" | "sort" | null>(null);
+  const filterButtonRef = useRef<HTMLButtonElement>(null);
+  const sortButtonRef = useRef<HTMLButtonElement>(null);
+  /** A property whose name is being edited in its header. */
+  const [renaming, setRenaming] = useState<{ name: string; text: string; error?: string } | null>(null);
+  /** Sort order before the last header click, restored when that click turns out to start a double-click. */
+  const sortsBeforeClick = useRef<SortState[] | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
   const [hasMappings, setHasMappings] = useState(false);
 
   // Column visibility
@@ -149,54 +247,83 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
   const [columnOrder, setColumnOrder] = useState<string[]>([]);
   const [showTags, setShowTags] = useState(false);
   const [visibleProperties, setVisibleProperties] = useState<string[]>([]);
-  const [availableProperties, setAvailableProperties] = useState<string[]>([]);
+  /** Metadata keys present on this location's files. */
+  const [metadataKeys, setMetadataKeys] = useState<string[]>([]);
+  const [frozen, setFrozen] = useState(true);
+  const [scrolledX, setScrolledX] = useState(false);
+
+  // Property registry for this location's library
+  const [library, setLibrary] = useState<string | null>(null);
+  const [registry, setRegistry] = useState<Property[]>([]);
+  /** Registered values of Dropdown and Multi-select properties, by property id. */
+  const [registryValues, setRegistryValues] = useState<Record<string, PropertyValue[]>>({});
+
+  // Edits show at once; the files reload once the writes finish
+  const [patches, setPatches] = useState<Map<string, Record<string, unknown>>>(() => new Map());
+  const pendingWrites = useRef(0);
+  const history = useUndo(locationId, (e) => setError(String(e)));
 
   // Reset view state and load column prefs when switching locations
   useEffect(() => {
     setSearch("");
-    setSort(DEFAULT_SORT);
+    setSorts([DEFAULT_SORT]);
+    setRules([]);
+    setMatch("all");
     setIndexing(null);
     setReindexing(false);
-    setReindexError(null);
+    setError(null);
     setMappingOpen(false);
     setColumnsAnchor(null);
+    setPanel(null);
+    setRenaming(null);
+    setPatches(new Map());
 
-    const savedTags =
-      localStorage.getItem(`col-tags-${locationId}`) === "true";
-    let savedProps: string[] = [];
-    let savedHidden: string[] = [];
-    let savedOrder: string[] = [];
-    try {
-      savedProps = JSON.parse(
-        localStorage.getItem(`col-props-${locationId}`) ?? "[]"
-      );
-      savedHidden = JSON.parse(
-        localStorage.getItem(`col-hidden-${locationId}`) ?? "[]"
-      );
-      savedOrder = JSON.parse(
-        localStorage.getItem(`col-order-${locationId}`) ?? "[]"
-      );
-    } catch {}
-    setShowTags(savedTags);
-    setVisibleProperties(savedProps);
-    setHiddenStandard(savedHidden);
-    setColumnOrder(savedOrder);
+    setShowTags(loadJson(`col-tags-${locationId}`, false));
+    setVisibleProperties(loadJson<string[]>(`col-props-${locationId}`, []));
+    setHiddenStandard(loadJson<string[]>(`col-hidden-${locationId}`, []));
+    setColumnOrder(loadJson<string[]>(`col-order-${locationId}`, []));
+    setFrozen(loadJson(`col-freeze-${locationId}`, true));
   }, [locationId]);
 
   useEffect(() => {
     getMappingNodes(locationId)
       .then((nodes) => setHasMappings(nodes.length > 0))
       .catch(() => {});
-  }, [locationId]);
-
-  useEffect(() => {
-    getLocationProperties(locationId)
-      .then((props) => {
-        setAvailableProperties(props);
-        setVisibleProperties((prev) => prev.filter((p) => props.includes(p)));
-      })
+    getLocations()
+      .then((locs) => setLibrary(locs.find((l) => l.location_id === locationId)?.library ?? null))
       .catch(() => {});
   }, [locationId]);
+
+  const loadKeys = useCallback(() => {
+    getLocationProperties(locationId)
+      .then(setMetadataKeys)
+      .catch(() => {});
+  }, [locationId]);
+  useEffect(loadKeys, [loadKeys]);
+
+  const loadRegistry = useCallback(async () => {
+    if (!library) {
+      setRegistry([]);
+      return;
+    }
+    setRegistry(await getProperties(library));
+  }, [library]);
+  useEffect(() => {
+    loadRegistry().catch(() => {});
+  }, [loadRegistry]);
+
+  // Fetch registered values for list properties that don't have them yet
+  useEffect(() => {
+    const need = registry.filter(
+      (p) => (p.value_type === "enum" || p.value_type === "array") && !(p.property_id in registryValues)
+    );
+    if (need.length === 0) return;
+    Promise.all(
+      need.map((p) => getPropertyValues(p.property_id).then((vs) => [p.property_id, vs] as const))
+    )
+      .then((entries) => setRegistryValues((prev) => ({ ...prev, ...Object.fromEntries(entries) })))
+      .catch(() => {});
+  }, [registry, registryValues]);
 
   // Progress banner + refresh available properties after reindex
   useEffect(() => {
@@ -208,12 +335,8 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
       if (p.done) {
         setReindexing(false);
         setTimeout(() => setIndexing(null), 2500);
-        getLocationProperties(locationId)
-          .then((props) => {
-            setAvailableProperties(props);
-            setVisibleProperties((prev) => prev.filter((p) => props.includes(p)));
-          })
-          .catch(() => {});
+        loadKeys();
+        loadRegistry().catch(() => {});
       }
     }).then((fn) => {
       unlisten = fn;
@@ -221,20 +344,119 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
     return () => {
       unlisten?.();
     };
-  }, [locationId]);
+  }, [locationId, loadKeys, loadRegistry]);
 
   async function handleReindex() {
     setReindexing(true);
-    setReindexError(null);
+    setError(null);
     setIndexing({ scanned: 0, done: false });
     try {
       await ingestDirectory(locationId);
     } catch (e) {
-      setReindexError(String(e));
+      setError(String(e));
       setReindexing(false);
       setIndexing(null);
     }
   }
+
+  // ── Properties ────────────────────────────────────────────────────────────
+
+  /** Library-scoped properties win over global ones of the same name. */
+  const propByName = useMemo(() => {
+    const map = new Map<string, Property>();
+    for (const p of registry) {
+      if (!map.has(p.name) || p.library != null) map.set(p.name, p);
+    }
+    return map;
+  }, [registry]);
+
+  const typeOf = useCallback((name: string): ValueType => propByName.get(name)?.value_type ?? "free_text", [propByName]);
+  const configOf = useCallback((name: string): PropertyConfig => parseConfig(propByName.get(name)), [propByName]);
+
+  /** Every property this location can show: registered ones and keys found on its files. */
+  const availableProperties = useMemo(
+    () =>
+      [...new Set([...metadataKeys, ...registry.map((p) => p.name)])]
+        .filter((n) => !n.startsWith("_"))
+        .sort((a, b) => a.localeCompare(b)),
+    [metadataKeys, registry]
+  );
+  const shownProperties = useMemo(
+    () => visibleProperties.filter((p) => availableProperties.includes(p)),
+    [visibleProperties, availableProperties]
+  );
+
+  /** Custom property cells are editable; native columns and values read from the file are not. */
+  const isEditable = useCallback(
+    (columnId: string) => columnId.startsWith(PROP_PREFIX) && !EXTRACTED_KEYS.has(propName(columnId)),
+    []
+  );
+
+  const kindOf = useCallback(
+    (columnId: string): ColumnKind =>
+      columnId.startsWith(PROP_PREFIX) ? KIND_BY_TYPE[typeOf(propName(columnId))] : NATIVE_KINDS[columnId] ?? "text",
+    [typeOf]
+  );
+
+  // ── Rows: edits applied, then search, filters and sort ─────────────────────
+
+  const rows = useMemo(() => {
+    if (patches.size === 0) return files;
+    return files.map((f) => {
+      const patch = patches.get(f.file_id);
+      if (!patch) return f;
+      const metadata: Record<string, unknown> = { ...(f.metadata ?? {}) };
+      for (const [k, v] of Object.entries(patch)) {
+        if (v == null) delete metadata[k];
+        else metadata[k] = v;
+      }
+      return { ...f, metadata };
+    });
+  }, [files, patches]);
+
+  // Fresh data from disk replaces the optimistic edits once no writes are in flight
+  useEffect(() => {
+    if (pendingWrites.current === 0) setPatches((p) => (p.size === 0 ? p : new Map()));
+  }, [files]);
+
+  const columnValue = useCallback(
+    (file: FileRecord, columnId: string): unknown =>
+      columnId.startsWith(PROP_PREFIX) ? metaValue(file, propName(columnId)) : nativeValue(file, columnId),
+    []
+  );
+
+  const sortValue = useCallback(
+    (file: FileRecord, columnId: string): string | number | null | undefined => {
+      if (!columnId.startsWith(PROP_PREFIX)) {
+        const v = nativeValue(file, columnId);
+        return Array.isArray(v) ? v.join(", ") : (v as string | number | null);
+      }
+      const name = propName(columnId);
+      const v = metaValue(file, name);
+      if (v == null) return null;
+      const type = typeOf(name);
+      if (type === "number" && typeof v === "number") return v;
+      if (type === "date") return dateKey(v) ?? valueToText(v);
+      return valueToText(v);
+    },
+    [typeOf]
+  );
+
+  // Only re-filter and re-sort when the inputs change, not on every render
+  // (column drags and selection clicks re-render many times a second)
+  const sorted = useMemo(() => {
+    const q = search.toLowerCase();
+    const searched = q
+      ? rows.filter(
+          (f) =>
+            fileName(f.file_path).toLowerCase().includes(q) ||
+            (f.relative_path ?? "").toLowerCase().includes(q)
+        )
+      : rows;
+    return multiSort(applyFilters(searched, rules, match, columnValue, kindOf), sorts, sortValue);
+  }, [rows, search, rules, match, sorts, columnValue, kindOf, sortValue]);
+
+  // ── Columns ───────────────────────────────────────────────────────────────
 
   function toggleStandard(id: string) {
     if (id === "name") return;
@@ -242,47 +464,90 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
       ? hiddenStandard.filter((c) => c !== id)
       : [...hiddenStandard, id];
     setHiddenStandard(next);
-    localStorage.setItem(`col-hidden-${locationId}`, JSON.stringify(next));
+    saveJson(`col-hidden-${locationId}`, next);
   }
 
   function toggleShowTags() {
     const next = !showTags;
     setShowTags(next);
-    localStorage.setItem(`col-tags-${locationId}`, String(next));
+    saveJson(`col-tags-${locationId}`, next);
+  }
+
+  /** Updates the shown property columns from their latest value (safe inside undo). */
+  function updateVisibleProperties(update: (prev: string[]) => string[]) {
+    setVisibleProperties((prev) => {
+      const next = update(prev);
+      saveJson(`col-props-${locationId}`, next);
+      return next;
+    });
   }
 
   function toggleProperty(name: string) {
-    const next = visibleProperties.includes(name)
-      ? visibleProperties.filter((p) => p !== name)
-      : [...visibleProperties, name];
-    setVisibleProperties(next);
-    localStorage.setItem(`col-props-${locationId}`, JSON.stringify(next));
+    updateVisibleProperties((prev) => (prev.includes(name) ? prev.filter((p) => p !== name) : [...prev, name]));
+  }
+
+  function toggleFrozen() {
+    setFrozen((f) => {
+      saveJson(`col-freeze-${locationId}`, !f);
+      return !f;
+    });
   }
 
   const columns = useMemo(
-    () =>
-      orderColumns(
+    () => [
+      ...orderColumns(
         [
           ...STANDARD_COLUMNS.filter((c) => !hiddenStandard.includes(c.id)),
           ...(showTags ? [TAGS_COLUMN] : []),
-          ...visibleProperties.map(propertyColumn),
+          ...shownProperties.map((name) => propertyColumn(name, typeOf(name))),
         ],
         columnOrder
       ),
-    [hiddenStandard, showTags, visibleProperties, columnOrder]
+      ADD_COLUMN,
+    ],
+    [hiddenStandard, showTags, shownProperties, columnOrder, typeOf]
   );
 
   function handleReorder(columnId: string, targetIndex: number) {
-    const visibleIds = moveColumnId(columns.map((c) => c.id), columnId, targetIndex);
+    const ids = columns.filter((c) => c.id !== ADD_COLUMN.id).map((c) => c.id);
+    const visibleIds = moveColumnId(ids, columnId, targetIndex);
     // Keep saved positions of currently hidden columns after the visible ones.
     const next = [...visibleIds, ...columnOrder.filter((id) => !visibleIds.includes(id))];
     setColumnOrder(next);
-    localStorage.setItem(`col-order-${locationId}`, JSON.stringify(next));
+    saveJson(`col-order-${locationId}`, next);
   }
+
+  /** Rendered width of a cell's content, for double-click-to-fit. */
+  function measureCell(file: FileRecord, key: string): number {
+    const body = uiFont(13);
+    if (key === ADD_COLUMN.id) return 0;
+    if (key === "tags") {
+      const tags = Array.isArray(file.tags) ? file.tags : [];
+      return measurePills(tags);
+    }
+    if (key === "name") return measureText(fileName(file.file_path), body) + 22; // icon + gap
+    if (key.startsWith(PROP_PREFIX)) {
+      const name = propName(key);
+      const value = metaValue(file, name);
+      const type = typeOf(name);
+      if (type === "enum" || type === "array") return measurePills(listValues(value));
+      return measureText(formatValue(value, type, configOf(name)), body);
+    }
+    const text: Record<string, string> = {
+      ext: fileExtension(file.file_path),
+      path: file.relative_path ?? file.file_path,
+      type: file.file_type ?? "",
+      size: formatFinderSize(file.file_size),
+      created: formatFinderDate(file.timestamp),
+      modified: formatFinderDate(file.modified_at),
+    };
+    return measureText(text[key] ?? "", body);
+  }
+
   const layout = useColumnLayout(
     columns,
     `db-${locationId}`,
-    (key) => files.map((f) => measureCell(f, key)),
+    (key) => sorted.map((f) => measureCell(f, key)),
     INSET,
     hideColumn
   );
@@ -292,7 +557,7 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
     if (id === TAGS_COLUMN.id) {
       if (showTags) toggleShowTags();
     } else if (id.startsWith(PROP_PREFIX)) {
-      if (visibleProperties.includes(id.slice(PROP_PREFIX.length))) toggleProperty(id.slice(PROP_PREFIX.length));
+      if (visibleProperties.includes(propName(id))) toggleProperty(propName(id));
     } else if (!hiddenStandard.includes(id)) {
       toggleStandard(id);
     }
@@ -315,7 +580,7 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
         text: name,
         checked: visibleProperties.includes(name),
         action: () => toggleProperty(name),
-        key: propertyColumn(name).id,
+        key: PROP_PREFIX + name,
       })),
       { type: "separator" },
       { type: "item", text: "Size All Columns to Fit", action: layout.fitAll },
@@ -323,30 +588,264 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
   }
 
   const closeColumnsMenu = useCallback(() => setColumnsAnchor(null), []);
+  const closePanel = useCallback(() => setPanel(null), []);
 
-  // Opens with the clicked column's entry under the pointer, ready to untick
-  function handleHeaderMenu(e: React.MouseEvent, columnId: string | null) {
-    e.preventDefault();
-    showContextMenu(columnMenuEntries(), { alignKey: columnId ?? undefined, event: e });
+  // ── Property management ───────────────────────────────────────────────────
+
+  // Each change below is split into a "core" step, which only does the work and
+  // is safe to run again from undo/redo (it looks properties up afresh and
+  // updates state from its latest value), and a user action that queues the
+  // core step and records how to reverse it.
+
+  /** The registry entry for `name` as it is now, library-scoped first. */
+  async function findProperty(name: string): Promise<Property | undefined> {
+    const props = await getProperties(library ?? undefined);
+    return props.find((p) => p.name === name && p.library === library) ?? props.find((p) => p.name === name);
   }
 
-  // Only re-filter and re-sort when the inputs change, not on every render
-  // (column drags and selection clicks re-render many times a second)
-  const sorted = useMemo(() => {
-    const q = search.toLowerCase();
-    const filtered = q
-      ? files.filter(
-          (f) =>
-            fileName(f.file_path).toLowerCase().includes(q) ||
-            (f.relative_path ?? "").toLowerCase().includes(q)
-        )
-      : files;
-    return [...filtered].sort((a, b) =>
-      compareSortValues(sortValue(a, sort.key), sortValue(b, sort.key), sort.direction)
-    );
-  }, [files, search, sort]);
+  /** The registry entry for `name`, registering a key found only on files as Text. */
+  async function ensureProperty(name: string): Promise<Property> {
+    return (await findProperty(name)) ?? createProperty(name, library, "free_text");
+  }
 
-  const extraColCount = (showTags ? 1 : 0) + visibleProperties.length;
+  /** After a property changes: reload the registry, the keys and the files. */
+  async function afterPropertyChange() {
+    setRegistryValues({});
+    await loadRegistry();
+    loadKeys();
+    onChanged?.();
+  }
+
+  /** Every file's current value for `name`, to put back on undo. */
+  function snapshot(name: string): CellEdit[] {
+    return rows.flatMap((f) => {
+      const value = metaValue(f, name);
+      return value == null ? [] : [{ file_id: f.file_id, key: name, value }];
+    });
+  }
+
+  /** Writes saved values back (after an undo has restored their property). */
+  async function restoreValues(edits: CellEdit[]) {
+    if (edits.length > 0) await setMetadataCells(edits);
+    await afterPropertyChange();
+  }
+
+  function renameInView(from: string, to: string) {
+    const oldId = PROP_PREFIX + from;
+    const newId = PROP_PREFIX + to;
+    updateVisibleProperties((prev) => prev.map((p) => (p === from ? to : p)));
+    setColumnOrder((prev) => {
+      const next = prev.map((id) => (id === oldId ? newId : id));
+      saveJson(`col-order-${locationId}`, next);
+      return next;
+    });
+    setRules((rs) => rs.map((r) => (r.column === oldId ? { ...r, column: newId } : r)));
+    setSorts((ss) => ss.map((s) => (s.key === oldId ? { ...s, key: newId } : s)));
+  }
+
+  function removeFromView(name: string) {
+    updateVisibleProperties((prev) => prev.filter((p) => p !== name));
+    setRules((rs) => rs.filter((r) => r.column !== PROP_PREFIX + name));
+    setSorts((ss) => ss.filter((s) => s.key !== PROP_PREFIX + name));
+  }
+
+  async function coreCreate(name: string, type: ValueType, configJson: string | null) {
+    if (!library) throw new Error("This location has no library");
+    if (await findProperty(name)) {
+      await createProperty(name, library, type, configJson); // reports the clash
+    } else if (metadataKeys.includes(name)) {
+      // Files already carry this key: adopt it, converting their values to the new type
+      const prop = await createProperty(name, library, "free_text");
+      if (type !== "free_text" || configJson) await updatePropertyType(prop.property_id, type, configJson);
+    } else {
+      await createProperty(name, library, type, configJson);
+    }
+    updateVisibleProperties((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    await afterPropertyChange();
+  }
+
+  async function coreDelete(name: string) {
+    const prop = await findProperty(name);
+    if (prop) await deleteProperty(prop.property_id);
+    removeFromView(name);
+    await afterPropertyChange();
+  }
+
+  async function coreRename(from: string, to: string) {
+    const prop = await ensureProperty(from);
+    await renameProperty(prop.property_id, to);
+    renameInView(from, to);
+    await afterPropertyChange();
+  }
+
+  async function coreSetType(name: string, type: ValueType, configJson: string | null) {
+    const prop = await ensureProperty(name);
+    await updatePropertyType(prop.property_id, type, configJson);
+    await afterPropertyChange();
+  }
+
+  /** "+": adds a column of this type, named after it, with the name ready to type over. */
+  async function addProperty(label: string, type: ValueType, config: PropertyConfig | null) {
+    const name = uniqueName(label, availableProperties);
+    const configJson = config ? JSON.stringify(config) : null;
+    // Values already on files under this name (adopted), to put back if the add is undone
+    const before = snapshot(name);
+    try {
+      await history.queue(() => coreCreate(name, type, configJson));
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    history.push({
+      label: "Add Property",
+      undo: async () => {
+        await coreDelete(name);
+        if (before.length > 0) await restoreValues(before);
+      },
+      redo: () => coreCreate(name, type, configJson),
+    });
+    setRenaming({ name, text: name });
+  }
+
+  function showAddMenu(e: React.MouseEvent) {
+    showContextMenu(
+      newPropertyKinds().map((k): MenuEntry => ({ type: "item", text: k.label, action: () => addProperty(k.label, k.type, k.config) })),
+      { event: e }
+    );
+  }
+
+  async function changeType(name: string, type: ValueType, config: PropertyConfig | null) {
+    const prev = propByName.get(name);
+    const prevType = prev?.value_type ?? "free_text";
+    const prevConfig = prev?.config ?? null;
+    const configJson = config ? JSON.stringify(config) : null;
+    // Conversions can merge values (a list joined into text), so undo restores them exactly
+    const before = snapshot(name);
+    try {
+      await history.queue(() => coreSetType(name, type, configJson));
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    history.push({
+      label: "Change Property Type",
+      undo: async () => {
+        await coreSetType(name, prevType, prevConfig);
+        await restoreValues(before);
+      },
+      redo: () => coreSetType(name, type, configJson),
+    });
+  }
+
+  async function submitRename(text: string) {
+    if (!renaming) return;
+    const from = renaming.name;
+    const to = text.trim();
+    if (!to || to === from) {
+      setRenaming(null);
+      return;
+    }
+    try {
+      await history.queue(() => coreRename(from, to));
+    } catch (e) {
+      setRenaming({ ...renaming, text, error: String(e) });
+      return;
+    }
+    history.push({ label: "Rename Property", undo: () => coreRename(to, from), redo: () => coreRename(from, to) });
+    setRenaming(null);
+  }
+
+  async function confirmDelete() {
+    if (!deleting) return;
+    const name = deleting;
+    setDeleting(null);
+    const prop = propByName.get(name);
+    const type = prop?.value_type ?? "free_text";
+    const config = prop?.config ?? null;
+    const values = (prop && registryValues[prop.property_id]?.map((v) => v.value)) || [];
+    const before = snapshot(name);
+    try {
+      await history.queue(() => coreDelete(name));
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    history.push({
+      label: "Delete Property",
+      undo: async () => {
+        // Recreate it as it was: type, options, registered values, then every file's value
+        const restored = await createProperty(name, library, type, config);
+        for (const v of values) await createPropertyValue(restored.property_id, v).catch(() => {});
+        updateVisibleProperties((prev) => (prev.includes(name) ? prev : [...prev, name]));
+        await restoreValues(before);
+      },
+      redo: () => coreDelete(name),
+    });
+  }
+
+  function typeMenu(name: string): MenuEntry[] {
+    const type = typeOf(name);
+    const config = configOf(name);
+    const format = type === "number" ? config.format ?? "generic" : null;
+    const check = (text: string, checked: boolean, action: () => void): MenuEntry => ({ type: "check", text, checked, action });
+    return [
+      check("Text", type === "free_text", () => changeType(name, "free_text", null)),
+      check("Number", format === "generic", () => changeType(name, "number", { format: "generic" })),
+      {
+        type: "submenu",
+        text: "Currency",
+        items: [...new Set([defaultCurrency(), ...CURRENCIES])].map((c) =>
+          check(c, format === "currency" && config.currency === c, () => changeType(name, "number", { format: "currency", currency: c }))
+        ),
+      },
+      check("Percentage", format === "percent", () => changeType(name, "number", { format: "percent" })),
+      check("Date", type === "date", () => changeType(name, "date", null)),
+      { type: "separator" },
+      check("Dropdown", type === "enum", () => changeType(name, "enum", null)),
+      check("Multi-select", type === "array", () => changeType(name, "array", null)),
+    ];
+  }
+
+  // Right-click on a header: actions for that column, then the column list
+  function handleHeaderMenu(e: React.MouseEvent, columnId: string | null) {
+    e.preventDefault();
+    const col = columns.find((c) => c.id === columnId && c.id !== ADD_COLUMN.id);
+    const entries: MenuEntry[] = [];
+    if (col) {
+      if (col.sortable !== false) {
+        entries.push(
+          { type: "item", text: "Sort Ascending", action: () => setSorts([{ key: col.id, direction: "asc" }]) },
+          { type: "item", text: "Sort Descending", action: () => setSorts([{ key: col.id, direction: "desc" }]) }
+        );
+      }
+      entries.push({
+        type: "item",
+        text: `Filter by ${col.label}…`,
+        action: () => {
+          setRules((rs) => [...rs, newRule(col.id, kindOf(col.id))]);
+          setPanel("filter");
+        },
+      });
+      if (isEditable(col.id)) {
+        const name = propName(col.id);
+        entries.push(
+          { type: "separator" },
+          { type: "item", text: "Rename Property…", action: () => setRenaming({ name, text: name }) },
+          { type: "submenu", text: "Property Type", items: typeMenu(name) },
+          { type: "item", text: "Delete Property…", action: () => setDeleting(name) }
+        );
+      }
+      entries.push({ type: "separator" });
+    }
+    entries.push(
+      { type: "check", text: "Freeze Name Column", checked: frozen, action: toggleFrozen },
+      { type: "separator" },
+      ...columnMenuEntries()
+    );
+    showContextMenu(entries, { event: e });
+  }
+
+  // ── Selection ─────────────────────────────────────────────────────────────
 
   const rowVirtualizer = useVirtualizer({
     count: sorted.length,
@@ -355,29 +854,413 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
     overscan: 10,
   });
 
+  // Rows: clicking a native cell (Name, Size…) selects the row, as in Finder
   const selection = useSelection(sorted, {
     arrowKeys: true,
     onReveal: (index) => rowVirtualizer.scrollToIndex(index),
   });
 
-  function renderCell(col: ColumnDef, file: FileRecord) {
+  // Cells: clicking a custom property cell selects just that cell
+  const editableColumns = useMemo(() => columns.filter((c) => isEditable(c.id)).map((c) => c.id), [columns, isEditable]);
+  const rowIds = useMemo(() => sorted.map((f) => f.file_id), [sorted]);
+  const grid = useMemo(() => ({ rows: rowIds, cols: editableColumns }), [rowIds, editableColumns]);
+  const rowIndex = useMemo(() => new Map(rowIds.map((id, i) => [id, i])), [rowIds]);
+  const rowById = useMemo(() => new Map(sorted.map((f) => [f.file_id, f])), [sorted]);
+  const [cellSel, setCellSel] = useState<CellSelection>(EMPTY_CELLS);
+  useEffect(() => setCellSel((s) => pruneCells(s, grid)), [grid]);
+  const solidRect = useMemo(() => isSolidRect(cellSel, grid), [cellSel, grid]);
+
+  const cellValue = useCallback(
+    (row: string, col: string) => metaValue(rowById.get(row), propName(col)),
+    [rowById]
+  );
+
+  const [editing, setEditing] = useState<{ ref: CellRef; seed?: string } | null>(null);
+  const [editAnchor, setEditAnchor] = useState<HTMLElement | null>(null);
+  const listMove = useRef<CommitMove>("none");
+
+  /**
+   * Keyboard focus while cells are selected: an offscreen text field, so the
+   * OS's own Copy and Paste (menu and shortcuts) reach the table.
+   */
+  const sinkRef = useRef<HTMLTextAreaElement>(null);
+  const clipboard = useRef<{ text: string; values: unknown[][] } | null>(null);
+  const pasteHandled = useRef(false);
+  const rowsRef = useRef<HTMLDivElement>(null);
+
+  function focusSink() {
+    const el = sinkRef.current;
+    if (!el) return;
+    el.value = " ";
+    el.focus({ preventScroll: true });
+    el.select();
+  }
+
+  function reveal(ref: CellRef | null) {
+    const i = ref ? rowIndex.get(ref.row) : undefined;
+    if (i != null) rowVirtualizer.scrollToIndex(i);
+  }
+
+  /**
+   * Writes cell values: shown at once, saved in order with other changes.
+   * With `select`, the cells become the selection (undo and redo show what changed).
+   */
+  async function applyEdits(edits: CellEdit[], { select = false, queued = true } = {}) {
+    if (edits.length === 0) return;
+    setPatches((prev) => {
+      const next = new Map(prev);
+      for (const e of edits) next.set(e.file_id, { ...next.get(e.file_id), [e.key]: e.value });
+      return next;
+    });
+    if (select) {
+      const refs = edits.map((e) => ({ row: e.file_id, col: PROP_PREFIX + e.key }));
+      setCellSel({ cells: new Set(refs.map(cellKey)), anchor: refs[0], active: refs[0] });
+      reveal(refs[0]);
+      focusSink();
+    }
+    pendingWrites.current++;
+    try {
+      await (queued ? history.queue(() => setMetadataCells(edits)) : setMetadataCells(edits));
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      pendingWrites.current--;
+    }
+    // New Dropdown / Multi-select values may have been registered
+    setRegistryValues({});
+    if (pendingWrites.current === 0) {
+      onChanged?.();
+      loadKeys();
+    }
+  }
+
+  /** A user's edit, fill, paste or clear: written, and recorded so it can be undone. */
+  async function writeCells(writes: CellWrite[], label = "Edit") {
+    const edits = writes.flatMap((w) => {
+      const name = propName(w.col);
+      if (EXTRACTED_KEYS.has(name)) return [];
+      const value = coerceValue(w.value, typeOf(name), configOf(name));
+      return sameValue(value, cellValue(w.row, w.col)) ? [] : [{ file_id: w.row, key: name, value }];
+    });
+    if (edits.length === 0) return;
+    const previous = edits.map((e) => ({ ...e, value: cellValue(e.file_id, PROP_PREFIX + e.key) }));
+    history.push({
+      label,
+      undo: () => applyEdits(previous, { select: true, queued: false }),
+      redo: () => applyEdits(edits, { select: true, queued: false }),
+    });
+    await applyEdits(edits);
+  }
+
+  function onCellClick(e: React.MouseEvent, ref: CellRef) {
+    e.stopPropagation();
+    if (e.detail > 1) return;
+    selection.clear();
+    setCellSel((s) => clickCell(s, ref, { toggle: isToggleSelect(e), range: e.shiftKey }, grid));
+    focusSink();
+  }
+
+  function startEdit(ref: CellRef, seed?: string) {
+    setCellSel({ cells: new Set([cellKey(ref)]), anchor: ref, active: ref });
+    setEditing({ ref, seed });
+    reveal(ref);
+  }
+
+  function endEdit(move: CommitMove) {
+    setEditing(null);
+    setEditAnchor(null);
+    if (move !== "none") {
+      const [dr, dc] = MOVES[move];
+      setCellSel((s) => moveCell(s, dr, dc, false, grid));
+    }
+    requestAnimationFrame(focusSink);
+  }
+
+  function copyCells() {
+    const values = copyGrid(cellSel, grid, cellValue);
+    const text = toTsv(values.map((line) => line.map(valueToText)));
+    clipboard.current = { text, values };
+    navigator.clipboard?.writeText(text).catch(() => {});
+  }
+
+  function pasteValues(values: unknown[][]) {
+    const writes = pasteWrites(values, cellSel, grid);
+    writeCells(writes, "Paste");
+    // A pasted block becomes the selection, as in a spreadsheet
+    if (values.length > 1 || (values[0]?.length ?? 0) > 1) {
+      const first = writes[0];
+      const last = writes[writes.length - 1];
+      if (first && last) {
+        setCellSel({ cells: new Set(rectCells(first, last, grid).map(cellKey)), anchor: first, active: first });
+      }
+    }
+  }
+
+  function onTableKeyDown(e: React.KeyboardEvent) {
+    if (editing) return;
+    const active = cellSel.active;
+    if (cellSel.cells.size === 0 || !active) {
+      selection.onKeyDown(e);
+      return;
+    }
+    const mod = hasPrimaryModifier(e);
+    if (ARROWS[e.key] && !mod) {
+      e.preventDefault();
+      const [dr, dc] = ARROWS[e.key];
+      const next = moveCell(cellSel, dr, dc, e.shiftKey, grid);
+      setCellSel(next);
+      reveal(next.active);
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      setCellSel(moveCell(cellSel, 0, e.shiftKey ? -1 : 1, false, grid));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      startEdit(active);
+    } else if (e.key === "Escape") {
+      setCellSel(EMPTY_CELLS);
+    } else if (e.key === "Backspace" || e.key === "Delete") {
+      e.preventDefault();
+      writeCells([...cellSel.cells].map((k) => ({ ...parseCellKey(k), value: null })), "Clear");
+    } else if (mod && e.key === "a") {
+      e.preventDefault();
+      const all = rectCells({ row: grid.rows[0], col: grid.cols[0] }, { row: grid.rows[grid.rows.length - 1], col: grid.cols[grid.cols.length - 1] }, grid);
+      setCellSel({ cells: new Set(all.map(cellKey)), anchor: all[0], active: active });
+    } else if (mod && e.key === "c") {
+      // The copy event that follows puts the same text on the clipboard
+      copyCells();
+    } else if (mod && e.key === "v") {
+      // Normally the paste event delivers the clipboard; fall back to our own copy
+      pasteHandled.current = false;
+      window.setTimeout(() => {
+        if (!pasteHandled.current && clipboard.current) pasteValues(clipboard.current.values);
+      }, 60);
+    } else if (!mod && !e.altKey && e.key.length === 1) {
+      // Typing into a selected cell replaces its value
+      e.preventDefault();
+      startEdit(active, e.key);
+    }
+  }
+
+  // Undo / Redo: Cmd-Z and Shift-Cmd-Z (Ctrl-Z / Ctrl-Y elsewhere). Text fields keep their own undo.
+  const { undo, redo } = history;
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (!hasPrimaryModifier(e) || e.altKey) return;
+      const key = e.key.toLowerCase();
+      const isRedo = (key === "z" && e.shiftKey) || (key === "y" && !e.shiftKey);
+      if (key !== "z" && !isRedo) return;
+      const target = e.target as HTMLElement | null;
+      const typing =
+        target !== sinkRef.current &&
+        (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable);
+      if (typing) return;
+      e.preventDefault();
+      if (isRedo) redo();
+      else undo();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
+
+  // ── Fill handle ───────────────────────────────────────────────────────────
+
+  const [fillTo, setFillTo] = useState<number | null>(null);
+
+  function startFill(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = solidRect;
+    const container = layout.container;
+    const body = rowsRef.current;
+    if (!rect || !container || !body) return;
+    const fillGrid = grid;
+    let target = rect.r1;
+    let lastY = e.clientY;
+    let frame = 0;
+
+    const rowAt = (clientY: number) =>
+      Math.max(0, Math.min(fillGrid.rows.length - 1, Math.floor((clientY - body.getBoundingClientRect().top) / ROW_HEIGHT)));
+    const update = () => {
+      target = rowAt(lastY);
+      setFillTo(target);
+    };
+    // Dragging past the top or bottom edge scrolls, faster the further out
+    const tick = () => {
+      const r = container.getBoundingClientRect();
+      const top = r.top + 28;
+      const edge = 20;
+      const dy = lastY < top + edge ? -(top + edge - lastY) / 3 : lastY > r.bottom - edge ? (lastY - r.bottom + edge) / 3 : 0;
+      if (dy) {
+        container.scrollTop += dy;
+        update();
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    const onMove = (ev: MouseEvent) => {
+      lastY = ev.clientY;
+      update();
+    };
+    const onUp = () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      // The click that ends the drag would land on the table and clear the selection
+      const swallow = (ev: MouseEvent) => ev.stopPropagation();
+      window.addEventListener("click", swallow, true);
+      window.setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+      setFillTo(null);
+      const writes = fillWrites(rect, target, fillGrid, cellValue);
+      if (writes.length > 0) {
+        writeCells(writes, "Fill");
+        const from = { row: fillGrid.rows[Math.min(rect.r0, target)], col: fillGrid.cols[rect.c0] };
+        const to = { row: fillGrid.rows[Math.max(rect.r1, target)], col: fillGrid.cols[rect.c1] };
+        const anchor = { row: fillGrid.rows[rect.r0], col: fillGrid.cols[rect.c0] };
+        setCellSel({ cells: new Set(rectCells(from, to, fillGrid).map(cellKey)), anchor, active: anchor });
+      }
+      focusSink();
+    };
+    document.body.style.cursor = "crosshair";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    frame = requestAnimationFrame(tick);
+  }
+
+  /** Rows the fill handle is being dragged over. */
+  const fillRows =
+    fillTo != null && solidRect
+      ? fillTo > solidRect.r1
+        ? [solidRect.r1 + 1, fillTo]
+        : fillTo < solidRect.r0
+          ? [fillTo, solidRect.r0 - 1]
+          : null
+      : null;
+
+  // ── Rendering ─────────────────────────────────────────────────────────────
+
+  const frozenId = frozen ? "name" : null;
+  const extraColCount = (showTags ? 1 : 0) + shownProperties.length;
+
+  function renderPropertyCell(col: ColumnDef, file: FileRecord, rowIdx: number) {
     const style = cellBoxStyle(layout.widths[col.id], layout.phaseOf(col.id));
-    if (col.id.startsWith(PROP_PREFIX)) {
-      const value = (file.metadata as Record<string, unknown> | null)?.[col.id.slice(PROP_PREFIX.length)];
+    const name = propName(col.id);
+    const value = metaValue(file, name);
+    const type = typeOf(name);
+    const config = configOf(name);
+    const align = col.align === "right" ? "text-right justify-end" : "";
+
+    if (!isEditable(col.id)) {
       return (
-        <div key={col.id} style={style} className={`${CELL} ${value != null ? "text-neutral-100" : "text-neutral-500"}`}>
-          {value != null ? String(value) : "—"}
+        <div key={col.id} style={style} className={`${CELL} ${align} ${value != null ? "text-neutral-400" : "text-neutral-500"}`}>
+          {value != null ? formatValue(value, type, config) : "—"}
         </div>
       );
     }
+
+    const ref = { row: file.file_id, col: col.id };
+    const key = cellKey(ref);
+    const selected = cellSel.cells.has(key);
+    const isEditing = editing?.ref.row === ref.row && editing.ref.col === ref.col;
+    const colIdx = grid.cols.indexOf(col.id);
+    const inFill =
+      fillRows != null && solidRect != null && rowIdx >= fillRows[0] && rowIdx <= fillRows[1] && colIdx >= solidRect.c0 && colIdx <= solidRect.c1;
+    const isActive = selected && cellSel.cells.size > 1 && cellSel.active?.row === ref.row && cellSel.active.col === ref.col;
+    const showHandle = !editing && solidRect != null && rowIdx === solidRect.r1 && colIdx === solidRect.c1;
+    const isList = type === "enum" || type === "array";
+    // The selection is outlined as one shape: each cell draws only the edges its
+    // neighbours (in the same column, or the columns either side) don't share
+    const pos = columns.findIndex((c) => c.id === col.id);
+    const selectedAt = (row: string | undefined, column: string | undefined) =>
+      row != null && column != null && cellSel.cells.has(cellKey({ row, col: column }));
+    const frame = selected
+      ? {
+          top: !selectedAt(grid.rows[rowIdx - 1], col.id),
+          bottom: !selectedAt(grid.rows[rowIdx + 1], col.id),
+          left: !selectedAt(ref.row, columns[pos - 1]?.id),
+          right: !selectedAt(ref.row, columns[pos + 1]?.id),
+        }
+      : inFill && fillRows && solidRect
+        ? {
+            top: rowIdx === fillRows[0],
+            bottom: rowIdx === fillRows[1],
+            left: colIdx === solidRect.c0,
+            right: colIdx === solidRect.c1,
+          }
+        : null;
+
+    return (
+      <div
+        key={col.id}
+        ref={isEditing ? setEditAnchor : undefined}
+        style={style}
+        onClick={(e) => onCellClick(e, ref)}
+        onDoubleClick={(e) => {
+          e.stopPropagation();
+          startEdit(ref);
+        }}
+        // No overflow clipping here, so the fill handle can sit over the corner
+        className={`shrink-0 px-3 whitespace-nowrap relative self-stretch flex items-center ${align} ${
+          isActive ? "bg-blue-500/10" : ""
+        }`}
+      >
+        <div className={`min-w-0 flex-1 flex items-center overflow-hidden ${align}`}>
+          {isEditing && !isList ? (
+            <TextCellEditor
+              initial={editing.seed ?? editText(value, type, config)}
+              type={type}
+              onCommit={(text, move) => {
+                writeCells([{ row: ref.row, col: ref.col, value: parseInput(text, type, config) }]);
+                endEdit(move);
+              }}
+              onCancel={() => endEdit("none")}
+            />
+          ) : (
+            <PropertyValueView value={value} type={type} config={config} />
+          )}
+        </div>
+        {frame && <SelectionFrame edges={frame} dashed={!selected} />}
+        {showHandle && (
+          <div
+            title="Drag to fill"
+            onMouseDown={startFill}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute -right-[4px] -bottom-[4px] z-[3] w-[8px] h-[8px] rounded-full bg-blue-500 ring-[1.5px] ring-neutral-900 cursor-crosshair"
+          />
+        )}
+      </div>
+    );
+  }
+
+  function renderCell(col: ColumnDef, file: FileRecord, rowIdx: number, rowSelected: boolean) {
+    if (col.id.startsWith(PROP_PREFIX)) return renderPropertyCell(col, file, rowIdx);
+    const style = cellBoxStyle(layout.widths[col.id], layout.phaseOf(col.id));
     switch (col.id) {
-      case "name":
+      case "name": {
+        const isFrozen = frozenId === "name";
         return (
-          <div key={col.id} style={style} className={`${CELL} flex items-center gap-1.5 text-neutral-100`}>
+          <div
+            key={col.id}
+            style={
+              isFrozen
+                ? {
+                    ...style,
+                    position: "sticky",
+                    left: INSET,
+                    zIndex: 1,
+                    // Covers the inset strip beside it, plus a hairline edge once scrolled across
+                    boxShadow: `-${INSET}px 0 0 var(--n-900)${scrolledX ? ", 1px 0 0 var(--n-700)" : ""}`,
+                  }
+                : style
+            }
+            className={`shrink-0 px-3 whitespace-nowrap overflow-visible flex items-center gap-1.5 text-neutral-100 ${
+              isFrozen ? `rounded-l-md ${rowSelected ? "native-selected" : rowIdx % 2 === 1 ? "bg-neutral-850" : "bg-neutral-900"}` : ""
+            }`}
+          >
             <FileIcon path={file.file_path} mimeType={file.file_type} size={16} />
-            <span className="truncate">{fileName(file.file_path)}</span>
+            <span className="truncate min-w-0">{fileName(file.file_path)}</span>
           </div>
         );
+      }
       case "ext":
         return <div key={col.id} style={style} className={`${CELL} text-neutral-400`}>{fileExtension(file.file_path)}</div>;
       case "path":
@@ -401,17 +1284,105 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
           </div>
         );
       default:
-        return null;
+        return <div key={col.id} style={style} className="shrink-0" />;
     }
   }
+
+  const filterColumns: FilterColumn[] = useMemo(
+    () =>
+      [
+        ...STANDARD_COLUMNS,
+        TAGS_COLUMN,
+        ...availableProperties.map((name) => propertyColumn(name, typeOf(name))),
+      ].map((c) => ({ id: c.id, label: c.label, kind: kindOf(c.id) })),
+    [availableProperties, typeOf, kindOf]
+  );
+
+  /** Removes a Dropdown / Multi-select value from the property and from every file that has it. */
+  async function coreDeleteValue(name: string, value: string) {
+    const prop = await ensureProperty(name);
+    const record =
+      (await getPropertyValues(prop.property_id)).find((v) => v.value === value) ??
+      // A value found only on files: register it so it can be deleted
+      (await createPropertyValue(prop.property_id, value));
+    await deletePropertyValue(record.value_id);
+    await afterPropertyChange();
+  }
+
+  /** Removes a Dropdown / Multi-select value from the property and from every file that has it. */
+  async function deleteListValue(columnId: string, value: string) {
+    const name = propName(columnId);
+    const before = snapshot(name).filter((e) => listValues(e.value).includes(value));
+    try {
+      await history.queue(() => coreDeleteValue(name, value));
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    history.push({
+      label: "Delete Value",
+      undo: async () => {
+        const prop = await ensureProperty(name);
+        await createPropertyValue(prop.property_id, value).catch(() => {});
+        await restoreValues(before);
+      },
+      redo: () => coreDeleteValue(name, value),
+    });
+  }
+
+  /** How many files in this location have `value` in a list column. */
+  function valueUsage(columnId: string, value: string): number {
+    const name = propName(columnId);
+    return rows.filter((f) => listValues(metaValue(f, name)).includes(value)).length;
+  }
+
+  /** Values offered for a list column: registered ones and any already on files. */
+  function valuesFor(columnId: string): string[] {
+    const set = new Set<string>();
+    if (columnId === TAGS_COLUMN.id) {
+      for (const f of rows) for (const t of Array.isArray(f.tags) ? f.tags : []) set.add(t);
+    } else if (columnId.startsWith(PROP_PREFIX)) {
+      const name = propName(columnId);
+      const prop = propByName.get(name);
+      for (const v of (prop && registryValues[prop.property_id]) || []) set.add(v.value);
+      for (const f of rows) for (const v of listValues(metaValue(f, name))) set.add(v);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }
+
+  const editingList =
+    editing && editAnchor && (typeOf(propName(editing.ref.col)) === "enum" || typeOf(propName(editing.ref.col)) === "array")
+      ? editing
+      : null;
+  const activeRules = rules.filter((r) => r.op === "empty" || r.op === "not_empty" || r.value.trim() !== "");
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-2.5 border-b border-neutral-700/60 shrink-0">
         <span className="flex-1 min-w-0 truncate whitespace-nowrap text-neutral-500 text-xs">
-          {sorted.length.toLocaleString()} files
+          {sorted.length === rows.length
+            ? `${sorted.length.toLocaleString()} files`
+            : `${sorted.length.toLocaleString()} of ${rows.length.toLocaleString()} files`}
         </span>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            ref={filterButtonRef}
+            onClick={() => setPanel((p) => (p === "filter" ? null : "filter"))}
+            className={`${TOOLBAR_BUTTON} flex items-center gap-1 ${activeRules.length > 0 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
+          >
+            <SymbolIcon name="line.3.horizontal.decrease" size={11} fallback="≡" />
+            {activeRules.length > 0 ? `Filter (${activeRules.length})` : "Filter"}
+          </button>
+          <button
+            ref={sortButtonRef}
+            onClick={() => setPanel((p) => (p === "sort" ? null : "sort"))}
+            className={`${TOOLBAR_BUTTON} flex items-center gap-1 ${sorts.length > 1 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
+          >
+            <SymbolIcon name="arrow.up.arrow.down" size={11} fallback="↕" />
+            {sorts.length > 1 ? `Sort (${sorts.length})` : "Sort"}
+          </button>
+        </div>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -465,9 +1436,12 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
         />
       </div>
 
-      {reindexError && (
-        <div className="px-4 py-2 bg-red-950/40 text-red-400 text-xs border-b border-red-900/40 shrink-0">
-          {reindexError}
+      {error && (
+        <div className="flex items-center gap-2 px-4 py-2 bg-red-950/40 text-red-400 text-xs border-b border-red-900/40 shrink-0">
+          <span className="flex-1">{error}</span>
+          <button onClick={() => setError(null)} className="text-red-300 hover:text-red-200">
+            Dismiss
+          </button>
         </div>
       )}
       {indexing && !indexing.done && (
@@ -485,9 +1459,16 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
       <div
         ref={layout.setContainer}
         tabIndex={0}
-        onKeyDown={selection.onKeyDown}
+        onKeyDown={onTableKeyDown}
+        onScroll={(e) => {
+          const x = e.currentTarget.scrollLeft > 0;
+          if (x !== scrolledX) setScrolledX(x);
+        }}
         onClick={(e) => {
-          if (!(e.target as HTMLElement).closest("[data-table-header]")) selection.clear();
+          if (!(e.target as HTMLElement).closest("[data-table-header]")) {
+            selection.clear();
+            setCellSel(EMPTY_CELLS);
+          }
         }}
         className="flex-1 min-h-0 overflow-auto outline-none"
       >
@@ -495,14 +1476,50 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
           columns={columns}
           widths={layout.widths}
           contentWidth={layout.contentWidth}
-          sort={sort}
-          onSort={(key) => setSort((s) => toggleSort(s, key))}
+          sort={sorts[0] ?? null}
+          onSort={(key) => {
+            sortsBeforeClick.current = sorts;
+            setSorts((s) => cycleSort(s, key));
+          }}
+          onHeaderDoubleClick={(columnId) => {
+            if (!isEditable(columnId)) return;
+            // The double-click's first click sorted; put the order back
+            if (sortsBeforeClick.current) setSorts(sortsBeforeClick.current);
+            const name = propName(columnId);
+            setRenaming({ name, text: name });
+          }}
           onResizeStart={layout.startResize}
           onResetColumn={layout.resetColumn}
           onContextMenu={handleHeaderMenu}
           onReorder={handleReorder}
           inset={INSET}
           phaseOf={layout.phaseOf}
+          frozenColumnId={frozenId}
+          frozenEdge={scrolledX}
+          renderLabel={(col) =>
+            renaming && col.id === PROP_PREFIX + renaming.name ? (
+              <HeaderNameEditor
+                key={renaming.error ?? ""}
+                initial={renaming.text}
+                error={renaming.error}
+                onCommit={submitRename}
+                onCancel={() => setRenaming(null)}
+              />
+            ) : col.id === ADD_COLUMN.id ? (
+              <button
+                title="Add Property"
+                aria-label="Add Property"
+                onMouseDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  showAddMenu(e);
+                }}
+                className="-ml-1.5 w-5 h-5 flex items-center justify-center rounded-[5px] text-neutral-400 hover:text-neutral-100 hover:bg-neutral-700/60"
+              >
+                <SymbolIcon name="plus" size={12} fallback="+" />
+              </button>
+            ) : undefined
+          }
         />
         {sorted.length === 0 ? (
           <div className="flex items-center justify-center py-16 text-neutral-500 text-sm">
@@ -510,11 +1527,12 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
               ? indexing && !indexing.done
                 ? "Indexing…"
                 : "No files indexed. Try Re-index."
-              : "No files match your search"}
+              : "No files match your search or filters"}
           </div>
         ) : (
           <div style={{ paddingLeft: INSET, paddingRight: INSET }}>
             <div
+              ref={rowsRef}
               style={{
                 height: `${rowVirtualizer.getTotalSize()}px`,
                 width: layout.contentWidth,
@@ -537,8 +1555,13 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
                       width: "100%",
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
+                      // Lift the row with the fill handle so the handle overlaps the row below
+                      zIndex: !editing && solidRect?.r1 === virtualRow.index ? 2 : undefined,
                     }}
-                    onClick={(e) => selection.onItemClick(e, file.file_id)}
+                    onClick={(e) => {
+                      setCellSel(EMPTY_CELLS);
+                      selection.onItemClick(e, file.file_id);
+                    }}
                     onDoubleClick={(e) => selection.onItemDoubleClick(e, file.file_id)}
                     className={`flex items-center rounded-md text-body cursor-default ${
                       joinsAbove ? "rounded-t-none" : ""
@@ -550,7 +1573,7 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
                           : ""
                     }`}
                   >
-                    {columns.map((col) => renderCell(col, file))}
+                    {columns.map((col) => renderCell(col, file, virtualRow.index, isSelected))}
                   </div>
                 );
               })}
@@ -559,11 +1582,90 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
         )}
       </div>
 
+      <textarea
+        ref={sinkRef}
+        aria-hidden
+        tabIndex={-1}
+        onKeyDown={onTableKeyDown}
+        onCopy={(e) => {
+          if (!clipboard.current) return;
+          e.preventDefault();
+          e.clipboardData.setData("text/plain", clipboard.current.text);
+        }}
+        onPaste={(e) => {
+          e.preventDefault();
+          pasteHandled.current = true;
+          const text = e.clipboardData.getData("text/plain");
+          const internal = clipboard.current;
+          pasteValues(internal && internal.text === text ? internal.values : parseTsv(text));
+        }}
+        onInput={(e) => {
+          e.currentTarget.value = " ";
+        }}
+        className="fixed -left-50 top-0 w-px h-px opacity-0 pointer-events-none"
+      />
+
+      {editingList && editAnchor && (
+        <ListCellEditor
+          anchor={editAnchor}
+          value={cellValue(editingList.ref.row, editingList.ref.col)}
+          multiple={typeOf(propName(editingList.ref.col)) === "array"}
+          options={valuesFor(editingList.ref.col)}
+          seed={editingList.seed}
+          onDeleteValue={(value) => deleteListValue(editingList.ref.col, value)}
+          usage={(value) => valueUsage(editingList.ref.col, value)}
+          onCommit={(value, move) => {
+            listMove.current = move;
+            writeCells([{ ...editingList.ref, value }]);
+          }}
+          onClose={() => {
+            const move = listMove.current;
+            listMove.current = "none";
+            endEdit(move);
+          }}
+        />
+      )}
+
       {columnsAnchor && (
         <MenuPopover
           anchor={columnsAnchor}
           entries={columnMenuEntries()}
           onClose={closeColumnsMenu}
+        />
+      )}
+
+      {panel && (panel === "filter" ? filterButtonRef : sortButtonRef).current && (
+        <FilterSortPopover
+          key={panel}
+          section={panel}
+          anchor={(panel === "filter" ? filterButtonRef : sortButtonRef).current!}
+          onClose={closePanel}
+          columns={filterColumns}
+          rules={rules}
+          match={match}
+          sorts={sorts}
+          onRulesChange={setRules}
+          onMatchChange={setMatch}
+          onSortsChange={setSorts}
+          valuesFor={valuesFor}
+        />
+      )}
+
+
+      {deleting && (
+        <Dialog
+          title={`Delete “${deleting}”?`}
+          message="The property and its values are removed from every file in this library. This can't be undone."
+          onCancel={() => setDeleting(null)}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton onClick={() => setDeleting(null)}>Cancel</DialogButton>
+              <DialogButton variant="destructive" onClick={confirmDelete}>
+                Delete
+              </DialogButton>
+            </>
+          }
         />
       )}
 
@@ -575,13 +1677,8 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
             getMappingNodes(locationId)
               .then((nodes) => setHasMappings(nodes.length > 0))
               .catch(() => {});
-            getLocationProperties(locationId)
-              .then((props) => {
-                setAvailableProperties(props);
-                setVisibleProperties((prev) => prev.filter((p) => props.includes(p)));
-              })
-              .catch(() => {});
-            onMappingChanged?.();
+            loadKeys();
+            onChanged?.();
           }}
         />
       )}
@@ -590,6 +1687,16 @@ export default function LocationDatabaseView({ files, locationId, onMappingChang
 }
 
 const MAX_TAGS_SHOWN = 4;
+
+/** Width of a row of pills, for double-click-to-fit. */
+function measurePills(items: string[]): number {
+  const shown = items.slice(0, MAX_TAGS_SHOWN);
+  const pills = [...shown];
+  if (items.length > MAX_TAGS_SHOWN) pills.push(`+${items.length - MAX_TAGS_SHOWN}`);
+  const pillFont = uiFont(11);
+  // each pill: text + px-1.5 padding; gap-1 between pills
+  return pills.reduce((sum, p, i) => sum + measureText(p, pillFont) + 12 + (i > 0 ? 4 : 0), 0);
+}
 
 function TagPills({ tags }: { tags: string[] }) {
   if (tags.length === 0) return null;
@@ -611,5 +1718,33 @@ function TagPills({ tags }: { tags: string[] }) {
         </span>
       )}
     </div>
+  );
+}
+
+/** Accent outline drawn on the outer edges of a cell selection (dashed while filling). */
+function SelectionFrame({
+  edges,
+  dashed,
+}: {
+  edges: { top: boolean; bottom: boolean; left: boolean; right: boolean };
+  dashed: boolean;
+}) {
+  const w = (on: boolean) => (on ? 2 : 0);
+  const r = (a: boolean, b: boolean) => (a && b ? 4 : 0);
+  return (
+    <div
+      aria-hidden
+      className={`pointer-events-none absolute inset-0 border-blue-500 ${dashed ? "border-dashed" : "border-solid"}`}
+      style={{
+        borderTopWidth: w(edges.top),
+        borderBottomWidth: w(edges.bottom),
+        borderLeftWidth: w(edges.left),
+        borderRightWidth: w(edges.right),
+        borderTopLeftRadius: r(edges.top, edges.left),
+        borderTopRightRadius: r(edges.top, edges.right),
+        borderBottomLeftRadius: r(edges.bottom, edges.left),
+        borderBottomRightRadius: r(edges.bottom, edges.right),
+      }}
+    />
   );
 }

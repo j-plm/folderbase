@@ -15,6 +15,8 @@ export interface ColumnDef {
   reorderable?: boolean;
   /** False stops the column being dragged to zero width to hide it (e.g. Name). */
   hideable?: boolean;
+  /** False hides the divider (e.g. the database view's "+" column). */
+  resizable?: boolean;
 }
 
 export type SortDirection = "asc" | "desc";
@@ -198,6 +200,10 @@ export function toggleSort(current: SortState, key: string): SortState {
   return { key, direction: current.direction === "asc" ? "desc" : "asc" };
 }
 
+// One collator for every comparison: localeCompare with options builds a new
+// one per call, which makes sorting tens of thousands of files take seconds.
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
 /** Compares two sort values; null / undefined / "" always sort last. */
 export function compareSortValues(
   a: string | number | null | undefined,
@@ -210,6 +216,6 @@ export function compareSortValues(
   const cmp =
     typeof a === "number" && typeof b === "number"
       ? a - b
-      : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+      : collator.compare(String(a), String(b));
   return direction === "asc" ? cmp : -cmp;
 }

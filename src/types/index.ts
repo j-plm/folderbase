@@ -37,7 +37,20 @@ export interface Property {
   property_id: string;
   name: string;
   library: string | null;
-  value_type: "enum" | "free_text" | "array" | "date";
+  value_type: ValueType;
+  /** JSON type options; see PropertyConfig. */
+  config?: string | null;
+}
+
+/** Text, Number, Date, Dropdown, Multi-select (registry names kept from the spec). */
+export type ValueType = "free_text" | "number" | "date" | "enum" | "array";
+
+export type NumberFormat = "generic" | "currency" | "percent";
+
+export interface PropertyConfig {
+  format?: NumberFormat;
+  /** ISO 4217 code, for the currency format. */
+  currency?: string;
 }
 
 export interface PropertyValue {

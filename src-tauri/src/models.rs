@@ -33,6 +33,8 @@ pub struct Property {
     pub name: String,
     pub library: Option<String>,
     pub value_type: String,
+    /// JSON type options, e.g. {"format":"currency","currency":"GBP"}.
+    pub config: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow)]

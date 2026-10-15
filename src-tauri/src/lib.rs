@@ -55,6 +55,8 @@ pub fn run() {
             commands::properties::create_property_value,
             commands::properties::delete_property_value,
             commands::properties::delete_property,
+            commands::metadata::rename_property,
+            commands::metadata::set_metadata_cells,
             commands::views::get_views,
             commands::views::get_view_nodes,
             commands::views::create_view,

@@ -139,6 +139,11 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
+    // Type options for a property (number format, currency), as JSON.
+    let _ = sqlx::query("ALTER TABLE properties ADD COLUMN config TEXT")
+        .execute(pool)
+        .await;
+
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_files_tags ON files(tags)",
     )

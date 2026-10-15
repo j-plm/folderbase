@@ -84,20 +84,41 @@ export async function getPropertyValues(
 export async function createProperty(
   name: string,
   library: string | null,
-  valueType: string
+  valueType: string,
+  config: string | null = null
 ): Promise<Property> {
   return invoke<Property>("create_property", {
     name,
     library,
     valueType,
+    config,
   });
 }
 
+/** Changes the type (and options), converting the values files already hold. */
 export async function updatePropertyType(
   propertyId: string,
-  valueType: string
+  valueType: string,
+  config: string | null = null
 ): Promise<void> {
-  return invoke<void>("update_property_type", { propertyId, valueType });
+  return invoke<void>("update_property_type", { propertyId, valueType, config });
+}
+
+/** Renames a property and moves its values to the new key. */
+export async function renameProperty(propertyId: string, name: string): Promise<Property> {
+  return invoke<Property>("rename_property", { propertyId, name });
+}
+
+export interface CellEdit {
+  file_id: string;
+  key: string;
+  /** null removes the value. */
+  value: unknown;
+}
+
+/** Writes many metadata cells in one transaction; registers new list values. */
+export async function setMetadataCells(edits: CellEdit[]): Promise<void> {
+  return invoke<void>("set_metadata_cells", { edits });
 }
 
 export async function createPropertyValue(

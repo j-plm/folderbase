@@ -5,6 +5,7 @@ pub mod files;
 pub mod icons;
 pub mod ingest;
 pub mod locations;
+pub mod metadata;
 pub mod path_mapping;
 pub mod properties;
 pub mod views;

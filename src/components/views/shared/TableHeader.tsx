@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import type React from "react";
+import type { ReactNode } from "react";
 import { cellBoxStyle, dropIndexAt, type ColumnDef, type ColumnPhase, type SortState } from "../../../lib/columns";
 import { SymbolIcon } from "../../../lib/fileIcons";
 
@@ -19,6 +20,14 @@ interface Props {
   inset?: number;
   /** Collapse state of a column being dragged closed (see useColumnLayout). */
   phaseOf?: (columnId: string) => ColumnPhase | undefined;
+  /** A leading column pinned to the left edge while scrolling across (database view's Name). */
+  frozenColumnId?: string | null;
+  /** The table is scrolled across, so the frozen column shows its edge. */
+  frozenEdge?: boolean;
+  /** Replaces a column's label, e.g. with a button. */
+  renderLabel?: (col: ColumnDef) => ReactNode;
+  /** Double-click on a header (not its divider), e.g. to rename the column. */
+  onHeaderDoubleClick?: (columnId: string) => void;
 }
 
 /** Pointer movement before a press on a header becomes a drag rather than a click. */
@@ -43,14 +52,21 @@ export default function TableHeader({
   onReorder,
   inset = 0,
   phaseOf,
+  frozenColumnId,
+  frozenEdge,
+  renderLabel,
+  onHeaderDoubleClick,
 }: Props) {
   const rowRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   // A drag ends with a click event on the header; this swallows it so it doesn't sort.
   const suppressClick = useRef(false);
 
-  // Leading columns that can't move (Name) also can't be dropped in front of.
+  // Leading columns that can't move (Name) also can't be dropped in front of,
+  // nor trailing ones (the "+") after.
   const minIndex = columns.findIndex((c) => c.reorderable !== false);
+  let maxIndex = columns.length;
+  while (maxIndex > 0 && columns[maxIndex - 1].reorderable === false) maxIndex--;
 
   function startDrag(col: ColumnDef, e: React.MouseEvent) {
     if (!onReorder || col.reorderable === false || e.button !== 0) return;
@@ -61,10 +77,13 @@ export default function TableHeader({
       const offset = ev.clientX - startX;
       if (!state && Math.abs(offset) < DRAG_THRESHOLD) return;
       const left = rowRef.current?.getBoundingClientRect().left ?? 0;
-      const targetIndex = dropIndexAt(
-        columns.map((c) => widths[c.id] ?? 0),
-        ev.clientX - left,
-        minIndex
+      const targetIndex = Math.min(
+        maxIndex,
+        dropIndexAt(
+          columns.map((c) => widths[c.id] ?? 0),
+          ev.clientX - left,
+          minIndex
+        )
       );
       state = { columnId: col.id, offset, targetIndex };
       setDrag(state);
@@ -105,6 +124,7 @@ export default function TableHeader({
         {columns.map((col) => {
           const sorted = sort?.key === col.id ? sort.direction : null;
           const isDragged = drag?.columnId === col.id;
+          const frozen = col.id === frozenColumnId;
           return (
             <div
               key={col.id}
@@ -112,22 +132,31 @@ export default function TableHeader({
               style={{
                 ...cellBoxStyle(widths[col.id], phaseOf?.(col.id)),
                 transform: isDragged ? `translateX(${drag!.offset}px)` : undefined,
+                ...(frozen ? { position: "sticky", left: inset, zIndex: 15 } : null),
               }}
               onMouseDown={(e) => startDrag(col, e)}
-              onClick={() => {
+              onClick={(e) => {
                 if (suppressClick.current) {
                   suppressClick.current = false;
                   return;
                 }
-                if (col.sortable !== false) onSort(col.id);
+                // The second click of a double-click doesn't sort again
+                if (col.sortable !== false && e.detail < 2) onSort(col.id);
               }}
+              onDoubleClick={() => onHeaderDoubleClick?.(col.id)}
               className={`relative shrink-0 flex items-center gap-1 px-3 text-xs whitespace-nowrap ${
                 sorted ? "text-neutral-100 font-medium" : "text-neutral-400"
-              } ${isDragged ? "z-20 bg-neutral-800 shadow-md opacity-90 rounded-sm" : ""}`}
+              } ${isDragged ? "z-20 bg-neutral-800 shadow-md opacity-90 rounded-sm" : ""} ${
+                frozen ? `bg-neutral-900 ${frozenEdge ? "shadow-[1px_0_0_var(--n-700)]" : ""}` : ""
+              }`}
             >
-              <span className="truncate">{col.label}</span>
+              {frozen && (
+                // Covers the inset strip so columns scrolling under the frozen one don't show beside it
+                <div className="absolute top-0 h-full bg-neutral-900" style={{ left: -inset, width: inset }} />
+              )}
+              {renderLabel?.(col) ?? <span className="truncate">{col.label}</span>}
               {sorted && <SortChevron direction={sorted} />}
-              <div
+              {col.resizable !== false && <div
                 title="Drag to resize · double-click to fit"
                 onMouseDown={(e) => onResizeStart(col.id, e)}
                 onDoubleClick={(e) => {
@@ -138,7 +167,7 @@ export default function TableHeader({
                 className="absolute -right-[4px] top-0 z-10 flex h-full w-[9px] cursor-col-resize justify-center"
               >
                 <div className="my-auto h-3.5 w-px bg-neutral-700" />
-              </div>
+              </div>}
             </div>
           );
         })}
