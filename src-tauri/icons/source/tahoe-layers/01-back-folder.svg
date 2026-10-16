@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 128 128">
+  <title>FolderBase layer 1: back folder</title>
+  <g transform="translate(7 7) scale(1.14)">
+    <g transform="translate(0 1)">
+      <path d="M8 30a6 6 0 0 1 6-6H35.5a6 6 0 0 1 4.6 2.2L44 31H86a6 6 0 0 1 6 6V76a6 6 0 0 1-6 6H14a6 6 0 0 1-6-6Z" fill="#E6A323"/>
+    </g>
+  </g>
+</svg>

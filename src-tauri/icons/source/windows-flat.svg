@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 100 100">
+  <title>FolderBase icon (Windows, flat)</title>
+  <g transform="translate(0 1)">
+    <path d="M8 30a6 6 0 0 1 6-6H35.5a6 6 0 0 1 4.6 2.2L44 31H86a6 6 0 0 1 6 6V76a6 6 0 0 1-6 6H14a6 6 0 0 1-6-6Z" fill="#E6A323"/>
+    <g transform="translate(0 2)">
+      <rect x="18" y="14" width="64" height="54" rx="5" fill="#fff" stroke="#C9D2E0" stroke-width="1"/>
+      <path d="M18 19a5 5 0 0 1 5-5H77a5 5 0 0 1 5 5V24H18Z" fill="#6FA4F0"/>
+      <path d="M18 24H82M18 32H82M40 14V36M62 14V36" stroke="#C5CCD8" stroke-width="1.3" fill="none"/>
+    </g>
+    <rect x="8" y="36" width="84" height="46" rx="6" fill="#FFC93D"/>
+    <path d="M14 36.6H86" stroke="#fff" stroke-opacity=".5" stroke-width="1.2" stroke-linecap="round"/>
+  </g>
+</svg>
