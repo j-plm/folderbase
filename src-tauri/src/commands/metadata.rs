@@ -358,6 +358,157 @@ pub async fn change_property_type_impl(
     tx.commit().await.map_err(|e| e.to_string())
 }
 
+/// `value` with list item (or single value) `from` renamed to `to`; a list
+/// already holding `to` keeps one copy. Returns whether anything changed.
+pub fn rename_in_value(value: &mut Value, from: &str, to: &str) -> bool {
+    match value {
+        Value::Array(items) => {
+            if !items.iter().any(|v| v.as_str() == Some(from)) {
+                return false;
+            }
+            let mut renamed: Vec<Value> = Vec::with_capacity(items.len());
+            for item in items.iter() {
+                let next = if item.as_str() == Some(from) { Value::String(to.to_string()) } else { item.clone() };
+                if !renamed.contains(&next) {
+                    renamed.push(next);
+                }
+            }
+            *items = renamed;
+            true
+        }
+        Value::String(s) if s == from => {
+            *s = to.to_string();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Renames a Select / Multi-select value everywhere: in the registry and in every
+/// file that has it. Renaming onto an existing value merges the two. When folders
+/// are mapped to the value (it's a folder name, or was renamed from one), they
+/// keep mapping to the new name through `value_aliases`, so a refresh doesn't
+/// bring the old name back.
+pub async fn rename_property_value_impl(pool: &DbPool, property_id: &str, from: &str, to: &str) -> Result<(), String> {
+    let to = to.trim();
+    if to.is_empty() {
+        return Err("a value can't be empty".into());
+    }
+    if from == to {
+        return Ok(());
+    }
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let prop = sqlx::query_as::<_, Property>("SELECT * FROM properties WHERE property_id = ?")
+        .bind(property_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| format!("property not found: {e}"))?;
+
+    // Is `from` the name of a folder mapped to this property?
+    let mapped_folders: Vec<String> = match &prop.library {
+        Some(lib) => sqlx::query_scalar(
+            "SELECT folder_path FROM path_mapping_nodes WHERE property_name = ? \
+             AND location_id IN (SELECT location_id FROM locations WHERE library = ?)",
+        )
+        .bind(&prop.name)
+        .bind(lib)
+        .fetch_all(&mut *tx)
+        .await,
+        None => sqlx::query_scalar("SELECT folder_path FROM path_mapping_nodes WHERE property_name = ?")
+            .bind(&prop.name)
+            .fetch_all(&mut *tx)
+            .await,
+    }
+    .map_err(|e| e.to_string())?;
+    let from_is_folder = mapped_folders
+        .iter()
+        .any(|p| p.replace('\\', "/").trim_end_matches('/').rsplit('/').next() == Some(from));
+
+    // Registry: rename, or merge into a value that already has the name
+    let target_exists: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM property_values WHERE property_id = ? AND value = ?")
+            .bind(property_id)
+            .bind(to)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    if target_exists > 0 {
+        sqlx::query("DELETE FROM property_values WHERE property_id = ? AND value = ?")
+            .bind(property_id)
+            .bind(from)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    } else {
+        let renamed = sqlx::query("UPDATE property_values SET value = ? WHERE property_id = ? AND value = ?")
+            .bind(to)
+            .bind(property_id)
+            .bind(from)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected();
+        if renamed == 0 {
+            register_values(&mut tx, property_id, [to.to_string()]).await?;
+        }
+    }
+
+    // Folder names that mapped to `from` now map to `to`, as does `from` itself
+    // when it's a folder name; a value renamed back to its folder's name needs no alias
+    sqlx::query("UPDATE value_aliases SET value = ? WHERE property_id = ? AND value = ?")
+        .bind(to)
+        .bind(property_id)
+        .bind(from)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    if from_is_folder {
+        sqlx::query("INSERT OR REPLACE INTO value_aliases (property_id, source, value) VALUES (?, ?, ?)")
+            .bind(property_id)
+            .bind(from)
+            .bind(to)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    sqlx::query("DELETE FROM value_aliases WHERE property_id = ? AND source = value")
+        .bind(property_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    for (file_id, mut meta) in files_in_scope(&mut tx, prop.library.as_deref()).await? {
+        if meta.get_mut(&prop.name).is_some_and(|v| rename_in_value(v, from, to)) {
+            save_metadata(&mut tx, &file_id, &meta).await?;
+        }
+    }
+
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn rename_property_value(
+    property_id: String,
+    from: String,
+    to: String,
+    db: State<'_, DbPool>,
+) -> Result<(), String> {
+    rename_property_value_impl(db.inner(), &property_id, &from, &to).await
+}
+
+/// The value a folder called `folder_name` maps to in this property: its renamed
+/// value if it has one (see `value_aliases`), otherwise its own name.
+pub async fn mapped_value(conn: &mut SqliteConnection, property_id: &str, folder_name: &str) -> Result<String, String> {
+    let alias: Option<String> =
+        sqlx::query_scalar("SELECT value FROM value_aliases WHERE property_id = ? AND source = ?")
+            .bind(property_id)
+            .bind(folder_name)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| e.to_string())?;
+    Ok(alias.unwrap_or_else(|| folder_name.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +536,21 @@ mod tests {
         assert_eq!(convert_value(&json!(["7"]), "number"), Some(json!(7.0)));
         assert_eq!(convert_value(&json!("Rig-A"), "number"), Some(json!("Rig-A")));
         assert_eq!(convert_value(&Value::Null, "number"), None);
+    }
+
+    #[test]
+    fn renames_list_items_and_single_values() {
+        let mut list = json!(["01 Apollo", "Hermes"]);
+        assert!(rename_in_value(&mut list, "01 Apollo", "Apollo"));
+        assert_eq!(list, json!(["Apollo", "Hermes"]));
+        // Merging keeps one copy
+        let mut both = json!(["01 Apollo", "Apollo"]);
+        assert!(rename_in_value(&mut both, "01 Apollo", "Apollo"));
+        assert_eq!(both, json!(["Apollo"]));
+        let mut single = json!("01 Apollo");
+        assert!(rename_in_value(&mut single, "01 Apollo", "Apollo"));
+        assert_eq!(single, json!("Apollo"));
+        assert!(!rename_in_value(&mut json!("Other"), "01 Apollo", "Apollo"));
     }
 
     #[test]

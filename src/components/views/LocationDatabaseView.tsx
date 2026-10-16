@@ -16,6 +16,7 @@ import {
   getProperties,
   getPropertyValues,
   renameProperty,
+  renamePropertyValue,
   setEditMenuLabels,
   setFolderLabels,
   setMetadataCells,
@@ -96,7 +97,7 @@ import {
   type CellWrite,
 } from "../../lib/cellSelection";
 import FilterSortPopover, { type FilterColumn } from "./db/FilterSortPopover";
-import { HeaderNameEditor, ListCellEditor, PropertyValueView, TextCellEditor, type CommitMove } from "./db/CellEditors";
+import { HeaderNameEditor, ListCellEditor, ValueListEditor, PropertyValueView, TextCellEditor, type CommitMove } from "./db/CellEditors";
 
 interface Props {
   files: FileRecord[];
@@ -275,12 +276,16 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   /** Sort order before the last header click, restored when that click turns out to start a double-click. */
   const sortsBeforeClick = useRef<SortState[] | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  /** A list column whose values are being edited (Edit Values…), and the header it opens from. */
+  const [valuesEditor, setValuesEditor] = useState<{ columnId: string; anchor: HTMLElement } | null>(null);
   const [hasMappings, setHasMappings] = useState(false);
 
   // Column visibility
   const [hiddenStandard, setHiddenStandard] = useState<string[]>([]);
   const [columnOrder, setColumnOrder] = useState<string[]>([]);
   const [showTags, setShowTags] = useState(false);
+  /** Source Tags shows only tags not yet recorded in a property. */
+  const [hideCovered, setHideCovered] = useState(false);
   const [visibleProperties, setVisibleProperties] = useState<string[]>([]);
   /** Metadata keys present on this location's files. */
   const [metadataKeys, setMetadataKeys] = useState<string[]>([]);
@@ -325,6 +330,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     setPatches(new Map());
 
     setShowTags(loadJson(`col-tags-${locationId}`, false));
+    setHideCovered(loadJson(`col-tags-hide-covered-${locationId}`, false));
     setVisibleProperties(loadJson<string[]>(`col-props-${locationId}`, []));
     setHiddenStandard(loadJson<string[]>(`col-hidden-${locationId}`, []));
     setColumnOrder(loadJson<string[]>(`col-order-${locationId}`, []));
@@ -512,6 +518,42 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     saveJson(`col-tags-${locationId}`, next);
   }
 
+  function toggleHideCovered() {
+    const next = !hideCovered;
+    setHideCovered(next);
+    saveJson(`col-tags-hide-covered-${locationId}`, next);
+  }
+
+  /** A file's source tags as shown: without the covered ones when those are hidden. */
+  /** Folder names behind renamed values ("Apollo" ← "01 Apollo"), across this library's list properties. */
+  const aliasSources = useMemo(() => {
+    const map = new Map<string, string[]>();
+    for (const values of Object.values(registryValues)) {
+      for (const v of values) if (v.sources?.length) map.set(v.value, [...(map.get(v.value) ?? []), ...v.sources]);
+    }
+    return map;
+  }, [registryValues]);
+
+  /** Source tags a file's properties account for, counting folder names whose values were renamed. */
+  const coveredFor = useCallback(
+    (file: FileRecord): Set<string> => {
+      const covered = coveredValues(file.metadata as Record<string, unknown> | null);
+      for (const v of [...covered]) for (const source of aliasSources.get(v) ?? []) covered.add(source);
+      return covered;
+    },
+    [aliasSources]
+  );
+
+  const shownSourceTags = useCallback(
+    (file: FileRecord): string[] => {
+      const tags = Array.isArray(file.tags) ? file.tags : [];
+      if (!hideCovered) return tags;
+      const covered = coveredFor(file);
+      return tags.filter((t) => !covered.has(t));
+    },
+    [hideCovered, coveredFor]
+  );
+
   /** Updates the shown property columns from their latest value (safe inside undo). */
   function updateVisibleProperties(update: (prev: string[]) => string[]) {
     setVisibleProperties((prev) => {
@@ -578,10 +620,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   function measureCell(file: FileRecord, key: string): number {
     const body = uiFont(13);
     if (key === ADD_COLUMN.id) return 0;
-    if (key === "tags") {
-      const tags = Array.isArray(file.tags) ? file.tags : [];
-      return measurePills(tags);
-    }
+    if (key === "tags") return measurePills(shownSourceTags(file));
     if (key === "name") return measureText(fileName(file.file_path), body) + 22; // icon + gap
     if (key.startsWith(PROP_PREFIX)) {
       const name = propName(key);
@@ -975,6 +1014,9 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           { type: "item", text: "Sort Descending", action: () => setSorts([{ key: col.id, direction: "desc" }]) }
         );
       }
+      if (col.id === TAGS_COLUMN.id) {
+        entries.push({ type: "check", text: "Hide Tags Recorded in Properties", checked: hideCovered, action: toggleHideCovered });
+      }
       entries.push({
         type: "item",
         text: `Filter by ${col.label}…`,
@@ -995,6 +1037,9 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           { type: "separator" },
           { type: "item", text: "Rename Property…", action: () => setRenaming({ name, text: name }) }
         );
+        if (typeOf(name) === "enum" || typeOf(name) === "array") {
+          entries.push({ type: "item", text: "Edit Values…", action: () => openValuesEditor(col.id) });
+        }
         if (typeOf(name) === "array") {
           entries.push({ type: "check", text: "Wrap Values", checked: wraps(name), action: () => toggleWrap(name) });
         }
@@ -1027,11 +1072,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       wrapSourceTags && columns.some((c) => c.id === TAGS_COLUMN.id) ? (layout.widths[TAGS_COLUMN.id] ?? 0) - CELL_PADDING : null;
     if (wrapping.length === 0 && tagsWidth == null) return null;
     return sorted.map((f) => {
-      let lines = tagsWidth == null ? 1 : pillLines(Array.isArray(f.tags) ? f.tags : [], tagsWidth);
+      // Only the tags shown count: hiding recorded ones shrinks the row
+      let lines = tagsWidth == null ? 1 : pillLines(shownSourceTags(f), tagsWidth);
       for (const { name, width } of wrapping) lines = Math.max(lines, pillLines(listValues(metaValue(f, name)), width));
       return rowHeightFor(lines);
     });
-  }, [columns, isEditable, wraps, wrapSourceTags, layout.widths, sorted]);
+  }, [columns, isEditable, wraps, wrapSourceTags, shownSourceTags, layout.widths, sorted]);
   const rowTops = useMemo(() => {
     if (!rowHeights) return null;
     const tops = new Array<number>(rowHeights.length);
@@ -1623,6 +1669,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         ref={isEditing ? setEditAnchor : undefined}
         style={style}
         onClick={(e) => onCellClick(e, ref)}
+        // Right-click anywhere in the column: the column's menu (Edit Values…, type, wrap…)
+        onContextMenu={(e) => {
+          e.stopPropagation();
+          handleHeaderMenu(e, col.id);
+        }}
         onDoubleClick={(e) => {
           e.stopPropagation();
           startEdit(ref);
@@ -1717,8 +1768,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         return (
           <div key={col.id} style={style} className={`${CELL} flex items-center`}>
             <TagPills
-              tags={Array.isArray(file.tags) ? file.tags : []}
-              covered={coveredValues(file.metadata as Record<string, unknown> | null)}
+              tags={shownSourceTags(file)}
+              covered={coveredFor(file)}
               onPillMouseDown={(e, tag) => startTagDrag(e, tag, "source")}
               wrap={wrapSourceTags}
             />
@@ -1738,6 +1789,75 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       ].map((c) => ({ id: c.id, label: c.label, kind: kindOf(c.id) })),
     [availableProperties, typeOf, kindOf]
   );
+
+  /** Opens Edit Values… for a list column, below its header. */
+  function openValuesEditor(columnId: string) {
+    const header = layout.container?.querySelector<HTMLElement>(`[data-column-id="${CSS.escape(columnId)}"]`);
+    const anchor = header ?? layout.container;
+    if (anchor) setValuesEditor({ columnId, anchor });
+  }
+
+  /** Folder names a list value was renamed from, shown greyed beside it. */
+  function sourcesOf(columnId: string, value: string): string[] {
+    const prop = propByName.get(propName(columnId));
+    return (prop && registryValues[prop.property_id]?.find((v) => v.value === value)?.sources) || [];
+  }
+
+  async function coreRenameValue(name: string, from: string, to: string) {
+    const prop = await ensureProperty(name);
+    await renamePropertyValue(prop.property_id, from, to);
+    await afterPropertyChange();
+  }
+
+  /**
+   * Renames a list value in the property and every file that has it. A value
+   * that came from a folder keeps that link, so refreshes write the new name.
+   */
+  async function renameListValue(columnId: string, from: string, to: string) {
+    const name = propName(columnId);
+    // Renaming onto an existing value merges them; undo then puts each file's values back
+    const merging = valuesFor(columnId).includes(to);
+    const before = snapshot(name).filter((e) => listValues(e.value).some((v) => v === from || v === to));
+    try {
+      await history.queue(() => coreRenameValue(name, from, to));
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    history.push({
+      label: "Rename Value",
+      undo: merging
+        ? async () => {
+            const prop = await ensureProperty(name);
+            await createPropertyValue(prop.property_id, from).catch(() => {});
+            await restoreValues(before);
+          }
+        : () => coreRenameValue(name, to, from),
+      redo: () => coreRenameValue(name, from, to),
+    });
+  }
+
+  async function coreAddValue(name: string, value: string) {
+    const prop = await ensureProperty(name);
+    await createPropertyValue(prop.property_id, value);
+    await afterPropertyChange();
+  }
+
+  /** Adds a value to a list property's options without putting it on any file. */
+  async function addListValue(columnId: string, value: string) {
+    const name = propName(columnId);
+    try {
+      await history.queue(() => coreAddValue(name, value));
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    history.push({
+      label: "Add Value",
+      undo: () => coreDeleteValue(name, value),
+      redo: () => coreAddValue(name, value),
+    });
+  }
 
   /** Removes a Select / Multi-select value from the property and from every file that has it. */
   async function coreDeleteValue(name: string, value: string) {
@@ -2062,6 +2182,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           options={valuesFor(editingList.ref.col)}
           seed={editingList.seed}
           onDeleteValue={(value) => deleteListValue(editingList.ref.col, value)}
+          onRenameValue={(from, to) => renameListValue(editingList.ref.col, from, to)}
+          sourcesOf={(value) => sourcesOf(editingList.ref.col, value)}
           usage={(value) => valueUsage(editingList.ref.col, value)}
           onCommit={(value, move) => {
             listMove.current = move;
@@ -2072,6 +2194,20 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
             listMove.current = "none";
             endEdit(move);
           }}
+        />
+      )}
+
+      {valuesEditor && (
+        <ValueListEditor
+          anchor={valuesEditor.anchor}
+          property={propName(valuesEditor.columnId)}
+          options={valuesFor(valuesEditor.columnId)}
+          sourcesOf={(value) => sourcesOf(valuesEditor.columnId, value)}
+          usage={(value) => valueUsage(valuesEditor.columnId, value)}
+          onAdd={(value) => addListValue(valuesEditor.columnId, value)}
+          onRename={(from, to) => renameListValue(valuesEditor.columnId, from, to)}
+          onDelete={(value) => deleteListValue(valuesEditor.columnId, value)}
+          onClose={() => setValuesEditor(null)}
         />
       )}
 

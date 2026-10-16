@@ -1,12 +1,12 @@
 mod common;
 
 use common::setup_db;
-use folderbase_lib::commands::metadata::change_property_type_impl;
+use folderbase_lib::commands::metadata::{change_property_type_impl, rename_property_value_impl};
 use folderbase_lib::commands::path_mapping::{
     apply_mapping_to_files, clear_folder_label_impl, count_mapping_conflicts_impl,
     folders_named_impl, set_folder_label_impl, set_folder_labels_impl,
 };
-use folderbase_lib::commands::properties::{ensure_tags_property, TAGS_CONFIG};
+use folderbase_lib::commands::properties::{ensure_tags_property, get_property_values_impl, TAGS_CONFIG};
 use folderbase_lib::db::{run_migrations, DbPool};
 use serde_json::{json, Value};
 
@@ -369,4 +369,80 @@ async fn tags_property_adopts_an_existing_tags_column() {
 
     assert_eq!(property_type(&pool, "Tags").await.as_deref(), Some("array"));
     assert_eq!(file(&pool, "f1").await.0, json!({ "Tags": ["urgent"] }));
+}
+
+async fn property_id(pool: &DbPool, name: &str) -> String {
+    sqlx::query_scalar("SELECT property_id FROM properties WHERE name = ? AND library = 'lib1'")
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_renamed_folder_value_survives_refresh_and_unmapping() {
+    let pool = setup_db().await;
+    seed_files(&pool, &[("a", "Projects/01 Apollo/brief.pdf"), ("b", "Projects/02 Hermes/plan.pdf")]).await;
+    let folders = vec![format!("{ROOT}/Projects/01 Apollo"), format!("{ROOT}/Projects/02 Hermes")];
+    set_folder_labels_impl(LOC, &folders, "Project", false, &pool).await.unwrap();
+    let pid = property_id(&pool, "Project").await;
+
+    rename_property_value_impl(&pool, &pid, "01 Apollo", "Apollo").await.unwrap();
+    assert_eq!(file(&pool, "a").await.0, json!({ "Project": ["Apollo"] }));
+
+    // A refresh re-applies the mapping: the folder keeps mapping to the new name
+    apply_mapping_to_files(LOC, ROOT, &folders[0], "Project", &pool).await.unwrap();
+    assert_eq!(file(&pool, "a").await.0, json!({ "Project": ["Apollo"] }));
+
+    // The value remembers where it came from
+    let values = get_property_values_impl(&pool, &pid).await.unwrap();
+    let apollo = values.iter().find(|v| v.value == "Apollo").unwrap();
+    assert_eq!(apollo.sources, vec!["01 Apollo"]);
+    assert!(!values.iter().any(|v| v.value == "01 Apollo"));
+
+    // Unmapping takes the renamed value back out
+    clear_folder_label_impl(LOC, &folders[0], &pool).await.unwrap();
+    assert_eq!(file(&pool, "a").await.0, json!({}));
+}
+
+#[tokio::test]
+async fn renaming_back_to_the_folder_name_drops_the_link() {
+    let pool = setup_db().await;
+    seed_files(&pool, &[("a", "Projects/01 Apollo/brief.pdf")]).await;
+    let folder = format!("{ROOT}/Projects/01 Apollo");
+    set_folder_label_impl(LOC, &folder, "Project", &pool).await.unwrap();
+    let pid = property_id(&pool, "Project").await;
+
+    rename_property_value_impl(&pool, &pid, "01 Apollo", "Apollo").await.unwrap();
+    rename_property_value_impl(&pool, &pid, "Apollo", "Apollo Programme").await.unwrap();
+    let values = get_property_values_impl(&pool, &pid).await.unwrap();
+    assert_eq!(values.iter().find(|v| v.value == "Apollo Programme").unwrap().sources, vec!["01 Apollo"]);
+
+    rename_property_value_impl(&pool, &pid, "Apollo Programme", "01 Apollo").await.unwrap();
+    let aliases: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM value_aliases").fetch_one(&pool).await.unwrap();
+    assert_eq!(aliases, 0);
+    assert_eq!(file(&pool, "a").await.0, json!({ "Project": ["01 Apollo"] }));
+}
+
+#[tokio::test]
+async fn renaming_onto_an_existing_value_merges() {
+    let pool = setup_db().await;
+    seed_files(&pool, &[("a", "x.pdf"), ("b", "y.pdf")]).await;
+    add_property(&pool, "Status", "array").await;
+    sqlx::query("UPDATE files SET metadata = '{\"Status\":[\"Draft\",\"WIP\"]}' WHERE file_id = 'a'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE files SET metadata = '{\"Status\":[\"WIP\"]}' WHERE file_id = 'b'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    rename_property_value_impl(&pool, "p-Status", "WIP", "Draft").await.unwrap();
+    assert_eq!(file(&pool, "a").await.0, json!({ "Status": ["Draft"] }));
+    assert_eq!(file(&pool, "b").await.0, json!({ "Status": ["Draft"] }));
+    // Plain values (no mapped folder) don't gain a link
+    let aliases: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM value_aliases").fetch_one(&pool).await.unwrap();
+    assert_eq!(aliases, 0);
+    assert!(rename_property_value_impl(&pool, "p-Status", "Draft", "  ").await.is_err());
 }

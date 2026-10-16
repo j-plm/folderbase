@@ -55,6 +55,8 @@ export default function Popover({ anchor, onClose, align = "start", className = 
       onClose();
     }
     function onKey(e: KeyboardEvent) {
+      // A field inside that uses Escape itself (cancelling a rename) keeps the popover open
+      if ((e.target as HTMLElement | null)?.closest?.("[data-own-escape]")) return;
       if (e.key === "Escape") {
         e.stopPropagation();
         onClose();

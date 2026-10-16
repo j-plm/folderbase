@@ -160,6 +160,19 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // A renamed list value remembers the folder name it came from, so mapping
+    // keeps writing the new name ("01 Apollo" → "Apollo")
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS value_aliases (
+            property_id  TEXT NOT NULL REFERENCES properties(property_id),
+            source       TEXT NOT NULL,
+            value        TEXT NOT NULL,
+            PRIMARY KEY (property_id, source)
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
     // Type options for a property (number format, currency), as JSON.
     let _ = sqlx::query("ALTER TABLE properties ADD COLUMN config TEXT")
         .execute(pool)

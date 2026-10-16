@@ -61,6 +61,8 @@ export interface PropertyValue {
   value_id: string;
   property_id: string;
   value: string;
+  /** Folder names mapped to this value after it was renamed ("01 Apollo" for "Apollo"). */
+  sources?: string[];
 }
 
 export interface View {

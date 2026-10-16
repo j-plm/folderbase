@@ -44,6 +44,10 @@ pub struct PropertyValue {
     pub value_id: String,
     pub property_id: String,
     pub value: String,
+    /// Folder names mapped to this value after it was renamed (e.g. "01 Apollo" for "Apollo").
+    #[sqlx(skip)]
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow)]

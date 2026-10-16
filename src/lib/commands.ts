@@ -140,6 +140,14 @@ export async function createPropertyValue(
   return invoke<PropertyValue>("create_property_value", { propertyId, value });
 }
 
+/**
+ * Renames a Select / Multi-select value in the registry and every file (merging
+ * into `to` if it exists). Folders mapped to it keep mapping to the new name.
+ */
+export async function renamePropertyValue(propertyId: string, from: string, to: string): Promise<void> {
+  return invoke<void>("rename_property_value", { propertyId, from, to });
+}
+
 export async function deletePropertyValue(valueId: string): Promise<void> {
   return invoke<void>("delete_property_value", { valueId });
 }

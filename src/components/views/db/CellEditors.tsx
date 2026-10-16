@@ -2,6 +2,7 @@ import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Popover from "../../shared/Popover";
 import { SymbolIcon } from "../../../lib/fileIcons";
+import { showContextMenu, type MenuEntry } from "../../../lib/nativeMenu";
 import { formatValue, listValues } from "../../../lib/propertyTypes";
 import type { PropertyConfig, ValueType } from "../../../types";
 
@@ -128,6 +129,8 @@ export function ListCellEditor({
   onClose,
   onDeleteValue,
   usage,
+  onRenameValue,
+  sourcesOf,
 }: {
   anchor: HTMLElement;
   value: unknown;
@@ -141,6 +144,10 @@ export function ListCellEditor({
   onDeleteValue?: (value: string) => Promise<void>;
   /** How many files have a value, for the delete confirmation. */
   usage?: (value: string) => number;
+  /** Renames a value in the property and every file that has it. */
+  onRenameValue?: (from: string, to: string) => Promise<void>;
+  /** Folder names a value was renamed from, shown greyed beside it. */
+  sourcesOf?: (value: string) => string[];
 }) {
   const [chosen, setChosen] = useState<string[]>(() => listValues(value));
   const [query, setQuery] = useState(seed);
@@ -148,20 +155,31 @@ export function ListCellEditor({
   const chosenRef = useRef(chosen);
   chosenRef.current = chosen;
 
-  /** Values deleted while the picker is open, hidden before the reload catches up. */
+  /** Values deleted or renamed while the picker is open, shown as they'll be before the reload catches up. */
   const [removed, setRemoved] = useState<string[]>([]);
+  const [added, setAdded] = useState<string[]>([]);
   const all = useMemo(
     () =>
-      [...new Set([...options, ...listValues(value)])]
+      [...new Set([...options, ...listValues(value), ...added])]
         .filter((o) => !removed.includes(o))
         .sort((a, b) => a.localeCompare(b)),
-    [options, value, removed]
+    [options, value, removed, added]
   );
 
   async function deleteValue(item: string) {
     setRemoved((r) => [...r, item]);
     setChosen((c) => c.filter((x) => x !== item));
     await onDeleteValue?.(item);
+  }
+
+  async function renameValue(from: string, to: string) {
+    const name = to.trim();
+    if (!name || name === from) return;
+    setRemoved((r) => [...r.filter((x) => x !== name), from]);
+    setAdded((a) => [...a, name]);
+    // Ticked under its old name: stays ticked under the new one (not written back as the old name)
+    setChosen((c) => [...new Set(c.map((x) => (x === from ? name : x)))]);
+    await onRenameValue?.(from, name);
   }
   const q = query.trim();
   const shown = q ? all.filter((o) => o.toLowerCase().includes(q.toLowerCase())) : all;
@@ -253,6 +271,8 @@ export function ListCellEditor({
             highlighted={i === highlight && q !== ""}
             onClick={() => pick(item)}
             onDelete={onDeleteValue ? () => deleteValue(item) : undefined}
+            onRename={onRenameValue ? (to) => renameValue(item, to) : undefined}
+            sources={sourcesOf?.(item)}
             usage={usage?.(item)}
           />
         ))}
@@ -282,6 +302,109 @@ export function ListCellEditor({
   );
 }
 
+/**
+ * A list property's values, for editing the list itself rather than a cell:
+ * opened from the column's menu. Type to find or add a value; click a value to
+ * rename it, or right-click for Rename and Delete.
+ */
+export function ValueListEditor({
+  anchor,
+  property,
+  options,
+  sourcesOf,
+  usage,
+  onAdd,
+  onRename,
+  onDelete,
+  onClose,
+}: {
+  anchor: HTMLElement;
+  property: string;
+  options: string[];
+  sourcesOf: (value: string) => string[];
+  usage: (value: string) => number;
+  onAdd: (value: string) => Promise<void>;
+  onRename: (from: string, to: string) => Promise<void>;
+  onDelete: (value: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [removed, setRemoved] = useState<string[]>([]);
+  const [added, setAdded] = useState<string[]>([]);
+  const all = useMemo(
+    () =>
+      [...new Set([...options, ...added])].filter((o) => !removed.includes(o)).sort((a, b) => a.localeCompare(b)),
+    [options, added, removed]
+  );
+  const q = query.trim();
+  const shown = q ? all.filter((o) => o.toLowerCase().includes(q.toLowerCase())) : all;
+  const canAdd = q !== "" && !all.some((o) => o.toLowerCase() === q.toLowerCase());
+
+  function add() {
+    if (!canAdd) return;
+    setAdded((a) => [...a, q]);
+    setRemoved((r) => r.filter((x) => x !== q));
+    setQuery("");
+    void onAdd(q);
+  }
+
+  async function rename(from: string, to: string) {
+    const name = to.trim();
+    if (!name || name === from) return;
+    setRemoved((r) => [...r.filter((x) => x !== name), from]);
+    setAdded((a) => [...a, name]);
+    await onRename(from, name);
+  }
+
+  async function remove(value: string) {
+    setRemoved((r) => [...r, value]);
+    await onDelete(value);
+  }
+
+  return (
+    <Popover anchor={anchor} onClose={onClose} className="w-[240px] p-[5px]">
+      <p className="px-1.5 pb-1 text-xs font-semibold text-neutral-500 truncate">{property}</p>
+      <input
+        autoFocus
+        value={query}
+        placeholder="Find or add a value"
+        onChange={(e) => setQuery(e.target.value)}
+        onKeyDown={(e) => {
+          e.stopPropagation();
+          if (e.key === "Enter") {
+            e.preventDefault();
+            add();
+          }
+        }}
+        className="w-full h-6 mb-1 px-1.5 rounded-[6px] bg-neutral-900 border border-neutral-600/70 text-body text-neutral-100 outline-none focus:border-blue-500"
+      />
+      <div role="listbox" className="max-h-[280px] overflow-y-auto">
+        {shown.map((item) => (
+          <OptionRow
+            key={item}
+            label={item}
+            checked={false}
+            highlighted={false}
+            renameOnClick
+            onClick={() => {}}
+            onRename={(to) => rename(item, to)}
+            onDelete={() => remove(item)}
+            sources={sourcesOf(item)}
+            usage={usage(item)}
+          />
+        ))}
+        {canAdd && (
+          <OptionRow label={`Add “${q}”`} checked={false} highlighted icon="plus" onClick={add} />
+        )}
+        {shown.length === 0 && !canAdd && <p className="px-2 py-1 text-neutral-500">Type to add a value</p>}
+      </div>
+      <p className="px-1.5 pt-1 mt-1 border-t border-neutral-700/60 text-[11px] text-neutral-500">
+        Click a value to rename it. Right-click for more.
+      </p>
+    </Popover>
+  );
+}
+
 /** Hovering this long over a value reveals its delete button. */
 const DELETE_REVEAL_MS = 700;
 
@@ -293,6 +416,9 @@ function OptionRow({
   icon,
   onClick,
   onDelete,
+  onRename,
+  renameOnClick,
+  sources,
   usage,
 }: {
   label: string;
@@ -303,10 +429,17 @@ function OptionRow({
   onClick: () => void;
   /** Offers deleting the value after a hover, with a confirmation in the row. */
   onDelete?: () => void;
+  /** Offers renaming the value in place (right-click ▸ Rename). */
+  onRename?: (to: string) => void;
+  /** Clicking the row renames it (when editing the list rather than a cell). */
+  renameOnClick?: boolean;
+  /** Folder names the value was renamed from, shown greyed beside it. */
+  sources?: string[];
   usage?: number;
 }) {
   const [revealed, setRevealed] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
 
@@ -314,6 +447,31 @@ function OptionRow({
     window.clearTimeout(timer.current);
     setRevealed(false);
     setConfirming(false);
+  }
+
+  function showMenu(e: React.MouseEvent) {
+    if (!onRename && !onDelete) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const entries: MenuEntry[] = [];
+    if (onRename) entries.push({ type: "item", text: "Rename…", action: () => setRenaming(true) });
+    if (onDelete) entries.push({ type: "item", text: "Delete…", action: () => setConfirming(true) });
+    showContextMenu(entries, { event: e });
+  }
+
+  if (renaming) {
+    return (
+      <div role="option" aria-selected={checked} className="w-full h-6 flex items-center pl-1.5 pr-0.5">
+        <span className="w-4 shrink-0" />
+        <RenameField
+          initial={label}
+          onDone={(text) => {
+            setRenaming(false);
+            if (text != null) onRename?.(text);
+          }}
+        />
+      </div>
+    );
   }
 
   if (confirming) {
@@ -353,8 +511,9 @@ function OptionRow({
         timer.current = window.setTimeout(() => setRevealed(true), DELETE_REVEAL_MS);
       }}
       onMouseLeave={leave}
-      onClick={onClick}
-      className={`w-full h-6 flex items-center gap-1 pl-1.5 rounded-[6px] text-left whitespace-nowrap cursor-default hover:bg-blue-500 hover:text-white ${
+      onClick={renameOnClick && onRename ? () => setRenaming(true) : onClick}
+      onContextMenu={showMenu}
+      className={`group w-full h-6 flex items-center gap-1 pl-1.5 rounded-[6px] text-left whitespace-nowrap cursor-default hover:bg-blue-500 hover:text-white ${
         revealed ? "pr-0.5" : "pr-3"
       } ${highlighted ? "bg-blue-500 text-white" : muted ? "text-neutral-400" : ""}`}
     >
@@ -362,7 +521,14 @@ function OptionRow({
         {checked && <SymbolIcon name="checkmark" size={11} fallback="✓" />}
         {icon && <SymbolIcon name={icon} size={11} fallback="+" />}
       </span>
-      <span className="flex-1 min-w-0 truncate">{label}</span>
+      <span className="min-w-0 truncate">{label}</span>
+      {/* Where a renamed value came from */}
+      {sources && sources.length > 0 && (
+        <span title={`Folder: ${sources.join(", ")}`} className="min-w-0 truncate text-[11px] opacity-50">
+          {sources.join(", ")}
+        </span>
+      )}
+      <span className="flex-1" />
       {revealed && (
         <button
           type="button"
@@ -378,6 +544,39 @@ function OptionRow({
         </button>
       )}
     </div>
+  );
+}
+
+/** A value's new name typed in place: Return or clicking away commits, Escape keeps the old name (null). */
+function RenameField({ initial, onDone }: { initial: string; onDone: (text: string | null) => void }) {
+  const [text, setText] = useState(initial);
+  const done = useRef(false);
+  function finish(commit: boolean) {
+    if (done.current) return;
+    done.current = true;
+    onDone(commit ? text : null);
+  }
+  return (
+    <input
+      autoFocus
+      data-own-escape
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={() => finish(true)}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finish(true);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          finish(false);
+        }
+      }}
+      onClick={(e) => e.stopPropagation()}
+      className="flex-1 min-w-0 h-5 px-1 rounded-[4px] bg-neutral-900 text-body text-neutral-100 outline-2 outline-blue-500"
+    />
   );
 }
 

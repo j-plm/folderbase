@@ -89,13 +89,26 @@ pub async fn get_property_values(
     property_id: String,
     db: State<'_, DbPool>,
 ) -> Result<Vec<PropertyValue>, String> {
-    sqlx::query_as::<_, PropertyValue>(
-        "SELECT * FROM property_values WHERE property_id = ?",
-    )
-    .bind(property_id)
-    .fetch_all(db.inner())
-    .await
-    .map_err(|e| e.to_string())
+    get_property_values_impl(db.inner(), &property_id).await
+}
+
+/// A property's registered values, each with the folder names that map to it.
+pub async fn get_property_values_impl(pool: &DbPool, property_id: &str) -> Result<Vec<PropertyValue>, String> {
+    let mut values = sqlx::query_as::<_, PropertyValue>("SELECT * FROM property_values WHERE property_id = ?")
+        .bind(property_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let aliases: Vec<(String, String)> =
+        sqlx::query_as("SELECT source, value FROM value_aliases WHERE property_id = ? ORDER BY source")
+            .bind(property_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    for v in &mut values {
+        v.sources = aliases.iter().filter(|(_, to)| *to == v.value).map(|(from, _)| from.clone()).collect();
+    }
+    Ok(values)
 }
 
 #[tauri::command]
@@ -209,6 +222,7 @@ pub async fn create_property_value(
         value_id,
         property_id,
         value,
+        sources: vec![],
     })
 }
 
@@ -239,6 +253,13 @@ pub async fn delete_property_value(
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    // Its folders map to their own names again
+    sqlx::query("DELETE FROM value_aliases WHERE property_id = ? AND value = ?")
+        .bind(&property_id)
+        .bind(&value_str)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
 
     scrub_value_from_files(db.inner(), &prop.name, &value_str, prop.library.as_deref()).await
 }
@@ -259,6 +280,11 @@ pub async fn delete_property(
     }
 
     sqlx::query("DELETE FROM property_values WHERE property_id = ?")
+        .bind(&property_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM value_aliases WHERE property_id = ?")
         .bind(&property_id)
         .execute(db.inner())
         .await

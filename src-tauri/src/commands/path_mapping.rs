@@ -404,14 +404,15 @@ pub async fn count_mapping_conflicts_impl(
     let library = location_library(location_id, pool).await?;
     let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
     let prop = crate::commands::metadata::property_for(&mut conn, property_name, Some(&library)).await?;
-    if prop.map_or(true, |p| p.value_type == "array") {
+    if prop.as_ref().map_or(true, |p| p.value_type == "array") {
         return Ok(0);
     }
+    let prop = prop.expect("checked above");
     let root_path = location_root(location_id, pool).await?;
     let mut conflicting = BTreeSet::new();
     for folder_path in folder_paths {
         let folder_rel = folder_rel_from_abs(&root_path, folder_path)?;
-        let name = folder_name_of(folder_path);
+        let name = crate::commands::metadata::mapped_value(&mut conn, &prop.property_id, &folder_name_of(folder_path)).await?;
         for (file_id, meta) in files_under(location_id, &folder_rel, pool).await? {
             match meta.get(property_name) {
                 None | Some(Value::Null) => {}
@@ -602,12 +603,18 @@ async fn unapply_mapping_from_files(
     pool: &DbPool,
 ) -> Result<(), String> {
     let folder_rel = folder_rel_from_abs(root_path, folder_path)?;
-    let folder_name = folder_name_of(folder_path);
+    let library = location_library(location_id, pool).await?;
+    let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+    let value = match crate::commands::metadata::property_for(&mut conn, property_name, Some(&library)).await? {
+        Some(prop) => crate::commands::metadata::mapped_value(&mut conn, &prop.property_id, &folder_name_of(folder_path)).await?,
+        None => folder_name_of(folder_path),
+    };
+    drop(conn);
     let files = files_under(location_id, &folder_rel, pool).await?;
 
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     for (file_id, mut meta) in files {
-        if remove_mapped_value(&mut meta, property_name, &folder_name) {
+        if remove_mapped_value(&mut meta, property_name, &value) {
             save_metadata(&mut tx, &file_id, &meta).await?;
         }
     }
@@ -635,19 +642,20 @@ async fn apply_mapping(
     pool: &DbPool,
 ) -> Result<(), String> {
     let folder_rel = folder_rel_from_abs(root_path, folder_path)?;
-    let folder_name = folder_name_of(folder_path);
     let prop = mapping_property(location_id, property_name, pool).await?;
     let list = prop.value_type == "array";
     let files = files_under(location_id, &folder_rel, pool).await?;
 
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    // The folder's name, or what that value was renamed to
+    let value = crate::commands::metadata::mapped_value(&mut tx, &prop.property_id, &folder_name_of(folder_path)).await?;
     for (file_id, mut meta) in files {
-        if add_mapped_value(&mut meta, property_name, &folder_name, list, overwrite) {
+        if add_mapped_value(&mut meta, property_name, &value, list, overwrite) {
             save_metadata(&mut tx, &file_id, &meta).await?;
         }
     }
     if prop.value_type == "array" || prop.value_type == "enum" {
-        crate::commands::metadata::register_values(&mut tx, &prop.property_id, [folder_name]).await?;
+        crate::commands::metadata::register_values(&mut tx, &prop.property_id, [value]).await?;
     }
     tx.commit().await.map_err(|e| e.to_string())
 }
