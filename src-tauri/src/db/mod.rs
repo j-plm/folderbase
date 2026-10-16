@@ -144,6 +144,22 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
+    // 1 for a cloud file that's online-only (a placeholder; reading it would download it)
+    let _ = sqlx::query("ALTER TABLE files ADD COLUMN online_only INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
+    // Folders left out of a location: never scanned, their files not indexed
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS location_exclusions (
+            location_id  TEXT NOT NULL REFERENCES locations(location_id),
+            folder_rel   TEXT NOT NULL,
+            PRIMARY KEY (location_id, folder_rel)
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
     // Type options for a property (number format, currency), as JSON.
     let _ = sqlx::query("ALTER TABLE properties ADD COLUMN config TEXT")
         .execute(pool)

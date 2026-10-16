@@ -1,9 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import { clearFolderLabels, countMappingConflicts, setFolderLabels } from "../../lib/commands";
+import type React from "react";
+import {
+  clearFolderLabels,
+  countMappingConflicts,
+  excludeFolder,
+  includeFolder,
+  ingestDirectory,
+  setFolderLabels,
+} from "../../lib/commands";
 import type { FolderTreeNode, PathMappingNode } from "../../lib/commands";
-import { SymbolIcon } from "../../lib/fileIcons";
 import { useOverwriteConfirm } from "../shared/OverwriteDialog";
-import { levelTargets, type FolderGroup, type Level, type LevelRendererProps } from "./levels";
+import Dialog, { DialogButton } from "../shared/Dialog";
+import { showContextMenu } from "../../lib/nativeMenu";
+import { clickSelection, levelTargets, type FolderGroup, type Level, type LevelRendererProps } from "./levels";
 import MappingColumns from "./MappingColumns";
 import MappingTiles from "./MappingTiles";
 
@@ -14,11 +23,6 @@ const MODES: { mode: Mode; label: string }[] = [
   { mode: "tiles", label: "Tiles" },
   { mode: "columns", label: "Columns" },
 ];
-
-interface HistoryEntry {
-  rootPath: string;
-  levels: Level[];
-}
 
 interface Props {
   locationId: string;
@@ -35,6 +39,12 @@ function findNode(tree: FolderTreeNode, path: string): FolderTreeNode | null {
     if (found) return found;
   }
   return null;
+}
+
+function excludedPaths(tree: FolderTreeNode, into = new Set<string>()): Set<string> {
+  if (tree.excluded) into.add(tree.folder_path);
+  for (const child of tree.children) excludedPaths(child, into);
+  return into;
 }
 
 function buildInitialLevels(rootPath: string, tree: FolderTreeNode): Level[] {
@@ -59,8 +69,6 @@ function loadMode(): Mode {
  */
 export default function FolderBrowserEditor({ locationId, rootNode, initialMappings }: Props) {
   const [mode, setMode] = useState<Mode>(loadMode);
-  const [currentRootPath, setCurrentRootPath] = useState(rootNode.folder_path);
-  const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [levels, setLevels] = useState<Level[]>(() => buildInitialLevels(rootNode.folder_path, rootNode));
   // Property name per folder path — mappings are stored per folder, never per depth.
   const [labels, setLabels] = useState<Record<string, string>>(() =>
@@ -69,18 +77,18 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
   const [savedLevel, setSavedLevel] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** The last folder clicked, where a shift-click's range starts. */
+  const anchor = useRef<{ levelIndex: number; path: string } | null>(null);
   const { confirm, dialog } = useOverwriteConfirm();
+  const [excluded, setExcluded] = useState<Set<string>>(() => excludedPaths(rootNode));
+  /** A folder waiting for the user to confirm excluding it. */
+  const [excluding, setExcluding] = useState<{ node: FolderTreeNode; levelIndex: number } | null>(null);
 
   useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
 
   function folderName(path: string): string {
     return findNode(rootNode, path)?.folder_name ?? path.split("/").pop() ?? path;
   }
-
-  const crumbs = [
-    ...history.map((h) => ({ name: folderName(h.rootPath), rootPath: h.rootPath })),
-    { name: folderName(currentRootPath), rootPath: currentRootPath },
-  ];
 
   function changeMode(next: Mode) {
     setMode(next);
@@ -91,32 +99,18 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
     }
   }
 
-  function navigateToCrumb(crumbIndex: number) {
-    if (crumbIndex < 0 || crumbIndex >= history.length) return;
-    const entry = history[crumbIndex];
-    setCurrentRootPath(entry.rootPath);
-    setLevels(entry.levels);
-    setHistory(history.slice(0, crumbIndex));
-  }
-
-  function drillIn(folderPath: string) {
-    if (!findNode(rootNode, folderPath)) return;
-    setHistory((prev) => [...prev, { rootPath: currentRootPath, levels }]);
-    setCurrentRootPath(folderPath);
-    setLevels(buildInitialLevels(folderPath, rootNode));
-  }
-
-  function toggleSelection(levelIndex: number, folderPath: string) {
+  function toggleSelection(levelIndex: number, folderPath: string, shiftKey = false) {
+    const from = anchor.current?.levelIndex === levelIndex ? anchor.current.path : null;
+    anchor.current = { levelIndex, path: folderPath };
     setLevels((prev) => {
       const level = prev[levelIndex];
-      const isSelected = level.selected.includes(folderPath);
-      const newSelected = isSelected
-        ? level.selected.filter((p) => p !== folderPath)
-        : [...level.selected, folderPath];
+      const newSelected = clickSelection(level, folderPath, from, shiftKey);
 
       const base: Level[] = [...prev.slice(0, levelIndex), { ...level, selected: newSelected }];
 
       const newGroups: FolderGroup[] = newSelected.flatMap((selPath) => {
+        // An excluded folder's contents aren't part of the location
+        if (excluded.has(selPath)) return [];
         const selNode = findNode(rootNode, selPath);
         return selNode && selNode.children.length > 0
           ? [{ parentPath: selPath, nodes: selNode.children }]
@@ -209,6 +203,49 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
     }
   }
 
+  function folderMenu(e: React.MouseEvent, levelIndex: number, node: FolderTreeNode) {
+    e.preventDefault();
+    showContextMenu(
+      [
+        excluded.has(node.folder_path)
+          ? { type: "item", text: "Include in Location", action: () => include(node) }
+          : { type: "item", text: "Exclude from Location…", action: () => setExcluding({ node, levelIndex }) },
+      ],
+      { event: e }
+    );
+  }
+
+  async function confirmExclude() {
+    if (!excluding) return;
+    const { node, levelIndex } = excluding;
+    setExcluding(null);
+    setError(null);
+    try {
+      await excludeFolder(locationId, node.folder_path);
+      // Close it if it was open
+      if (levels[levelIndex]?.selected.includes(node.folder_path)) toggleSelection(levelIndex, node.folder_path);
+      setExcluded((prev) => new Set(prev).add(node.folder_path));
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  async function include(node: FolderTreeNode) {
+    setError(null);
+    try {
+      await includeFolder(locationId, node.folder_path);
+      setExcluded((prev) => {
+        const next = new Set(prev);
+        next.delete(node.folder_path);
+        return next;
+      });
+      // Index it now; progress shows in the database view
+      ingestDirectory(locationId).catch(() => {});
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
   const rendererProps: LevelRendererProps = {
     levels,
     labels,
@@ -217,44 +254,19 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
     onToggle: toggleSelection,
     onCommit: commitLevelName,
     onInherit: inheritParentName,
+    excluded,
+    onFolderMenu: folderMenu,
   };
 
   return (
     <div className="flex flex-col h-full">
-      {/* Breadcrumb + mode switch */}
+      {/* Location name + mode switch */}
       <div className="shrink-0 flex items-center gap-2 px-3 h-9 border-b border-neutral-700/60">
-        <button
-          onClick={() => navigateToCrumb(history.length - 1)}
-          disabled={history.length === 0}
-          title="Back"
-          className="flex items-center justify-center w-6 h-6 rounded-md text-neutral-300 hover:bg-neutral-700/60 disabled:opacity-30 disabled:hover:bg-transparent"
-        >
-          <SymbolIcon name="chevron.left" size={12} fallback="‹" />
-        </button>
-        <div className="flex items-center gap-1 text-[13px] min-w-0 flex-1">
-          {crumbs.map((crumb, i) => {
-            const isLast = i === crumbs.length - 1;
-            return (
-              <span key={crumb.rootPath} className="flex items-center gap-1 min-w-0">
-                {i > 0 && <SymbolIcon name="chevron.right" size={9} fallback="›" className="text-neutral-500" />}
-                {isLast ? (
-                  <span className="text-neutral-100 font-medium truncate">{crumb.name}</span>
-                ) : (
-                  <button
-                    onClick={() => navigateToCrumb(i)}
-                    className="text-neutral-400 hover:text-neutral-100 truncate"
-                  >
-                    {crumb.name}
-                  </button>
-                )}
-              </span>
-            );
-          })}
-        </div>
+        <span className="flex-1 min-w-0 truncate text-[13px] font-medium text-neutral-100">
+          {rootNode.folder_name}
+        </span>
         <span className="min-w-0 truncate text-[11px] text-neutral-500">
-          {mode === "tiles"
-            ? "Click to select · double-click to open"
-            : "Click to select · naming applies to the selection"}
+          Click to select · naming applies to the selection
         </span>
         <div className="shrink-0 flex items-center gap-px bg-neutral-800 dark:bg-neutral-700/60 rounded-md p-0.5">
           {MODES.map(({ mode: m, label }) => (
@@ -281,12 +293,31 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
             No subfolders here.
           </div>
         ) : mode === "tiles" ? (
-          <MappingTiles {...rendererProps} onDrillIn={drillIn} />
+          <MappingTiles {...rendererProps} />
         ) : (
           <MappingColumns {...rendererProps} />
         )}
       </div>
       {dialog}
+      {excluding && (
+        <Dialog
+          title={`Exclude “${excluding.node.folder_name}” from this location?`}
+          message={`Its ${excluding.node.file_count.toLocaleString()} ${
+            excluding.node.file_count === 1 ? "file is" : "files are"
+          } removed from Folderbase, with any properties set on them, and it won't be scanned again. Nothing on disk or in the cloud changes. You can include it again later.`}
+          onCancel={() => setExcluding(null)}
+          onSubmit={confirmExclude}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton onClick={() => setExcluding(null)}>Cancel</DialogButton>
+              <DialogButton variant="default" autoFocus>
+                Exclude
+              </DialogButton>
+            </>
+          }
+        />
+      )}
     </div>
   );
 }

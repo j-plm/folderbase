@@ -60,11 +60,23 @@ export async function getLocations(): Promise<Location[]> {
   return invoke<Location[]>("get_locations");
 }
 
+/** Adds a location; `excluded` folders (absolute paths inside it) are never scanned. */
 export async function addLocation(
   rootPath: string,
-  name: string
+  name: string,
+  excluded: string[] = []
 ): Promise<Location> {
-  return invoke<Location>("add_location", { rootPath, name });
+  return invoke<Location>("add_location", { rootPath, name, excluded });
+}
+
+export interface Subfolder {
+  name: string;
+  path: string;
+}
+
+/** The visible folders directly inside `path`. Reads only the listing, so cloud folders download nothing. */
+export async function listSubfolders(path: string): Promise<Subfolder[]> {
+  return invoke<Subfolder[]>("list_subfolders", { path });
 }
 
 export async function deleteLocation(locationId: string): Promise<void> {
@@ -341,6 +353,8 @@ export interface FolderTreeNode {
   file_count: number;
   children: FolderTreeNode[];
   mapping: PathMappingNode | null;
+  /** Left out of the location: not scanned, its files not indexed. */
+  excluded: boolean;
 }
 
 export async function getFolderTree(locationId: string): Promise<FolderTreeNode> {
@@ -388,6 +402,16 @@ export async function countMappingConflicts(
   propertyName: string
 ): Promise<number> {
   return invoke<number>("count_mapping_conflicts", { locationId, folderPaths, propertyName });
+}
+
+/** Leaves a folder out of its location (its records are removed; nothing on disk changes). Returns how many were removed. */
+export async function excludeFolder(locationId: string, folderPath: string): Promise<number> {
+  return invoke<number>("exclude_folder", { locationId, folderPath });
+}
+
+/** Puts an excluded folder back; its files are indexed on the next refresh. */
+export async function includeFolder(locationId: string, folderPath: string): Promise<void> {
+  return invoke<void>("include_folder", { locationId, folderPath });
 }
 
 export async function getMappingNodes(locationId: string): Promise<PathMappingNode[]> {

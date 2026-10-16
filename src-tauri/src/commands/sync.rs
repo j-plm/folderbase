@@ -7,16 +7,20 @@
 //!   records made before fingerprints, by size and modified time) and keep
 //!   their record, so custom metadata follows the file
 //! - Files no longer on disk have their records removed
+//! - Excluded folders (`location_exclusions`) are never scanned
 //!
 //! Only new and edited files are read; unchanged files cost one `stat` each.
+//! Online-only cloud files are never read (that would download them): they're
+//! indexed from `stat` alone, and their fingerprint and EXIF are read on a later
+//! refresh once they've been downloaded.
 
-use crate::commands::ingest::{bootstrap_properties, extract_file_data, extracted_keys, folder_tags, not_hidden};
+use crate::commands::ingest::{bootstrap_properties, extract_file_data, extracted_keys, folder_tags, not_hidden, online_only};
 use crate::db::DbPool;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use sqlx::Row;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -43,6 +47,7 @@ struct DiskFile {
     relative_path: String,
     size: i64,
     modified: Option<String>,
+    online_only: bool,
 }
 
 /// A record already in the database for this location.
@@ -54,27 +59,39 @@ struct Known {
     modified: Option<String>,
     fingerprint: Option<String>,
     metadata: Option<String>,
+    online_only: bool,
 }
 
-/// A new or edited file, fully read.
+/// A new or edited file, read (or, when online-only, just stat'ed).
 struct ReadFile {
     disk: DiskFile,
     file_type: Option<String>,
     created_at: Option<String>,
     exif: Map<String, Value>,
     fingerprint: Option<String>,
+    /// False for an online-only file: no fingerprint or EXIF were read.
+    contents_read: bool,
 }
 
 fn rfc3339(t: std::time::SystemTime) -> String {
     Into::<DateTime<Utc>>::into(t).to_rfc3339()
 }
 
-/// Every visible file under `root`, plus folders that couldn't be read (whose
-/// records must not be treated as missing).
-fn scan_tree(root: &Path) -> (Vec<DiskFile>, Vec<PathBuf>) {
+/// Every visible file under `root`, outside the `excluded` folders (relative
+/// paths), plus folders that couldn't be read (whose records must not be
+/// treated as missing). Only `stat` is used, so cloud placeholders stay online-only.
+fn scan_tree(root: &Path, excluded: &HashSet<String>) -> (Vec<DiskFile>, Vec<PathBuf>) {
     let mut files = Vec::new();
     let mut unreadable = Vec::new();
-    for entry in WalkDir::new(root).follow_links(false).into_iter().filter_entry(not_hidden) {
+    let is_excluded = |e: &walkdir::DirEntry| {
+        e.file_type().is_dir()
+            && e.path()
+                .strip_prefix(root)
+                .map(|p| excluded.contains(&p.to_string_lossy().replace('\\', "/")))
+                .unwrap_or(false)
+    };
+    let walker = WalkDir::new(root).follow_links(false).into_iter();
+    for entry in walker.filter_entry(|e| not_hidden(e) && !is_excluded(e)) {
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
@@ -104,6 +121,7 @@ fn scan_tree(root: &Path) -> (Vec<DiskFile>, Vec<PathBuf>) {
             relative_path,
             size: meta.len() as i64,
             modified: meta.modified().ok().map(rfc3339),
+            online_only: online_only(&meta),
         });
     }
     (files, unreadable)
@@ -136,9 +154,11 @@ pub fn fingerprint(path: &Path) -> Option<String> {
 
 fn read_file(disk: DiskFile) -> Option<ReadFile> {
     let path = Path::new(&disk.path);
-    let (file_type, _, _, created_at, exif) = extract_file_data(path)?;
-    let fingerprint = fingerprint(path);
-    Some(ReadFile { disk, file_type, created_at, exif, fingerprint })
+    // Reading an online-only file's contents would make its cloud provider download it
+    let contents_read = !disk.online_only;
+    let (file_type, _, _, created_at, exif) = extract_file_data(path, contents_read)?;
+    let fingerprint = if contents_read { fingerprint(path) } else { None };
+    Some(ReadFile { disk, file_type, created_at, exif, fingerprint, contents_read })
 }
 
 fn file_name(path: &str) -> &str {
@@ -148,8 +168,8 @@ fn file_name(path: &str) -> &str {
 /// Pairs new files with missing records that are the same file moved or renamed.
 /// Returns (index into `added`, index into `missing`).
 ///
-/// A pair needs the same fingerprint, or for records without one, the same
-/// size and modified time. When several candidates share a key (identical
+/// A pair needs the same fingerprint, or, where either side has none (records
+/// made before fingerprints, online-only files), the same size and modified time. When several candidates share a key (identical
 /// copies), only a unique same-name pair is accepted; anything still ambiguous
 /// is left as an addition plus a removal.
 fn match_moves(added: &[ReadFile], missing: &[Known]) -> Vec<(usize, usize)> {
@@ -160,11 +180,12 @@ fn match_moves(added: &[ReadFile], missing: &[Known]) -> Vec<(usize, usize)> {
     type Key = (Option<String>, Option<(i64, String)>);
     let keys_added = |a: &ReadFile| -> Key { (a.fingerprint.clone(), a.disk.modified.clone().map(|m| (a.disk.size, m))) };
 
-    // Pass 1: fingerprints; pass 2: size + modified time for records without one
-    for pass in 0..2 {
+    // Pass 1: fingerprints; pass 2: size + modified time for records without one;
+    // pass 3: size + modified time for online-only files (never fingerprinted)
+    for pass in 0..3 {
         let mut groups: HashMap<String, (Vec<usize>, Vec<usize>)> = HashMap::new();
         for (i, a) in added.iter().enumerate() {
-            if used_added[i] {
+            if used_added[i] || (pass == 2 && a.fingerprint.is_some()) {
                 continue;
             }
             let (fp, sm) = keys_added(a);
@@ -179,7 +200,7 @@ fn match_moves(added: &[ReadFile], missing: &[Known]) -> Vec<(usize, usize)> {
             }
             let key = if pass == 0 {
                 m.fingerprint.clone()
-            } else if m.fingerprint.is_none() {
+            } else if (pass == 1) == m.fingerprint.is_none() {
                 m.size.zip(m.modified.clone()).map(|(s, t)| format!("{s}|{t}"))
             } else {
                 None
@@ -254,7 +275,7 @@ pub async fn sync_location(
     }
 
     let known: Vec<Known> = sqlx::query(
-        "SELECT file_id, file_path, file_size, modified_at, fingerprint, metadata FROM files WHERE location_id = ?",
+        "SELECT file_id, file_path, file_size, modified_at, fingerprint, metadata, online_only FROM files WHERE location_id = ?",
     )
     .bind(location_id)
     .fetch_all(pool)
@@ -268,11 +289,20 @@ pub async fn sync_location(
         modified: r.get("modified_at"),
         fingerprint: r.get("fingerprint"),
         metadata: r.get("metadata"),
+        online_only: r.get("online_only"),
     })
     .collect();
 
+    let excluded: HashSet<String> =
+        sqlx::query_scalar("SELECT folder_rel FROM location_exclusions WHERE location_id = ?")
+            .bind(location_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect();
     let scan_root = root.clone();
-    let (disk, unreadable) = tauri::async_runtime::spawn_blocking(move || scan_tree(&scan_root))
+    let (disk, unreadable) = tauri::async_runtime::spawn_blocking(move || scan_tree(&scan_root, &excluded))
         .await
         .map_err(|e| e.to_string())?;
     // An empty listing where there were files is far more likely an unmounted or
@@ -290,8 +320,13 @@ pub async fn sync_location(
     let mut to_read: Vec<DiskFile> = Vec::new();
     for d in &disk {
         match by_path.remove(d.path.as_str()) {
-            Some(k) if k.size == Some(d.size) && k.modified == d.modified && k.fingerprint.is_some() => {}
-            // Unchanged legacy record: only needs its fingerprint, done below with the edits
+            Some(k)
+                if k.size == Some(d.size)
+                    && k.modified == d.modified
+                    && k.online_only == d.online_only
+                    && (k.fingerprint.is_some() || d.online_only) => {}
+            // Unchanged legacy record: only needs its fingerprint, done below with the edits.
+            // A file that's been downloaded (or freed up) is re-read to update its state.
             _ => to_read.push(d.clone()),
         }
     }
@@ -331,7 +366,7 @@ pub async fn sync_location(
     for r in &existing {
         let k = known_paths[r.disk.path.as_str()];
         let edited = k.size != Some(r.disk.size) || k.modified != r.disk.modified;
-        update_record(&mut tx, &k.file_id, r, k.metadata.as_deref()).await?;
+        update_record(&mut tx, k, r).await?;
         if edited {
             summary.updated += 1;
         }
@@ -339,7 +374,7 @@ pub async fn sync_location(
     // Moves: the old record follows the file to its new path
     for (i, r) in added.iter().enumerate() {
         if let Some(&m) = moved_added.get(&i) {
-            update_record(&mut tx, &missing[m].file_id, r, missing[m].metadata.as_deref()).await?;
+            update_record(&mut tx, &missing[m], r).await?;
             summary.moved += 1;
         }
     }
@@ -363,8 +398,8 @@ pub async fn sync_location(
         sqlx::query(
             "INSERT OR IGNORE INTO files \
              (file_id, file_path, file_type, timestamp, library, metadata, location_id, \
-              relative_path, file_size, modified_at, created_at, tags, fingerprint) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              relative_path, file_size, modified_at, created_at, tags, fingerprint, online_only) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(&r.disk.path)
@@ -379,6 +414,7 @@ pub async fn sync_location(
         .bind(&r.created_at)
         .bind(folder_tags(&r.disk.relative_path))
         .bind(&r.fingerprint)
+        .bind(r.disk.online_only)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -418,16 +454,22 @@ pub async fn sync_location(
     Ok(summary)
 }
 
-/// Points a record at `r` (path, file details, EXIF), keeping the user's metadata.
-async fn update_record(
-    tx: &mut sqlx::SqliteConnection,
-    file_id: &str,
-    r: &ReadFile,
-    existing_metadata: Option<&str>,
-) -> Result<(), String> {
+/// Points record `k` at `r` (path, file details, EXIF), keeping the user's metadata.
+/// When `r` wasn't read (online-only), the record keeps its EXIF, and its
+/// fingerprint too unless the file has changed since it was taken.
+async fn update_record(tx: &mut sqlx::SqliteConnection, k: &Known, r: &ReadFile) -> Result<(), String> {
+    let (fingerprint, metadata) = if r.contents_read {
+        (r.fingerprint.clone(), merge_metadata(k.metadata.as_deref(), &r.exif))
+    } else {
+        let unchanged = k.size == Some(r.disk.size) && k.modified == r.disk.modified;
+        (
+            if unchanged { k.fingerprint.clone() } else { None },
+            k.metadata.clone().unwrap_or_else(|| "{}".to_string()),
+        )
+    };
     sqlx::query(
         "UPDATE files SET file_path = ?, relative_path = ?, file_type = ?, timestamp = ?, \
-         file_size = ?, modified_at = ?, created_at = ?, fingerprint = ?, metadata = ? \
+         file_size = ?, modified_at = ?, created_at = ?, fingerprint = ?, metadata = ?, online_only = ? \
          WHERE file_id = ?",
     )
     .bind(&r.disk.path)
@@ -437,9 +479,10 @@ async fn update_record(
     .bind(r.disk.size)
     .bind(&r.disk.modified)
     .bind(&r.created_at)
-    .bind(&r.fingerprint)
-    .bind(merge_metadata(existing_metadata, &r.exif))
-    .bind(file_id)
+    .bind(&fingerprint)
+    .bind(&metadata)
+    .bind(r.disk.online_only)
+    .bind(&k.file_id)
     .execute(&mut *tx)
     .await
     .map_err(|e| e.to_string())?;
@@ -479,11 +522,13 @@ mod tests {
                 relative_path: path.trim_start_matches('/').into(),
                 size,
                 modified: Some(modified.into()),
+                online_only: fp.is_none(),
             },
             file_type: None,
             created_at: None,
             exif: Map::new(),
             fingerprint: fp.map(Into::into),
+            contents_read: fp.is_some(),
         }
     }
 
@@ -495,6 +540,7 @@ mod tests {
             modified: Some(modified.into()),
             fingerprint: fp.map(Into::into),
             metadata: None,
+            online_only: false,
         }
     }
 
@@ -513,6 +559,16 @@ mod tests {
         // A fingerprinted record never matches on size and time alone
         let missing = [known("1", "/old/a.pdf", 10, "t1", Some("other"))];
         assert!(match_moves(&added, &missing).is_empty());
+    }
+
+    #[test]
+    fn online_only_files_match_fingerprinted_records_by_size_and_time() {
+        // Moved in the cloud while online-only: nothing read, so no fingerprint
+        let added = [read("/new/report.pdf", 10, "t1", None)];
+        let missing = [known("1", "/old/report.pdf", 10, "t1", Some("fa"))];
+        assert_eq!(match_moves(&added, &missing), vec![(0, 0)]);
+        let elsewhere = [known("1", "/old/report.pdf", 10, "t2", Some("fa"))];
+        assert!(match_moves(&added, &elsewhere).is_empty());
     }
 
     #[test]

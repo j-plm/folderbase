@@ -47,6 +47,7 @@ import { describeRefresh, type RefreshSummary } from "../../lib/refreshSummary";
 import MenuPopover, { type MenuAnchor } from "../shared/MenuPopover";
 import Dialog, { DialogButton } from "../shared/Dialog";
 import { useOverwriteConfirm } from "../shared/OverwriteDialog";
+import CloudBadge from "./shared/CloudBadge";
 import {
   DRAG_THRESHOLD,
   DROP_DWELL_MS,
@@ -1692,6 +1693,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           >
             <FileIcon path={file.file_path} mimeType={file.file_type} size={16} />
             <span className="truncate min-w-0">{fileName(file.file_path)}</span>
+            <CloudBadge show={file.online_only} className="ml-auto" />
           </div>
         );
       }

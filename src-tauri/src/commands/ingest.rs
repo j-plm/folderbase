@@ -7,9 +7,11 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 /// Extracts (file_type, timestamp, file_size, created_at, metadata) for a single file path.
-/// Returns None if the path is not a regular file or cannot be read.
+/// Returns None if the path is not a regular file or cannot be read. Without
+/// `read_contents` only `stat` is used (no EXIF), so an online-only file isn't downloaded.
 pub(crate) fn extract_file_data(
     path: &std::path::Path,
+    read_contents: bool,
 ) -> Option<(Option<String>, Option<String>, i64, Option<String>, Map<String, Value>)> {
     let fs_meta = std::fs::metadata(path).ok()?;
     if !fs_meta.is_file() {
@@ -46,7 +48,7 @@ pub(crate) fn extract_file_data(
 
     let mut metadata: Map<String, Value> = Map::new();
 
-    if image_exts.contains(&extension.as_str()) {
+    if read_contents && image_exts.contains(&extension.as_str()) {
         if let Ok(file) = std::fs::File::open(path) {
             let mut buf = std::io::BufReader::new(&file);
             if let Ok(exif) = exif::Reader::new().read_from_container(&mut buf) {
@@ -65,6 +67,40 @@ pub(crate) fn not_hidden(entry: &walkdir::DirEntry) -> bool {
         .to_str()
         .map(|s| s.starts_with('.'))
         .unwrap_or(false)
+}
+
+/// Whether a file is an online-only cloud placeholder (OneDrive, Dropbox, Google
+/// Drive, iCloud Drive…). Its details come from `stat` like any file, but reading
+/// its contents makes the provider download it, so indexing doesn't.
+/// macOS: the APFS "dataless" flag set by File Provider. Windows: the Cloud Files
+/// recall attributes.
+pub(crate) fn online_only(meta: &std::fs::Metadata) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::macos::fs::MetadataExt;
+        const SF_DATALESS: u32 = 0x4000_0000;
+        meta.st_flags() & SF_DATALESS != 0
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_OFFLINE: u32 = 0x1000;
+        const FILE_ATTRIBUTE_RECALL_ON_OPEN: u32 = 0x4_0000;
+        const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x40_0000;
+        meta.file_attributes()
+            & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS)
+            != 0
+    }
+    #[cfg(not(any(target_os = "macos", windows)))]
+    {
+        let _ = meta;
+        false
+    }
+}
+
+/// Whether the file at `path` is online-only (false if it can't be read).
+pub(crate) fn path_online_only(path: &std::path::Path) -> bool {
+    std::fs::symlink_metadata(path).map(|m| online_only(&m)).unwrap_or(false)
 }
 
 /// A file's folder names, as the JSON tags array.
@@ -141,7 +177,7 @@ pub async fn ingest_directory_impl(
 
         let file_path = entry.path().to_string_lossy().to_string();
 
-        let (file_type, timestamp, _file_size, _created_at, metadata) = match extract_file_data(entry.path()) {
+        let (file_type, timestamp, _file_size, _created_at, metadata) = match extract_file_data(entry.path(), !path_online_only(entry.path())) {
             Some(data) => data,
             None => continue,
         };

@@ -1,6 +1,8 @@
-import { Fragment, useMemo } from "react";
+import { useMemo } from "react";
 import type React from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { FileIcon } from "../../../lib/fileIcons";
+import CloudBadge from "./CloudBadge";
 import { useSelection } from "../../../hooks/useSelection";
 import type { ColumnDef } from "../../../lib/columns";
 import {
@@ -49,6 +51,13 @@ const INSET = 10;
 const NAME_ICON_WIDTH = ICON_SIZE + ICON_GAP;
 
 const CELL = "shrink-0 px-3 truncate whitespace-nowrap";
+/** Group heading height (Finder's h-14 headings). */
+const GROUP_HEADING_HEIGHT = 56;
+
+/** A line of the list: a group heading, or a file with its neighbours in the group (for joined selections). */
+type ListItem =
+  | { kind: "heading"; label: string }
+  | { kind: "row"; file: FileRecord; stripe: boolean; prev?: string; next?: string };
 
 interface Props {
   files: FileRecord[];
@@ -68,12 +77,37 @@ export default function FileTable({ files, storageKey }: Props) {
 
   const groups = useMemo(() => groupFiles(files, arrangement), [files, arrangement]);
   const shown = useMemo(() => groups.flatMap((g) => g.files), [groups]);
+  const items = useMemo(
+    () =>
+      groups.flatMap((g): ListItem[] => [
+        ...(g.label ? [{ kind: "heading" as const, label: g.label }] : []),
+        ...g.files.map((file, i) => ({
+          kind: "row" as const,
+          file,
+          stripe: i % 2 === 1,
+          prev: g.files[i - 1]?.file_id,
+          next: g.files[i + 1]?.file_id,
+        })),
+      ]),
+    [groups]
+  );
+  const itemIndex = useMemo(
+    () => new Map(items.flatMap((item, i) => (item.kind === "row" ? [[item.file.file_id, i] as const] : []))),
+    [items]
+  );
+  // Only the rows on screen are rendered, so thousands of files stay quick
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => layout.container,
+    estimateSize: (i) => (items[i].kind === "heading" ? GROUP_HEADING_HEIGHT : ROW_HEIGHT),
+    overscan: 20,
+  });
   const selection = useSelection(shown, {
     arrowKeys: true,
-    onReveal: (index) =>
-      layout.container
-        ?.querySelector(`[data-file-id="${shown[index].file_id}"]`)
-        ?.scrollIntoView({ block: "nearest" }),
+    onReveal: (index) => {
+      const i = itemIndex.get(shown[index]?.file_id);
+      if (i != null) virtualizer.scrollToIndex(i);
+    },
   });
 
   function handleHeaderMenu(e: React.MouseEvent) {
@@ -112,52 +146,60 @@ export default function FileTable({ files, storageKey }: Props) {
           showContextMenu(arrangementMenu(arrangementCtx));
         }}
       >
-        {groups.map((group) => (
-          <Fragment key={group.label}>
-            {group.label && (
-              <div
-                style={{ width: layout.contentWidth }}
-                className="flex items-end h-14 px-3 pb-1.5 text-[13px] font-medium text-neutral-500"
-              >
-                {group.label}
-              </div>
-            )}
-            {group.files.map((file, i) => {
-              const isSelected = selection.isSelected(file.file_id);
-              // Adjacent selected rows join into one block, as in Finder
-              const joinsAbove = isSelected && selection.isSelected(group.files[i - 1]?.file_id);
-              const joinsBelow = isSelected && selection.isSelected(group.files[i + 1]?.file_id);
+        <div style={{ height: virtualizer.getTotalSize(), width: layout.contentWidth, position: "relative" }}>
+          {virtualizer.getVirtualItems().map((v) => {
+            const item = items[v.index];
+            const place: React.CSSProperties = {
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: layout.contentWidth,
+              height: v.size,
+              transform: `translateY(${v.start}px)`,
+            };
+            if (item.kind === "heading") {
               return (
-                <div
-                  key={file.file_id}
-                  data-file-id={file.file_id}
-                  onClick={(e) => selection.onItemClick(e, file.file_id)}
-                  onDoubleClick={(e) => selection.onItemDoubleClick(e, file.file_id)}
-                  style={{ width: layout.contentWidth, height: ROW_HEIGHT }}
-                  className={`flex items-center rounded-md text-body cursor-default ${
-                    joinsAbove ? "rounded-t-none" : ""
-                  } ${joinsBelow ? "rounded-b-none" : ""} ${
-                    isSelected ? "native-selected" : i % 2 === 1 ? "bg-neutral-850" : ""
-                  }`}
-                >
-                  <div style={{ ...width("name"), gap: ICON_GAP }} className={`${CELL} flex items-center text-neutral-100`}>
-                    <FileIcon path={file.file_path} mimeType={file.file_type} size={ICON_SIZE} />
-                    <span className="truncate">{fileName(file.file_path)}</span>
-                  </div>
-                  <div style={width("modified")} className={`${CELL} text-neutral-400`}>
-                    {formatFinderDate(file.modified_at ?? file.timestamp)}
-                  </div>
-                  <div style={width("size")} className={`${CELL} text-right text-neutral-400`}>
-                    {formatFinderSize(file.file_size)}
-                  </div>
-                  <div style={width("kind")} className={`${CELL} text-neutral-400`}>
-                    {kindLabel(file)}
-                  </div>
+                <div key={v.key} style={place} className="flex items-end px-3 pb-1.5 text-[13px] font-medium text-neutral-500">
+                  {item.label}
                 </div>
               );
-            })}
-          </Fragment>
-        ))}
+            }
+            const { file } = item;
+            const isSelected = selection.isSelected(file.file_id);
+            // Adjacent selected rows join into one block, as in Finder
+            const joinsAbove = isSelected && selection.isSelected(item.prev);
+            const joinsBelow = isSelected && selection.isSelected(item.next);
+            return (
+              <div
+                key={v.key}
+                data-file-id={file.file_id}
+                onClick={(e) => selection.onItemClick(e, file.file_id)}
+                onDoubleClick={(e) => selection.onItemDoubleClick(e, file.file_id)}
+                style={place}
+                className={`flex items-center rounded-md text-body cursor-default ${
+                  joinsAbove ? "rounded-t-none" : ""
+                } ${joinsBelow ? "rounded-b-none" : ""} ${
+                  isSelected ? "native-selected" : item.stripe ? "bg-neutral-850" : ""
+                }`}
+              >
+                <div style={{ ...width("name"), gap: ICON_GAP }} className={`${CELL} flex items-center text-neutral-100`}>
+                  <FileIcon path={file.file_path} mimeType={file.file_type} size={ICON_SIZE} />
+                  <span className="truncate">{fileName(file.file_path)}</span>
+                  <CloudBadge show={file.online_only} className="ml-auto" />
+                </div>
+                <div style={width("modified")} className={`${CELL} text-neutral-400`}>
+                  {formatFinderDate(file.modified_at ?? file.timestamp)}
+                </div>
+                <div style={width("size")} className={`${CELL} text-right text-neutral-400`}>
+                  {formatFinderSize(file.file_size)}
+                </div>
+                <div style={width("kind")} className={`${CELL} text-neutral-400`}>
+                  {kindLabel(file)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
       {files.length === 0 && (
         <div className="px-3 py-8 text-center text-neutral-500 text-sm">No files</div>

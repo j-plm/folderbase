@@ -15,6 +15,8 @@ pub struct FileRecord {
     pub modified_at: Option<String>,
     pub created_at: Option<String>,
     pub tags: String,
+    /// A cloud file not downloaded to this device (see `ingest::online_only`).
+    pub online_only: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow)]

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo } from "react";
+import type React from "react";
 import type { FolderTreeNode } from "../../lib/commands";
 import { FolderIcon } from "../../lib/fileIcons";
 import { twoLineLabel } from "../../lib/tileLabel";
@@ -24,45 +25,25 @@ function FolderTile({
   node,
   label,
   isSelected,
+  isExcluded,
   labelFont,
   onSelect,
-  onDrillIn,
+  onContextMenu,
 }: {
   node: FolderTreeNode;
   label: string | undefined;
   isSelected: boolean;
+  isExcluded: boolean;
   labelFont: string;
-  onSelect: () => void;
-  onDrillIn: () => void;
+  onSelect: (shiftKey: boolean) => void;
+  onContextMenu: (e: React.MouseEvent) => void;
 }) {
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
-
-  // Delay the single-click toggle so a double-click drills in without
-  // expanding and collapsing the level below first.
-  function handleClick() {
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    } else {
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        onSelect();
-      }, 220);
-    }
-  }
-
-  function handleDoubleClick() {
-    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
-    onDrillIn();
-  }
-
   return (
     <div
-      onClick={handleClick}
-      onDoubleClick={handleDoubleClick}
+      onClick={(e) => onSelect(e.shiftKey)}
+      onContextMenu={onContextMenu}
       title={node.folder_name}
-      className="flex flex-col items-center gap-1 cursor-default select-none"
+      className={`flex flex-col items-center gap-1 cursor-default select-none ${isExcluded ? "opacity-50" : ""}`}
       style={{ width: TILE_WIDTH }}
     >
       <div
@@ -83,7 +64,7 @@ function FolderTile({
           </span>
         ))}
       </span>
-      <MappedLabel name={label} className="max-w-full -mt-0.5 text-neutral-100" />
+      <MappedLabel name={isExcluded ? "Excluded" : label} className="max-w-full -mt-0.5 text-neutral-100" />
     </div>
   );
 }
@@ -97,8 +78,9 @@ export default function MappingTiles({
   onToggle,
   onCommit,
   onInherit,
-  onDrillIn,
-}: LevelRendererProps & { onDrillIn: (folderPath: string) => void }) {
+  excluded,
+  onFolderMenu,
+}: LevelRendererProps) {
   const labelFont = useMemo(() => uiFont(12), []);
 
   return (
@@ -137,9 +119,10 @@ export default function MappingTiles({
                       node={node}
                       label={labels[node.folder_path]}
                       isSelected={level.selected.includes(node.folder_path)}
+                      isExcluded={excluded.has(node.folder_path)}
+                      onContextMenu={(e) => onFolderMenu(e, levelIndex, node)}
                       labelFont={labelFont}
-                      onSelect={() => onToggle(levelIndex, node.folder_path)}
-                      onDrillIn={() => onDrillIn(node.folder_path)}
+                      onSelect={(shiftKey) => onToggle(levelIndex, node.folder_path, shiftKey)}
                     />
                   ))}
                 </div>

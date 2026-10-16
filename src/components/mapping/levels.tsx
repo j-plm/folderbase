@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type React from "react";
 import type { FolderTreeNode } from "../../lib/commands";
 import { SymbolIcon } from "../../lib/fileIcons";
 
@@ -20,14 +21,37 @@ export interface LevelRendererProps {
   labels: Record<string, string>;
   savedLevel: number | null;
   folderName: (path: string) => string;
-  onToggle: (levelIndex: number, folderPath: string) => void;
+  /** Click on a folder: toggles it, or with Shift selects everything from the last click to it. */
+  onToggle: (levelIndex: number, folderPath: string, shiftKey: boolean) => void;
   onCommit: (levelIndex: number, name: string) => void;
   /** Names each target folder after the folder it sits in. */
   onInherit: (levelIndex: number) => void;
+  /** Folders left out of the location (shown dimmed). */
+  excluded: Set<string>;
+  /** Right-click on a folder: exclude it from the location, or include it again. */
+  onFolderMenu: (e: React.MouseEvent, levelIndex: number, node: FolderTreeNode) => void;
 }
 
 export function levelNodes(level: Level): FolderTreeNode[] {
   return level.groups.flatMap((g) => g.nodes);
+}
+
+/**
+ * The level's selection after a click on `folderPath`. Selection is additive, so a
+ * plain click toggles one folder; a shift-click adds every folder between `anchor`
+ * (the last one clicked) and this one. Without an anchor in this level, it's a plain click.
+ */
+export function clickSelection(level: Level, folderPath: string, anchor: string | null, shiftKey: boolean): string[] {
+  const order = levelNodes(level).map((n) => n.folder_path);
+  const from = anchor ? order.indexOf(anchor) : -1;
+  const to = order.indexOf(folderPath);
+  if (shiftKey && from !== -1 && to !== -1) {
+    const range = order.slice(Math.min(from, to), Math.max(from, to) + 1);
+    return [...level.selected, ...range.filter((p) => !level.selected.includes(p))];
+  }
+  return level.selected.includes(folderPath)
+    ? level.selected.filter((p) => p !== folderPath)
+    : [...level.selected, folderPath];
 }
 
 /**

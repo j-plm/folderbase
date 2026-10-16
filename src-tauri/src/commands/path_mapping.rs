@@ -30,6 +30,8 @@ pub struct FolderTreeNode {
     pub file_count: i64,
     pub children: Vec<FolderTreeNode>,
     pub mapping: Option<PathMappingNode>,
+    /// Left out of the location: not scanned, its files not indexed.
+    pub excluded: bool,
 }
 
 fn build_tree_node(
@@ -39,6 +41,7 @@ fn build_tree_node(
     file_counts: &std::collections::HashMap<String, i64>,
     children_map: &std::collections::HashMap<String, Vec<String>>,
     mapping_map: &std::collections::HashMap<String, PathMappingNode>,
+    excluded: &BTreeSet<String>,
 ) -> FolderTreeNode {
     let folder_path = format!("{}/{}", root_path.trim_end_matches('/'), folder_rel);
     let folder_name = folder_rel.split('/').last().unwrap_or(folder_rel).to_string();
@@ -50,7 +53,7 @@ fn build_tree_node(
         .get(folder_rel)
         .unwrap_or(&empty)
         .iter()
-        .map(|c| build_tree_node(c, depth + 1, root_path, file_counts, children_map, mapping_map))
+        .map(|c| build_tree_node(c, depth + 1, root_path, file_counts, children_map, mapping_map, excluded))
         .collect();
 
     FolderTreeNode {
@@ -60,6 +63,7 @@ fn build_tree_node(
         file_count,
         children,
         mapping,
+        excluded: excluded.contains(folder_rel),
     }
 }
 
@@ -106,6 +110,22 @@ pub async fn get_folder_tree(
         }
     }
 
+    // Excluded folders have no indexed files, but still show (so they can be included again)
+    let excluded: BTreeSet<String> =
+        sqlx::query_scalar("SELECT folder_rel FROM location_exclusions WHERE location_id = ?")
+            .bind(&location_id)
+            .fetch_all(db.inner())
+            .await
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect();
+    for rel in &excluded {
+        let parts: Vec<&str> = rel.split('/').collect();
+        for i in 1..=parts.len() {
+            file_counts.entry(parts[..i].join("/")).or_insert(0);
+        }
+    }
+
     // Build parent→children map
     let mut children_map: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
@@ -132,7 +152,7 @@ pub async fn get_folder_tree(
 
     let children: Vec<FolderTreeNode> = root_children
         .iter()
-        .map(|c| build_tree_node(c, 1, root_path, &file_counts, &children_map, &mapping_map))
+        .map(|c| build_tree_node(c, 1, root_path, &file_counts, &children_map, &mapping_map, &excluded))
         .collect();
 
     Ok(FolderTreeNode {
@@ -142,6 +162,7 @@ pub async fn get_folder_tree(
         file_count: total_files,
         children,
         mapping: None,
+        excluded: false,
     })
 }
 
@@ -421,7 +442,7 @@ async fn location_library(location_id: &str, pool: &DbPool) -> Result<String, St
 }
 
 // Strips root_path prefix from folder_path to get the relative folder path.
-fn folder_rel_from_abs(root_path: &str, folder_path: &str) -> Result<String, String> {
+pub(crate) fn folder_rel_from_abs(root_path: &str, folder_path: &str) -> Result<String, String> {
     let root = root_path.replace('\\', "/");
     let root = root.trim_end_matches('/');
     let folder = folder_path.replace('\\', "/");

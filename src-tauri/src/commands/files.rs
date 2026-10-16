@@ -76,7 +76,7 @@ pub async fn add_file(
     db: State<'_, DbPool>,
 ) -> Result<QueryFileRecord, String> {
     let file_path = std::path::Path::new(&path);
-    let (file_type, timestamp, file_size, created_at, metadata) = extract_file_data(file_path)
+    let (file_type, timestamp, file_size, created_at, metadata) = extract_file_data(file_path, !crate::commands::ingest::path_online_only(file_path))
         .ok_or_else(|| format!("cannot read file: {}", path))?;
 
     let metadata_json = serde_json::to_string(&metadata).map_err(|e| e.to_string())?;

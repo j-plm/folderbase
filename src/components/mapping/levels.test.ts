@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { FolderTreeNode } from "../../lib/commands";
-import { levelCaption, levelName, levelPlaceholder, levelTargets, type Level } from "./levels";
+import { clickSelection, levelCaption, levelName, levelPlaceholder, levelTargets, type Level } from "./levels";
 
 const node = (path: string): FolderTreeNode => ({
   folder_path: path,
@@ -9,6 +9,7 @@ const node = (path: string): FolderTreeNode => ({
   file_count: 1,
   children: [],
   mapping: null,
+  excluded: false,
 });
 
 const level = (selected: string[]): Level => ({
@@ -56,5 +57,24 @@ describe("level headings", () => {
   it("shows the shared name of the folders being named", () => {
     const labels = { "/r/Clients/Acme": "Client" };
     expect(levelName(levelTargets(level(["/r/Clients/Acme"])).targets, labels).value).toBe("Client");
+  });
+});
+
+describe("clickSelection", () => {
+  const [A, B, C] = ["/r/Clients/Acme", "/r/Clients/Beta", "/r/Clients/Core"];
+
+  it("toggles one folder on a plain click", () => {
+    expect(clickSelection(level([A]), C, A, false)).toEqual([A, C]);
+    expect(clickSelection(level([A, C]), C, A, false)).toEqual([A]);
+  });
+
+  it("selects everything between the anchor and the shift-clicked folder", () => {
+    expect(clickSelection(level([A]), C, A, true)).toEqual([A, B, C]);
+    expect(clickSelection(level([C]), A, C, true).sort()).toEqual([A, B, C]);
+  });
+
+  it("falls back to a toggle when the anchor isn't in this level", () => {
+    expect(clickSelection(level([]), C, null, true)).toEqual([C]);
+    expect(clickSelection(level([]), C, "/elsewhere", true)).toEqual([C]);
   });
 });

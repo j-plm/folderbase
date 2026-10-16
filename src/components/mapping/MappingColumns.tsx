@@ -71,6 +71,8 @@ export default function MappingColumns({
   onToggle,
   onCommit,
   onInherit,
+  excluded,
+  onFolderMenu,
 }: LevelRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const font = useMemo(() => uiFont(13), []);
@@ -163,22 +165,24 @@ export default function MappingColumns({
                   )}
                   {group.nodes.map((node) => {
                     const isSelected = level.selected.includes(node.folder_path);
-                    const label = labels[node.folder_path];
+                    const isExcluded = excluded.has(node.folder_path);
+                    const label = isExcluded ? "Excluded" : labels[node.folder_path];
                     return (
                       <div
                         key={node.folder_path}
-                        onClick={() => onToggle(levelIndex, node.folder_path)}
+                        onClick={(e) => onToggle(levelIndex, node.folder_path, e.shiftKey)}
+                        onContextMenu={(e) => onFolderMenu(e, levelIndex, node)}
                         style={{ height: ROW_HEIGHT, gap: ICON_GAP }}
                         className={`flex items-center px-2 rounded-md text-body text-neutral-100 cursor-default select-none ${
                           isSelected ? (levelIndex === activeLevel ? "native-selected" : "bg-neutral-700") : ""
-                        }`}
+                        } ${isExcluded ? "opacity-50" : ""}`}
                       >
                         <FolderIcon size={ICON_SIZE} />
                         <span className="flex-1 min-w-0 whitespace-nowrap overflow-hidden" title={node.folder_name}>
                           {middleTruncate(node.folder_name, nameWidth(width) - labelWidth(label), (t) => measureText(t, font))}
                         </span>
                         <MappedLabel name={label} className="max-w-[45%]" />
-                        {node.children.length > 0 && (
+                        {node.children.length > 0 && !isExcluded && (
                           <SymbolIcon
                             name="chevron.right"
                             size={CHEVRON_SIZE}

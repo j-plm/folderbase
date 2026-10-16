@@ -11,6 +11,8 @@ export interface FileRecord {
   file_size?: number | null;
   modified_at?: string | null;
   tags: string[];
+  /** A cloud file not downloaded to this device; its contents are never read, so it stays that way. */
+  online_only?: boolean;
 }
 
 export interface PathSegmentMeta {

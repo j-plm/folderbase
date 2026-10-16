@@ -87,6 +87,9 @@ pub fn run() {
             commands::path_mapping::clear_folder_labels,
             commands::path_mapping::folders_named,
             commands::path_mapping::count_mapping_conflicts,
+            commands::locations::exclude_folder,
+            commands::locations::include_folder,
+            commands::locations::list_subfolders,
             commands::files::get_location_properties,
         ])
         .run(tauri::generate_context!())

@@ -40,6 +40,11 @@ pub async fn get_thumbnail(path: String, size: u32, scale: u32, app: AppHandle) 
 }
 
 fn thumbnail(path: &Path, size: u32, scale: u32, dir: &Path) -> Result<Option<String>, String> {
+    // Rendering would download an online-only cloud file; show its icon instead
+    // (not cached, so it gets a thumbnail once it's downloaded)
+    if crate::commands::ingest::path_online_only(path) {
+        return Ok(None);
+    }
     let key = cache_key(path, size, scale)?;
     let png = dir.join(format!("{key}.png"));
     let none = dir.join(format!("{key}.{NO_THUMBNAIL}"));

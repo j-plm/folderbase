@@ -1,6 +1,7 @@
 mod common;
 
 use common::setup_db;
+use folderbase_lib::commands::locations::{exclude_folder_impl, include_folder_impl};
 use folderbase_lib::commands::sync::{sync_location, SyncSummary};
 use folderbase_lib::db::DbPool;
 use std::path::{Path, PathBuf};
@@ -142,4 +143,54 @@ async fn an_empty_or_missing_folder_removes_nothing() {
     std::fs::remove_dir_all(&root).unwrap();
     assert!(sync_location(&loc, &pool, &|_| {}).await.is_err());
     assert_eq!(count(&pool, &loc).await, 1);
+}
+
+#[tokio::test]
+async fn excluded_folders_are_dropped_and_not_scanned_until_included() {
+    let pool = setup_db().await;
+    let root = temp_root();
+    write(&root, "Keep/a.txt", b"alpha");
+    write(&root, "Archive/2019/b.txt", b"bravo");
+    write(&root, "Archive/2020/c.txt", b"charlie");
+    let loc = add_location(&pool, &root).await;
+    sync(&pool, &loc).await;
+    let archive = root.join("Archive").to_string_lossy().into_owned();
+
+    assert_eq!(exclude_folder_impl(&loc, &archive, &pool).await.unwrap(), 2);
+    assert_eq!(count(&pool, &loc).await, 1);
+    // A refresh leaves it out, rather than adding its files back
+    assert_eq!(sync(&pool, &loc).await, SyncSummary::default());
+    assert_eq!(count(&pool, &loc).await, 1);
+
+    include_folder_impl(&loc, &archive, &pool).await.unwrap();
+    assert_eq!(sync(&pool, &loc).await, SyncSummary { added: 2, ..Default::default() });
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn the_location_root_cannot_be_excluded() {
+    let pool = setup_db().await;
+    let root = temp_root();
+    write(&root, "a.txt", b"alpha");
+    let loc = add_location(&pool, &root).await;
+    assert!(exclude_folder_impl(&loc, &root.to_string_lossy(), &pool).await.is_err());
+    assert!(exclude_folder_impl(&loc, "/somewhere/else", &pool).await.is_err());
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[tokio::test]
+async fn local_files_are_not_online_only() {
+    let pool = setup_db().await;
+    let root = temp_root();
+    write(&root, "a.txt", b"alpha");
+    let loc = add_location(&pool, &root).await;
+    sync(&pool, &loc).await;
+    let (online, fp): (bool, Option<String>) =
+        sqlx::query_as("SELECT online_only, fingerprint FROM files WHERE relative_path = 'a.txt'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(!online);
+    assert!(fp.is_some());
+    std::fs::remove_dir_all(&root).unwrap();
 }

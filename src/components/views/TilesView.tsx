@@ -1,5 +1,8 @@
-import { useCallback, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type React from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import Thumbnail from "./shared/Thumbnail";
+import CloudBadge from "./shared/CloudBadge";
 import { useSelection } from "../../hooks/useSelection";
 import { gridNeighbor, type ArrowKey } from "../../lib/selection";
 import type { FileRecord } from "../../types";
@@ -18,6 +21,21 @@ const TILE_WIDTH = 106;
 const COLUMN_GAP = 9;
 /** Label text width: cell minus the selection pill's side padding. */
 const LABEL_WIDTH = TILE_WIDTH - 8;
+/** A tile: 76pt icon backing, 4pt gap, up to two 15pt label lines. */
+const TILE_HEIGHT = 110;
+const ROW_GAP = 12;
+/** Padding around each group's tiles. */
+const GROUP_PADDING = 16;
+
+/** A line of the view: a group heading, or a row of tiles. */
+type TileItem =
+  | { kind: "heading"; label: string; divider: boolean }
+  | { kind: "row"; files: FileRecord[]; first: boolean; last: boolean };
+
+/** How many tiles fit across `width`, as the grid's auto-fill would place them. */
+function tilesPerRow(width: number): number {
+  return Math.max(1, Math.floor((width - GROUP_PADDING * 2 + COLUMN_GAP) / (TILE_WIDTH + COLUMN_GAP)));
+}
 
 export default function TilesView({ files }: Props) {
   const arrangementCtx = useArrangement();
@@ -33,25 +51,69 @@ export default function TilesView({ files }: Props) {
     return new Map(shown.map((f) => [f.file_id, twoLineLabel(fileName(f.file_path), LABEL_WIDTH, measure)]));
   }, [shown, labelFont]);
   const containerRef = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(0);
+  // The grid mounts only once there are files, so watch it again when that changes
+  const empty = files.length === 0;
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver(() => setWidth(el.clientWidth));
+    observer.observe(el);
+    setWidth(el.clientWidth);
+    return () => observer.disconnect();
+  }, [empty]);
+  const perRow = tilesPerRow(width);
 
-  const tileElement = useCallback(
-    (id: string) => containerRef.current?.querySelector<HTMLElement>(`[data-file-id="${CSS.escape(id)}"]`) ?? null,
-    []
+  // Rows of tiles per group, so only the rows on screen are rendered
+  const items = useMemo(
+    () =>
+      groups.flatMap((group, groupIndex): TileItem[] => {
+        const rows: TileItem[] = [];
+        for (let i = 0; i < group.files.length; i += perRow) {
+          rows.push({
+            kind: "row",
+            files: group.files.slice(i, i + perRow),
+            first: i === 0,
+            last: i + perRow >= group.files.length,
+          });
+        }
+        return group.label ? [{ kind: "heading", label: group.label, divider: groupIndex > 0 }, ...rows] : rows;
+      }),
+    [groups, perRow]
   );
+  const rowOf = useMemo(() => {
+    const map = new Map<string, number>();
+    items.forEach((item, i) => item.kind === "row" && item.files.forEach((f) => map.set(f.file_id, i)));
+    return map;
+  }, [items]);
 
-  // Arrow keys move by where tiles sit on screen, so rows follow the window width and groups
-  const gridNavigate = useCallback((fromId: string, key: ArrowKey) => {
-    const tiles = containerRef.current?.querySelectorAll<HTMLElement>("[data-file-id]") ?? [];
-    const boxes = Array.from(tiles, (el) => {
-      const r = el.getBoundingClientRect();
-      return { id: el.dataset.fileId!, x: r.left + r.width / 2, y: r.top + r.height / 2 };
-    });
-    return gridNeighbor(boxes, fromId, key);
-  }, []);
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => containerRef.current,
+    estimateSize: (i) => {
+      const item = items[i];
+      if (item.kind === "heading") return 34;
+      return TILE_HEIGHT + (item.first ? GROUP_PADDING : 0) + (item.last ? GROUP_PADDING : ROW_GAP);
+    },
+    overscan: 4,
+  });
+
+  // Arrow keys move by where tiles sit in the grid (rows follow the window width and groups)
+  const boxes = useMemo(
+    () =>
+      items.flatMap((item, row) =>
+        item.kind === "row" ? item.files.map((f, col) => ({ id: f.file_id, x: col * 100, y: row * 100 })) : []
+      ),
+    [items]
+  );
+  const gridNavigate = useCallback((fromId: string, key: ArrowKey) => gridNeighbor(boxes, fromId, key), [boxes]);
 
   const selection = useSelection(shown, {
     gridNavigate,
-    onReveal: (index) => tileElement(shown[index]?.file_id ?? "")?.scrollIntoView({ block: "nearest" }),
+    onReveal: (index) => {
+      const row = rowOf.get(shown[index]?.file_id ?? "");
+      if (row != null) virtualizer.scrollToIndex(row);
+    },
   });
 
   if (files.length === 0) {
@@ -74,52 +136,77 @@ export default function TilesView({ files }: Props) {
         showContextMenu(arrangementMenu(arrangementCtx));
       }}
     >
-      {groups.map((group, groupIndex) => (
-        <section
-          key={group.label}
-          className={groupIndex > 0 ? "border-t border-neutral-700/60" : ""}
-        >
-          {group.label && (
-            <h2 className="px-5 pt-2.5 text-[15px] font-semibold text-neutral-400">
-              {group.label}
-            </h2>
-          )}
-          {/* Fixed-size cells and gaps: the window width only changes how many fit per row */}
-          <div
-            className="grid justify-start gap-y-3 p-4"
-            style={{ gridTemplateColumns: `repeat(auto-fill, ${TILE_WIDTH}px)`, columnGap: COLUMN_GAP }}
-          >
-            {group.files.map((file) => {
-              const name = fileName(file.file_path);
-              const isSelected = selection.isSelected(file.file_id);
-              return (
-                <div
-                  key={file.file_id}
-                  data-file-id={file.file_id}
-                  onClick={(e) => selection.onItemClick(e, file.file_id)}
-                  onDoubleClick={(e) => selection.onItemDoubleClick(e, file.file_id)}
-                  className="flex flex-col items-center gap-1 cursor-default select-none"
-                  style={{ width: TILE_WIDTH }}
-                >
+      <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+        {virtualizer.getVirtualItems().map((v) => {
+          const item = items[v.index];
+          const place: React.CSSProperties = {
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: "100%",
+            transform: `translateY(${v.start}px)`,
+          };
+          if (item.kind === "heading") {
+            return (
+              <div
+                key={v.key}
+                ref={virtualizer.measureElement}
+                data-index={v.index}
+                style={place}
+                className={item.divider ? "border-t border-neutral-700/60" : ""}
+              >
+                <h2 className="px-5 pt-2.5 text-[15px] font-semibold text-neutral-400">{item.label}</h2>
+              </div>
+            );
+          }
+          return (
+            // Fixed-size cells and gaps: the window width only changes how many fit per row
+            <div
+              key={v.key}
+              style={{
+                ...place,
+                height: v.size,
+                display: "grid",
+                gridTemplateColumns: `repeat(${perRow}, ${TILE_WIDTH}px)`,
+                columnGap: COLUMN_GAP,
+                alignItems: "start",
+                paddingLeft: GROUP_PADDING,
+                paddingTop: item.first ? GROUP_PADDING : 0,
+              }}
+            >
+              {item.files.map((file) => {
+                const name = fileName(file.file_path);
+                const isSelected = selection.isSelected(file.file_id);
+                return (
                   <div
-                    className={`flex items-center justify-center w-[76px] h-[76px] rounded-md ${
-                      isSelected ? "bg-neutral-700/70" : ""
-                    }`}
+                    key={file.file_id}
+                    data-file-id={file.file_id}
+                    onClick={(e) => selection.onItemClick(e, file.file_id)}
+                    onDoubleClick={(e) => selection.onItemDoubleClick(e, file.file_id)}
+                    className="flex flex-col items-center gap-1 cursor-default select-none"
+                    style={{ width: TILE_WIDTH }}
                   >
-                    <Thumbnail path={file.file_path} mimeType={file.file_type} size={64} />
+                    <div
+                      className={`relative flex items-center justify-center w-[76px] h-[76px] rounded-md ${
+                        isSelected ? "bg-neutral-700/70" : ""
+                      }`}
+                    >
+                      <Thumbnail path={file.file_path} mimeType={file.file_type} size={64} />
+                      <CloudBadge show={file.online_only} className="absolute right-0.5 bottom-0.5 text-neutral-100" />
+                    </div>
+                    <TileLabel
+                      lines={labels.get(file.file_id) ?? [name]}
+                      selected={isSelected}
+                      title={name}
+                      measure={(t) => measureText(t, labelFont)}
+                    />
                   </div>
-                  <TileLabel
-                    lines={labels.get(file.file_id) ?? [name]}
-                    selected={isSelected}
-                    title={name}
-                    measure={(t) => measureText(t, labelFont)}
-                  />
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      ))}
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
