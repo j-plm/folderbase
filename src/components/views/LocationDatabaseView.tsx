@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen } from "@tauri-apps/api/event";
@@ -25,8 +25,9 @@ import {
 import type { FileRecord, Property, PropertyConfig, PropertyValue, ValueType } from "../../types";
 import PathMappingPanel from "../mapping/PathMappingPanel";
 import { FileIcon, SymbolIcon } from "../../lib/fileIcons";
-import { formatFinderDate, formatFinderSize } from "../../lib/arrange";
+import { formatFinderDate, formatFinderSize, kindCategory } from "../../lib/arrange";
 import {
+  CELL_PADDING,
   cellBoxStyle,
   moveColumnId,
   orderColumns,
@@ -43,7 +44,7 @@ import { useUndo } from "../../hooks/useUndo";
 import { setUndoTarget } from "../../lib/editMenu";
 import { selectionLabel } from "../../lib/selectionStatus";
 import { describeRefresh, type RefreshSummary } from "../../lib/refreshSummary";
-import MenuPopover from "../shared/MenuPopover";
+import MenuPopover, { type MenuAnchor } from "../shared/MenuPopover";
 import Dialog, { DialogButton } from "../shared/Dialog";
 import { useOverwriteConfirm } from "../shared/OverwriteDialog";
 import {
@@ -60,6 +61,8 @@ import { hasPrimaryModifier, isToggleSelect } from "../../lib/platform";
 import {
   CURRENCIES,
   EXTRACTED_KEYS,
+  EXTRACTED_LABELS,
+  propertyLabel,
   coerceValue,
   dateKey,
   defaultCurrency,
@@ -125,19 +128,21 @@ const STANDARD_COLUMNS: ColumnDef[] = [
   { id: "name", label: "Name", weight: 3, minWidth: 140, reorderable: false, hideable: false },
   { id: "ext", label: "Ext", weight: 0.6, minWidth: 50 },
   { id: "path", label: "Path", weight: 4, minWidth: 120 },
-  { id: "type", label: "Type", weight: 1.4, minWidth: 90 },
+  // Kind as Group By buckets it ("Images", "Spreadsheets"); Ext gives the exact format.
+  // The id stays "type" so saved column settings carry over
+  { id: "type", label: "Kind", weight: 1.4, minWidth: 90 },
   { id: "size", label: "Size", weight: 0.9, minWidth: 70, align: "right" },
   { id: "created", label: "Created", weight: 1.2, minWidth: 100 },
   { id: "modified", label: "Modified", weight: 1.2, minWidth: 100 },
 ];
 /** Source tags: the folder names on each file's path, read-only (the "Tags" property holds hand-added ones). */
 const TAGS_COLUMN: ColumnDef = { id: "tags", label: "Source Tags", weight: 2, minWidth: 120, sortable: false };
-/** The trailing header cell holding "+" (add property). */
+/** The trailing header cell holding "+" (add property) and "…" (show or hide columns). */
 const ADD_COLUMN: ColumnDef = {
   id: "__add",
   label: "",
   weight: 0,
-  minWidth: 32,
+  minWidth: 56,
   sortable: false,
   reorderable: false,
   hideable: false,
@@ -148,9 +153,9 @@ const propName = (columnId: string) => columnId.slice(PROP_PREFIX.length);
 
 const NATIVE_KINDS: Record<string, ColumnKind> = {
   name: "text",
-  ext: "text",
+  ext: "list",
   path: "text",
-  type: "text",
+  type: "list",
   size: "number",
   created: "date",
   modified: "date",
@@ -165,7 +170,7 @@ const KIND_BY_TYPE: Record<ValueType, ColumnKind> = {
 };
 
 function propertyColumn(name: string, type: ValueType): ColumnDef {
-  return { id: PROP_PREFIX + name, label: name, weight: 1.4, minWidth: 90, align: type === "number" ? "right" : undefined };
+  return { id: PROP_PREFIX + name, label: propertyLabel(name), weight: 1.4, minWidth: 90, align: type === "number" ? "right" : undefined };
 }
 
 /** A native column's value for filtering. */
@@ -178,7 +183,7 @@ function nativeValue(file: FileRecord, key: string): unknown {
     case "path":
       return file.relative_path ?? file.file_path;
     case "type":
-      return file.file_type;
+      return kindCategory(file);
     case "size":
       return file.file_size;
     case "created":
@@ -195,6 +200,9 @@ function nativeValue(file: FileRecord, key: string): unknown {
 function metaValue(file: FileRecord | undefined, key: string): unknown {
   return (file?.metadata as Record<string, unknown> | null | undefined)?.[key] ?? null;
 }
+
+const isEmptyValue = (v: unknown) =>
+  v == null || (typeof v === "string" && v.trim() === "") || (Array.isArray(v) && v.length === 0);
 
 const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
@@ -252,7 +260,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   const [error, setError] = useState<string | null>(null);
   const [mappingOpen, setMappingOpen] = useState(false);
   /** The Columns button while its checklist is open. */
-  const [columnsAnchor, setColumnsAnchor] = useState<HTMLElement | null>(null);
+  /**
+   * The open property menu: from the Properties or "…" button (the property
+   * list), or from right-clicking a header (that property's actions, then the list).
+   */
+  const [propertyMenu, setPropertyMenu] = useState<{ anchor: MenuAnchor; columnId?: string | null } | null>(null);
   /** The Filter or Sort panel, while open. */
   const [panel, setPanel] = useState<"filter" | "sort" | null>(null);
   const filterButtonRef = useRef<HTMLButtonElement>(null);
@@ -272,6 +284,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   /** Metadata keys present on this location's files. */
   const [metadataKeys, setMetadataKeys] = useState<string[]>([]);
   const [frozen, setFrozen] = useState(true);
+  /** Multi-select properties whose values stay on one line (the rest wrap, the default). */
+  const [noWrap, setNoWrap] = useState<string[]>([]);
+  /** Source Tags wrap like a Multi-select, unless turned off. */
+  const [wrapSourceTags, setWrapSourceTags] = useState(true);
   const [scrolledX, setScrolledX] = useState(false);
 
   // Property registry for this location's library
@@ -302,7 +318,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     setIndexing(null);
     setError(null);
     setMappingOpen(false);
-    setColumnsAnchor(null);
+    setPropertyMenu(null);
     setPanel(null);
     setRenaming(null);
     setPatches(new Map());
@@ -312,6 +328,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     setHiddenStandard(loadJson<string[]>(`col-hidden-${locationId}`, []));
     setColumnOrder(loadJson<string[]>(`col-order-${locationId}`, []));
     setFrozen(loadJson(`col-freeze-${locationId}`, true));
+    setNoWrap(loadJson<string[]>(`col-nowrap-${locationId}`, []));
+    setWrapSourceTags(loadJson(`col-wrap-source-${locationId}`, true));
   }, [locationId]);
 
   useEffect(() => {
@@ -506,6 +524,24 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     updateVisibleProperties((prev) => (prev.includes(name) ? prev.filter((p) => p !== name) : [...prev, name]));
   }
 
+  function toggleWrap(name: string) {
+    setNoWrap((prev) => {
+      const next = prev.includes(name) ? prev.filter((p) => p !== name) : [...prev, name];
+      saveJson(`col-nowrap-${locationId}`, next);
+      return next;
+    });
+  }
+
+  function toggleWrapSourceTags() {
+    setWrapSourceTags((w) => {
+      saveJson(`col-wrap-source-${locationId}`, !w);
+      return !w;
+    });
+  }
+
+  /** Multi-select values wrap onto more lines, growing the row, unless turned off. */
+  const wraps = useCallback((name: string) => typeOf(name) === "array" && !noWrap.includes(name), [typeOf, noWrap]);
+
   function toggleFrozen() {
     setFrozen((f) => {
       saveJson(`col-freeze-${locationId}`, !f);
@@ -556,7 +592,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     const text: Record<string, string> = {
       ext: fileExtension(file.file_path),
       path: file.relative_path ?? file.file_path,
-      type: file.file_type ?? "",
+      type: kindCategory(file),
       size: formatFinderSize(file.file_size),
       created: formatFinderDate(file.timestamp),
       modified: formatFinderDate(file.modified_at),
@@ -583,8 +619,85 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     }
   }
 
+  // Bulk visibility. Native: the standard columns, Source Tags and values read
+  // from the file (EXIF). Custom: the editable properties.
+  // In More Info order (Camera Make, Camera Model, Date Taken…), not alphabetical
+  const extractedProperties = Object.keys(EXTRACTED_LABELS).filter((p) => availableProperties.includes(p));
+  const customProperties = availableProperties.filter((p) => !EXTRACTED_KEYS.has(p));
+  const allNativeShown =
+    hiddenStandard.length === 0 && showTags && extractedProperties.every((p) => visibleProperties.includes(p));
+  const allCustomShown = customProperties.every((p) => visibleProperties.includes(p));
+
+  function setNativeShown(shown: boolean) {
+    const next = shown ? [] : STANDARD_COLUMNS.map((c) => c.id).filter((id) => id !== "name");
+    setHiddenStandard(next);
+    saveJson(`col-hidden-${locationId}`, next);
+    setShowTags(shown);
+    saveJson(`col-tags-${locationId}`, shown);
+    setPropertiesShown(extractedProperties, shown);
+  }
+
+  function setPropertiesShown(names: string[], shown: boolean) {
+    updateVisibleProperties((prev) =>
+      shown ? [...prev, ...names.filter((p) => !prev.includes(p))] : prev.filter((p) => !names.includes(p))
+    );
+  }
+
+  // Empty and non-empty are judged on the rows shown now (after search and
+  // filters), for the custom columns only; the result is a one-off change to
+  // the visibility settings
+  const hasValue = (name: string) => sorted.some((f) => !isEmptyValue(metaValue(f, name)));
+  const emptyShown =
+    sorted.length > 0 ? customProperties.filter((p) => visibleProperties.includes(p) && !hasValue(p)) : [];
+  const nonEmptyHidden = customProperties.filter((p) => !visibleProperties.includes(p) && hasValue(p));
+
+  const allExtractedShown = extractedProperties.every((p) => visibleProperties.includes(p));
+
+  function propertyEntry(name: string): MenuEntry {
+    return {
+      type: "check",
+      text: propertyLabel(name),
+      checked: visibleProperties.includes(name),
+      action: () => toggleProperty(name),
+      key: PROP_PREFIX + name,
+    };
+  }
+
   function columnMenuEntries(): MenuEntry[] {
     return [
+      {
+        type: "item",
+        text: "Show All Properties",
+        enabled: !(allNativeShown && allCustomShown),
+        action: () => {
+          setNativeShown(true);
+          setPropertiesShown(customProperties, true);
+        },
+      },
+      {
+        type: "item",
+        text: allNativeShown ? "Hide All Native Properties" : "Show All Native Properties",
+        action: () => setNativeShown(!allNativeShown),
+      },
+      {
+        type: "item",
+        text: allCustomShown ? "Hide All Custom Properties" : "Show All Custom Properties",
+        action: () => setPropertiesShown(customProperties, !allCustomShown),
+      },
+      { type: "separator" },
+      {
+        type: "item",
+        text: "Hide Empty Custom Properties",
+        enabled: emptyShown.length > 0,
+        action: () => setPropertiesShown(emptyShown, false),
+      },
+      {
+        type: "item",
+        text: "Show Non-Empty Custom Properties",
+        enabled: nonEmptyHidden.length > 0,
+        action: () => setPropertiesShown(nonEmptyHidden, true),
+      },
+      { type: "separator" },
       ...STANDARD_COLUMNS.map((c) => ({
         type: "check" as const,
         text: c.label,
@@ -593,21 +706,39 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         action: () => toggleStandard(c.id),
         key: c.id,
       })),
-      { type: "separator" },
       { type: "check", text: TAGS_COLUMN.label, checked: showTags, action: toggleShowTags, key: TAGS_COLUMN.id },
-      ...availableProperties.map((name) => ({
-        type: "check" as const,
-        text: name,
-        checked: visibleProperties.includes(name),
-        action: () => toggleProperty(name),
-        key: PROP_PREFIX + name,
-      })),
+      // Values read from the file (EXIF), grouped as in Finder's Get Info
+      ...(extractedProperties.length > 0
+        ? [
+            {
+              type: "submenu" as const,
+              text: "More Info",
+              items: [
+                {
+                  type: "item" as const,
+                  text: "Show All",
+                  enabled: !allExtractedShown,
+                  action: () => setPropertiesShown(extractedProperties, true),
+                },
+                {
+                  type: "item" as const,
+                  text: "Hide All",
+                  enabled: extractedProperties.some((p) => visibleProperties.includes(p)),
+                  action: () => setPropertiesShown(extractedProperties, false),
+                },
+                { type: "separator" as const },
+                ...extractedProperties.map(propertyEntry),
+              ],
+            },
+          ]
+        : []),
+      ...(customProperties.length > 0 ? [{ type: "separator" as const }, ...customProperties.map(propertyEntry)] : []),
       { type: "separator" },
-      { type: "item", text: "Size All Columns to Fit", action: layout.fitAll },
+      { type: "item", text: "Size All Properties to Fit", action: layout.fitAll },
     ];
   }
 
-  const closeColumnsMenu = useCallback(() => setColumnsAnchor(null), []);
+  const closeColumnsMenu = useCallback(() => setPropertyMenu(null), []);
   const closePanel = useCallback(() => setPanel(null), []);
 
   // ── Property management ───────────────────────────────────────────────────
@@ -830,6 +961,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   // Right-click on a header: actions for that column, then the column list
   function handleHeaderMenu(e: React.MouseEvent, columnId: string | null) {
     e.preventDefault();
+    setPropertyMenu({ anchor: { x: e.clientX, y: e.clientY }, columnId });
+  }
+
+  function headerMenuEntries(columnId: string | null): MenuEntry[] {
     const col = columns.find((c) => c.id === columnId && c.id !== ADD_COLUMN.id);
     const entries: MenuEntry[] = [];
     if (col) {
@@ -847,12 +982,21 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           setPanel("filter");
         },
       });
+      if (col.id === TAGS_COLUMN.id) {
+        entries.push(
+          { type: "separator" },
+          { type: "check", text: "Wrap Values", checked: wrapSourceTags, action: toggleWrapSourceTags }
+        );
+      }
       if (isEditable(col.id)) {
         const name = propName(col.id);
         entries.push(
           { type: "separator" },
           { type: "item", text: "Rename Property…", action: () => setRenaming({ name, text: name }) }
         );
+        if (typeOf(name) === "array") {
+          entries.push({ type: "check", text: "Wrap Values", checked: wraps(name), action: () => toggleWrap(name) });
+        }
         // The built-in Tags property is always a Multi-select and can't be deleted
         if (name !== tagsProperty) {
           entries.push(
@@ -864,21 +1008,50 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       entries.push({ type: "separator" });
     }
     entries.push(
-      { type: "check", text: "Freeze Name Column", checked: frozen, action: toggleFrozen },
+      { type: "check", text: "Freeze Name", checked: frozen, action: toggleFrozen },
       { type: "separator" },
       ...columnMenuEntries()
     );
-    showContextMenu(entries, { event: e });
+    return entries;
   }
 
   // ── Selection ─────────────────────────────────────────────────────────────
 
+  // Row heights: 20pt, or taller where a wrapping cell needs more lines
+  const rowHeights = useMemo(() => {
+    const wrapping = columns
+      .filter((c) => c.id.startsWith(PROP_PREFIX) && isEditable(c.id) && wraps(propName(c.id)))
+      .map((c) => ({ name: propName(c.id), width: (layout.widths[c.id] ?? 0) - CELL_PADDING }));
+    const tagsWidth =
+      wrapSourceTags && columns.some((c) => c.id === TAGS_COLUMN.id) ? (layout.widths[TAGS_COLUMN.id] ?? 0) - CELL_PADDING : null;
+    if (wrapping.length === 0 && tagsWidth == null) return null;
+    return sorted.map((f) => {
+      let lines = tagsWidth == null ? 1 : pillLines(Array.isArray(f.tags) ? f.tags : [], tagsWidth);
+      for (const { name, width } of wrapping) lines = Math.max(lines, pillLines(listValues(metaValue(f, name)), width));
+      return rowHeightFor(lines);
+    });
+  }, [columns, isEditable, wraps, wrapSourceTags, layout.widths, sorted]);
+  const rowTops = useMemo(() => {
+    if (!rowHeights) return null;
+    const tops = new Array<number>(rowHeights.length);
+    let y = 0;
+    rowHeights.forEach((h, i) => {
+      tops[i] = y;
+      y += h;
+    });
+    return tops;
+  }, [rowHeights]);
+
   const rowVirtualizer = useVirtualizer({
     count: sorted.length,
     getScrollElement: () => layout.container,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: (i) => rowHeights?.[i] ?? ROW_HEIGHT,
     overscan: 10,
   });
+  // Re-lay out the rows when wrapping changes their heights
+  useLayoutEffect(() => {
+    rowVirtualizer.measure();
+  }, [rowHeights, rowVirtualizer]);
 
   // Rows: clicking a native cell (Name, Size…) selects the row, as in Finder
   const selection = useSelection(sorted, {
@@ -1099,8 +1272,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     let lastY = e.clientY;
     let frame = 0;
 
-    const rowAt = (clientY: number) =>
-      Math.max(0, Math.min(fillGrid.rows.length - 1, Math.floor((clientY - body.getBoundingClientRect().top) / ROW_HEIGHT)));
+    const rowAt = (clientY: number) => {
+      const y = clientY - body.getBoundingClientRect().top;
+      const index = rowTops ? rowAtOffset(rowTops, y) : Math.floor(y / ROW_HEIGHT);
+      return Math.max(0, Math.min(fillGrid.rows.length - 1, index));
+    };
     const update = () => {
       target = rowAt(lastY);
       setFillTo(target);
@@ -1196,6 +1372,9 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   function startTagDrag(e: React.MouseEvent, value: string, source: TagSource) {
     if (e.button !== 0) return;
     e.preventDefault(); // no text selection while dragging
+    // The pressed pill shows in the accent colour until the press ends
+    const pill = e.currentTarget as HTMLElement;
+    pill.dataset.pressed = "";
     const container = layout.container;
     const start = { x: e.clientX, y: e.clientY };
     let last = start;
@@ -1251,6 +1430,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       window.removeEventListener("keydown", onKey, true);
+      delete pill.dataset.pressed;
       setTagDrag(null);
       if (!started) return;
       // The click that ends the drag would land on the table and change the selection
@@ -1468,6 +1648,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               type={type}
               config={config}
               onPillMouseDown={name === tagsProperty ? (e, v) => startTagDrag(e, v, "tags") : undefined}
+              wrap={isList && wraps(name)}
             />
           )}
         </div>
@@ -1505,7 +1686,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                   }
                 : style
             }
-            className={`shrink-0 px-3 whitespace-nowrap overflow-visible flex items-center gap-1.5 text-neutral-100 ${
+            className={`shrink-0 self-stretch px-3 whitespace-nowrap overflow-visible flex items-center gap-1.5 text-neutral-100 ${
               isFrozen ? `rounded-l-md ${rowSelected ? "native-selected" : rowIdx % 2 === 1 ? "bg-neutral-850" : "bg-neutral-900"}` : ""
             }`}
           >
@@ -1523,7 +1704,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           </div>
         );
       case "type":
-        return <div key={col.id} style={style} className={`${CELL} text-neutral-400`}>{file.file_type ?? ""}</div>;
+        return <div key={col.id} style={style} className={`${CELL} text-neutral-400`}>{kindCategory(file)}</div>;
       case "size":
         return <div key={col.id} style={style} className={`${CELL} text-right text-neutral-400`}>{formatFinderSize(file.file_size)}</div>;
       case "created":
@@ -1537,6 +1718,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               tags={Array.isArray(file.tags) ? file.tags : []}
               covered={coveredValues(file.metadata as Record<string, unknown> | null)}
               onPillMouseDown={(e, tag) => startTagDrag(e, tag, "source")}
+              wrap={wrapSourceTags}
             />
           </div>
         );
@@ -1598,6 +1780,9 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     const set = new Set<string>();
     if (columnId === TAGS_COLUMN.id) {
       for (const f of rows) for (const t of Array.isArray(f.tags) ? f.tags : []) set.add(t);
+    } else if (NATIVE_KINDS[columnId] === "list") {
+      // Ext and Kind: pick from the values the files have
+      for (const f of rows) for (const v of listValues(nativeValue(f, columnId))) set.add(v);
     } else if (columnId.startsWith(PROP_PREFIX)) {
       const name = propName(columnId);
       const prop = propByName.get(name);
@@ -1669,14 +1854,14 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                 <button
                   onClick={(e) => {
                     const button = e.currentTarget;
-                    setColumnsAnchor((open) => (open ? null : button));
+                    setPropertyMenu((open) => (open ? null : { anchor: button }));
                   }}
                   className={`${TOOLBAR_BUTTON} ${extraColCount > 0 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
                 >
-                  {extraColCount > 0 ? `Columns (${extraColCount})` : "Columns"}
+                  {extraColCount > 0 ? `Properties (${extraColCount})` : "Properties"}
                 </button>
               ),
-              menu: [{ type: "submenu", text: "Columns", items: columnMenuEntries() }],
+              menu: [{ type: "submenu", text: "Properties", items: columnMenuEntries() }],
             },
           ]}
         />
@@ -1752,18 +1937,33 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                 onCancel={() => setRenaming(null)}
               />
             ) : col.id === ADD_COLUMN.id ? (
-              <button
-                title="Add Property"
-                aria-label="Add Property"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  showAddMenu(e);
-                }}
-                className="-ml-1.5 w-5 h-5 flex items-center justify-center rounded-[5px] text-neutral-400 hover:text-neutral-100 hover:bg-neutral-700/60"
-              >
-                <SymbolIcon name="plus" size={12} fallback="+" />
-              </button>
+              <span className="-ml-1.5 flex items-center gap-0.5">
+                <button
+                  title="Add Property"
+                  aria-label="Add Property"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    showAddMenu(e);
+                  }}
+                  className="w-5 h-5 flex items-center justify-center rounded-[5px] text-neutral-400 hover:text-neutral-100 hover:bg-neutral-700/60"
+                >
+                  <SymbolIcon name="plus" size={12} fallback="+" />
+                </button>
+                <button
+                  title="Show or Hide Properties"
+                  aria-label="Show or Hide Properties"
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const button = e.currentTarget;
+                    setPropertyMenu((open) => (open ? null : { anchor: button }));
+                  }}
+                  className="w-5 h-5 flex items-center justify-center rounded-[5px] text-neutral-400 hover:text-neutral-100 hover:bg-neutral-700/60"
+                >
+                  <SymbolIcon name="ellipsis" size={12} fallback="…" />
+                </button>
+              </span>
             ) : undefined
           }
         />
@@ -1873,10 +2073,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         />
       )}
 
-      {columnsAnchor && (
+      {propertyMenu && (
         <MenuPopover
-          anchor={columnsAnchor}
-          entries={columnMenuEntries()}
+          anchor={propertyMenu.anchor}
+          entries={propertyMenu.columnId === undefined ? columnMenuEntries() : headerMenuEntries(propertyMenu.columnId)}
           onClose={closeColumnsMenu}
         />
       )}
@@ -1940,6 +2140,49 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 const MAX_TAGS_SHOWN = 4;
 
 /** Width of a row of pills, for double-click-to-fit. */
+/** Pill line height plus the gap between wrapped lines. */
+const PILL_LINE = 18;
+
+/** A row tall enough for `lines` lines of pills (one line keeps the standard 20pt). */
+function rowHeightFor(lines: number): number {
+  return Math.max(ROW_HEIGHT, lines * PILL_LINE + 2);
+}
+
+const pillWidths = new Map<string, number>();
+/** How many lines `items` take as wrapping pills in `width`. */
+function pillLines(items: string[], width: number): number {
+  if (items.length === 0 || width <= 0) return 1;
+  const font = uiFont(11);
+  let lines = 1;
+  let x = 0;
+  for (const item of items) {
+    let w = pillWidths.get(item);
+    if (w == null) {
+      w = measureText(item, font) + 12; // px-1.5 either side
+      pillWidths.set(item, w);
+    }
+    if (x > 0 && x + 4 + w > width) {
+      lines++;
+      x = w;
+    } else {
+      x += (x > 0 ? 4 : 0) + w;
+    }
+  }
+  return lines;
+}
+
+/** The row at a vertical offset, given each row's top. */
+function rowAtOffset(tops: number[], y: number): number {
+  let lo = 0;
+  let hi = tops.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (tops[mid] <= y) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
 function measurePills(items: string[]): number {
   const shown = items.slice(0, MAX_TAGS_SHOWN);
   const pills = [...shown];
@@ -1957,23 +2200,26 @@ function TagPills({
   tags,
   covered,
   onPillMouseDown,
+  wrap,
 }: {
   tags: string[];
   covered: Set<string>;
   onPillMouseDown: (e: React.MouseEvent, tag: string) => void;
+  /** Shows every tag, wrapping onto more lines (the row grows to fit). */
+  wrap: boolean;
 }) {
   if (tags.length === 0) return null;
-  const shown = tags.slice(0, MAX_TAGS_SHOWN);
-  const overflow = tags.length - MAX_TAGS_SHOWN;
+  const shown = wrap ? tags : tags.slice(0, MAX_TAGS_SHOWN);
+  const overflow = tags.length - shown.length;
   return (
-    <div className="flex flex-nowrap items-center gap-1 overflow-hidden">
+    <div className={`flex items-center gap-x-1 ${wrap ? "flex-wrap gap-y-0.5" : "flex-nowrap overflow-hidden"}`}>
       {shown.map((tag, i) => (
         <span
           // A path can repeat a folder name ("2024/Q1/2024")
           key={`${i}:${tag}`}
           onMouseDown={(e) => onPillMouseDown(e, tag)}
           title={covered.has(tag) ? `“${tag}” is recorded in a property` : undefined}
-          className={`inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 text-neutral-300 ${
+          className={`inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 text-neutral-300 data-[pressed]:bg-blue-500 data-[pressed]:text-white data-[pressed]:opacity-100 ${
             covered.has(tag) ? "opacity-40" : ""
           }`}
         >
@@ -2019,16 +2265,21 @@ function TagDragOverlay({
           style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
         />
       )}
-      <div className="absolute flex flex-col items-start gap-1" style={{ left: drag.x + 10, top: drag.y + 8 }}>
-        <span className="inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap bg-neutral-700 text-neutral-100 shadow-md">
-          {drag.value}
+      {/* The dragged pill sits centred on the pointer, the hint just below it */}
+      <span
+        className="absolute -translate-x-1/2 -translate-y-1/2 inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap bg-blue-500 text-white shadow-md"
+        style={{ left: drag.x, top: drag.y }}
+      >
+        {drag.value}
+      </span>
+      {hint && (
+        <span
+          className="absolute px-2 py-1 rounded-md text-xs whitespace-nowrap bg-neutral-800 text-neutral-100 border border-neutral-700/60 shadow-lg"
+          style={{ left: drag.x + 10, top: drag.y + 14 }}
+        >
+          {hint}
         </span>
-        {hint && (
-          <span className="px-2 py-1 rounded-md text-xs whitespace-nowrap bg-neutral-800 text-neutral-100 border border-neutral-700/60 shadow-lg">
-            {hint}
-          </span>
-        )}
-      </div>
+      )}
     </div>
   );
 }

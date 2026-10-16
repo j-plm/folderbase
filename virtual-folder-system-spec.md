@@ -486,7 +486,6 @@ The virtual folder navigation experience is designed to be indistinguishable fro
 |---------|-------------|-----------------|--------------------------|
 | Sidebar label | Favourites | Quick Access | Bookmarks |
 | Trash verb | Move to Trash | Delete | Move to Trash |
-| Default view | Icon grid | Details/list | Configurable |
 | Breadcrumb style | Click-through | Editable address bar | Both |
 | Address bar | Non-editable | Editable | Configurable |
 
@@ -560,7 +559,7 @@ The view sidebar contains three elements from top to bottom:
 The toolbar sits above the main pane and contains:
 
 - **Breadcrumb / address bar**: reflects the current navigation path through the virtual layer hierarchy (e.g. `2024 → Rig-A → Component-B`). Style is platform-adaptive — click-through on macOS, editable on Windows
-- **View mode switcher**: Tiles | List | Columns | Database. Tiles, List, and Columns follow standard OS explorer behaviour. Database is an additional mode described below
+- **View mode switcher**: Database | Tiles | List | Columns. Database is the default mode on every platform and sits first; Tiles, List, and Columns follow standard OS explorer behaviour
 - **Group button**: the OS file manager's grouping and sorting menu, shown for Tiles, List and Columns
 - **Selection count**: when two or more files are selected, "3 of 1,204 selected" appears beside the location name, in every view mode. Columns counts within the active column, as Finder does. The database view shows it in its own file count line instead ("1,492 files" becomes "3 of 1,492 selected"), counting files whether rows or cells across several rows are selected
 - **Edit Structure toggle**: opens or closes the local view editor panel (see View Editor section)
@@ -585,17 +584,22 @@ Key characteristics:
 - **Multi-value properties**: array-type properties display all assigned values in the cell and support adding or removing values, enabling multi-folder presence
 - **Sorting and filtering**: any column can be sorted or filtered, including JSON metadata properties
 
-#### Native and custom columns
+#### Native and custom properties
 
-Columns are of two kinds, and they behave differently:
+**Terminology:** in the interface, the fields shown in the database view are always called **properties**, never columns, including in menus and buttons (Properties, Show All Properties, Hide Empty Custom Properties). "Columns" is reserved for the Columns view mode, as in Finder.
 
-- **Native columns** describe the file itself: Name, Extension, Path, Kind, Size, Created, Modified, Tags, and values extracted from the file (EXIF). They are read-only in the table
-- **Custom columns** are properties in the registry. Their cells are editable
+Properties are of two kinds, and they behave differently:
+
+- **Native properties** describe the file itself: Name, Extension, Path, Kind, Size, Created, Modified, Tags, and values extracted from the file (EXIF). They are read-only in the table. Kind uses the same buckets as Group By ▸ Kind (Documents, Images, PDF Documents, Movies, Music, Presentations, Spreadsheets, Developer, Other); Extension gives the exact format
+- **Custom properties** are the ones in the registry. Their cells are editable
 
 #### Adding and managing properties
 
 - A **"+" button** sits at the right end of the header row. Clicking it opens a native menu of types: Text, Number, Currency, Percentage, Date, Dropdown, Multi-select. Choosing one immediately adds a column of that type, registered for the current library. The new column is named after its type ("Text"; "Text 2", "Text 3"… if the name is taken), and its header name is open for editing with the text selected, so the user can type a name straight away or press Return to keep the default
-- **Right-clicking a header** opens the column menu: Sort Ascending, Sort Descending, Filter by this column, and for custom columns Rename (edits the name in place in the header, as does double-clicking a custom column's header), Property Type and Delete, followed by the show/hide column list. Deleting a property asks for confirmation, because it removes the property's values from every file
+- **Right-clicking a header** opens the column menu: Sort Ascending, Sort Descending, Filter by this column, and for custom columns Rename (edits the name in place in the header, as does double-clicking a custom column's header), Property Type and Delete, and for Multi-select properties and Source Tags **Wrap Values**, followed by Freeze Name and the show/hide property list. Deleting a property asks for confirmation, because it removes the property's values from every file
+- **The property list** (in the header menu, the toolbar's Properties menu, and a **"…" button** to the right of the header's "+", as in Notion) starts with bulk controls: Show All Properties; Show / Hide All Native Properties (the file's own fields, Source Tags and values read from the file; Name always stays); Show / Hide All Custom Properties (every editable property); then **Hide Empty Custom Properties** (hides every shown custom property with no value in the rows currently shown) and **Show Non-Empty Custom Properties** (shows every hidden custom property that has a value in them). Native properties are never affected by these two. "Currently shown" means after search and filters. Like the Show All commands, these are one-off actions, not live modes: the table never changes its properties by itself when the filters change, and any property can still be shown or hidden afterwards. Below them come the native properties (Name, Extension, Path, Kind, Size, Created, Modified, Source Tags), then a **More Info** submenu holding the values read from the file (Camera Make, Camera Model, Date Taken, Focal Length, ISO, Width, Height, Latitude, Longitude, with Show All and Hide All), named and grouped as in Finder's Get Info, then the custom properties. The list ends with Size All Properties to Fit.
+
+  The property list, and the header menu that contains it, is a menu-styled panel rather than a native menu, because native menus close on every click. Ticking a property toggles it in place and the panel stays open, submenus included; it closes once the pointer has left it, on a click elsewhere, or with Escape. Commands (Show All, Rename…, Size All Properties to Fit) run and close, as in a native menu
 
 #### Selection and editing
 
@@ -611,7 +615,7 @@ Selection follows spreadsheet conventions:
 
 - **Header click** cycles that column through ascending, descending and unsorted
 - Separate **Filter** and **Sort** buttons, side by side to the left of the search field, each open a panel for detailed control:
-  - **Filter**: a list of rules (column, condition, value), combined with *all* or *any*. Conditions depend on the column type: contains / is / is not / is empty / is not empty for text; = ≠ > < ≥ ≤ for numbers; is / before / after for dates; has any of / has none of for Dropdown and Multi-select
+  - **Filter**: a list of rules (column, condition, value), combined with *all* or *any*. Conditions depend on the column type: contains / is / is not / is empty / is not empty for text; = ≠ > < ≥ ≤ for numbers; is / before / after for dates; has any of / has none of for Dropdown and Multi-select, and for the native Extension and Kind columns, whose values are picked from those the files have
   - **Sort**: an ordered list of sort keys (then by…), each ascending or descending
 - Each button shows how many rules or sort levels are active, so a filtered table is never mistaken for a complete one
 
@@ -625,9 +629,13 @@ Every change made in the database view can be undone with Cmd-Z and redone with 
 
 Edit ▸ Undo and Redo in the menu bar do the same, and name the change they will act on ("Undo Paste", "Redo Rename Property"), as native apps do. Changes and their reversals are applied strictly in order. While a text field has focus, Undo (menu or Cmd-Z) undoes typing in that field instead. History covers the current location's database view and is cleared when another location is opened. View settings (column visibility, order, widths, filters) are preferences, not changes, and are not part of the history.
 
+#### Wrapping Multi-select values
+
+Multi-select and Source Tags cells show every value, wrapping the pills onto further lines, and the row grows to fit the tallest wrapped cell; rows with nothing to wrap keep the standard 20pt height. Wrapping is on by default for each Multi-select property and for Source Tags, and can be turned off for each with Wrap Values in its header menu, which keeps the values on one line, showing the first few and a "+N" count.
+
 #### Frozen Name column
 
-The Name column is frozen at the left edge by default, so the file a row belongs to stays visible while scrolling across many properties. Freezing can be turned off from the header menu.
+The Name column is frozen at the left edge by default, so the file a row belongs to stays visible while scrolling across many properties. Freezing can be turned off with Freeze Name in the header menu.
 
 #### Database View Presets
 
@@ -684,7 +692,7 @@ App Window
 │
 ├── Toolbar
 │   ├── Breadcrumb / address bar        [platform-adaptive]
-│   ├── View mode switcher              [Tiles | List | Columns | Database]
+│   ├── View mode switcher              [Database | Tiles | List | Columns]
 │   └── [Edit Structure toggle]         [opens local view editor panel]
 │
 └── Main Pane

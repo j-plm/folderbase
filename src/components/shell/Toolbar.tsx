@@ -9,10 +9,10 @@ import { SymbolIcon } from "../../lib/fileIcons";
 import type { ViewMode } from "../../types/navigation";
 
 const VIEW_MODES: { mode: ViewMode; label: string }[] = [
+  { mode: "database", label: "Database" },
   { mode: "tiles", label: "Tiles" },
   { mode: "list", label: "List" },
   { mode: "columns", label: "Columns" },
-  { mode: "database", label: "Database" },
 ];
 
 export default function Toolbar() {
@@ -63,38 +63,6 @@ export default function Toolbar() {
       <OverflowBar
         dragRegion
         items={[
-          {
-            id: "view-mode",
-            node: (
-              <div className="flex items-center gap-px bg-neutral-800 dark:bg-neutral-700/60 rounded-md p-0.5">
-                {VIEW_MODES.map(({ mode, label }) => (
-                  <button
-                    key={mode}
-                    onClick={() => setViewMode(mode)}
-                    className={`px-2.5 py-0.5 text-xs rounded-[5px] whitespace-nowrap ${
-                      viewMode === mode
-                        ? "bg-white dark:bg-neutral-500/70 text-neutral-100 shadow-sm"
-                        : "text-neutral-300 hover:text-neutral-100"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            ),
-            menu: [
-              {
-                type: "submenu",
-                text: "View",
-                items: VIEW_MODES.map(({ mode, label }) => ({
-                  type: "check" as const,
-                  text: `as ${label}`,
-                  checked: viewMode === mode,
-                  action: () => setViewMode(mode),
-                })),
-              },
-            ],
-          },
           ...(viewMode === "database"
             ? []
             : [
@@ -127,6 +95,38 @@ export default function Toolbar() {
                   menu: arrangementMenu(arrangementCtx),
                 },
               ]),
+          {
+            id: "view-mode",
+            node: (
+              <div className="flex items-center gap-px bg-neutral-800 dark:bg-neutral-700/60 rounded-md p-0.5">
+                {VIEW_MODES.map(({ mode, label }) => (
+                  <button
+                    key={mode}
+                    onClick={() => setViewMode(mode)}
+                    className={`px-2.5 py-0.5 text-xs rounded-[5px] whitespace-nowrap ${
+                      viewMode === mode
+                        ? "bg-white dark:bg-neutral-500/70 text-neutral-100 shadow-sm"
+                        : "text-neutral-300 hover:text-neutral-100"
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ),
+            menu: [
+              {
+                type: "submenu",
+                text: "View",
+                items: VIEW_MODES.map(({ mode, label }) => ({
+                  type: "check" as const,
+                  text: `as ${label}`,
+                  checked: viewMode === mode,
+                  action: () => setViewMode(mode),
+                })),
+              },
+            ],
+          },
         ]}
       />
     </div>

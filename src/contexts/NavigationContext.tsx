@@ -37,7 +37,7 @@ const initialState: State = {
   activeLocationId: null,
   activeViewId: null,
   path: [],
-  viewMode: "tiles",
+  viewMode: "database",
   views: [],
   viewNodes: [],
   editStructure: false,

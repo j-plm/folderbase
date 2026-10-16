@@ -28,17 +28,23 @@ export function typeLabel(type: ValueType): string {
  * Values extracted from the file at indexing (EXIF), shown read-only like Size
  * and Created. Keep in step with extract_exif in src-tauri/src/commands/ingest.rs.
  */
-export const EXTRACTED_KEYS = new Set([
-  "date_taken",
-  "camera_make",
-  "camera_model",
-  "width",
-  "height",
-  "iso",
-  "focal_length",
-  "latitude",
-  "longitude",
-]);
+export const EXTRACTED_LABELS: Record<string, string> = {
+  camera_make: "Camera Make",
+  camera_model: "Camera Model",
+  date_taken: "Date Taken",
+  focal_length: "Focal Length",
+  iso: "ISO",
+  width: "Width",
+  height: "Height",
+  latitude: "Latitude",
+  longitude: "Longitude",
+};
+export const EXTRACTED_KEYS = new Set(Object.keys(EXTRACTED_LABELS));
+
+/** What a property is called on screen: extracted values get readable names, others their own. */
+export function propertyLabel(name: string): string {
+  return EXTRACTED_LABELS[name] ?? name;
+}
 
 export function parseConfig(property: Pick<Property, "config"> | null | undefined): PropertyConfig {
   if (!property?.config) return {};

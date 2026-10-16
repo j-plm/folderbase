@@ -16,29 +16,32 @@ export function PropertyValueView({
   type,
   config,
   onPillMouseDown,
+  wrap = false,
 }: {
   value: unknown;
   type: ValueType;
   config: PropertyConfig;
   /** Makes list pills draggable (the Tags property's pills drag onto other columns). */
   onPillMouseDown?: (e: React.MouseEvent, value: string) => void;
+  /** Shows every pill, wrapping onto more lines (the row grows to fit). */
+  wrap?: boolean;
 }) {
   if (type === "enum" || type === "array") {
     const items = listValues(value);
     if (items.length === 0) return null;
-    const shown = items.slice(0, MAX_PILLS);
+    const shown = wrap ? items : items.slice(0, MAX_PILLS);
     return (
-      <div className="flex flex-nowrap items-center gap-1 overflow-hidden">
+      <div className={`flex items-center gap-x-1 ${wrap ? "flex-wrap gap-y-0.5" : "flex-nowrap overflow-hidden"}`}>
         {shown.map((item) => (
           <span
             key={item}
             onMouseDown={onPillMouseDown && ((e) => onPillMouseDown(e, item))}
-            className="inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15"
+            className="inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 data-[pressed]:bg-blue-500 data-[pressed]:text-white data-[pressed]:opacity-100"
           >
             {item}
           </span>
         ))}
-        {items.length > MAX_PILLS && (
+        {!wrap && items.length > MAX_PILLS && (
           <span className="text-[11px] text-neutral-500 shrink-0">+{items.length - MAX_PILLS}</span>
         )}
       </div>
