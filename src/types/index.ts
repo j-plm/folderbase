@@ -42,7 +42,7 @@ export interface Property {
   config?: string | null;
 }
 
-/** Text, Number, Date, Dropdown, Multi-select (registry names kept from the spec). */
+/** Text, Number, Date, Select, Multi-select (registry names kept from the spec). */
 export type ValueType = "free_text" | "number" | "date" | "enum" | "array";
 
 export type NumberFormat = "generic" | "currency" | "percent";
@@ -51,6 +51,8 @@ export interface PropertyConfig {
   format?: NumberFormat;
   /** ISO 4217 code, for the currency format. */
   currency?: string;
+  /** Marks the library's built-in Tags property (renamable, not deletable, always Multi-select). */
+  system?: "tags";
 }
 
 export interface PropertyValue {

@@ -216,58 +216,83 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
         .await?;
     }
 
-    // Step 2: for each existing mapping node, remove its folder_name from tags
-    // where the file's metadata already carries that value (handles the case where
-    // set_folder_label ran before the tags backfill populated tags).
-    {
-        use sqlx::Row;
-        let mapping_rows = sqlx::query(
-            "SELECT pmn.location_id, pmn.folder_path, pmn.property_name, l.root_path \
-             FROM path_mapping_nodes pmn \
-             JOIN locations l USING (location_id)",
-        )
-        .fetch_all(pool)
-        .await?;
-
-        for mrow in mapping_rows {
-            let location_id: String = mrow.try_get("location_id")?;
-            let folder_path: String = mrow.try_get("folder_path")?;
-            let property_name: String = mrow.try_get("property_name")?;
-            let root_path: String = mrow.try_get("root_path")?;
-
-            let folder_rel = folder_path
-                .strip_prefix(&root_path)
-                .map(|s| s.trim_start_matches('/').to_string())
-                .unwrap_or_else(|| folder_path.clone());
-            let folder_name = folder_rel.split('/').last().unwrap_or("").to_string();
-            if folder_name.is_empty() {
-                continue;
-            }
-            let prop_key = crate::db::utils::json_path(&property_name);
-
-            sqlx::query(
-                "UPDATE files \
-                 SET tags = COALESCE(\
-                   (SELECT json_group_array(value) FROM json_each(tags) WHERE value != ?), \
-                   '[]' \
-                 ) \
-                 WHERE location_id = ? \
-                 AND (relative_path = ? OR relative_path LIKE ? || '/%') \
-                 AND json_extract(metadata, ?) = ?",
-            )
-            .bind(&folder_name)
-            .bind(&location_id)
-            .bind(&folder_rel)
-            .bind(&folder_rel)
-            .bind(&prop_key)
-            .bind(&folder_name)
-            .execute(pool)
-            .await?;
-        }
-    }
-
     prune_orphan_mapping_keys(pool).await?;
 
+    // One-time steps, tracked in SQLite's user_version
+    let version: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(pool).await?;
+    if version < 1 {
+        source_tags_and_multi_select_mappings(pool).await?;
+        sqlx::query("PRAGMA user_version = 1").execute(pool).await?;
+    }
+
+    // Every library has its Tags property (hand-added tags)
+    let libraries: Vec<String> = sqlx::query_scalar("SELECT library FROM locations")
+        .fetch_all(pool)
+        .await?;
+    for library in libraries {
+        crate::commands::properties::ensure_tags_property(pool, &library)
+            .await
+            .map_err(|e| sqlx::Error::Protocol(e))?;
+    }
+
+    Ok(())
+}
+
+/// Version 1: source tags become every folder on the path again (mapping used to
+/// strip the mapped folder's name from them), and every property a folder
+/// mapping writes to becomes a Multi-select, as a file can sit in several folders.
+async fn source_tags_and_multi_select_mappings(pool: &DbPool) -> Result<(), sqlx::Error> {
+    use sqlx::Row;
+
+    let rows = sqlx::query("SELECT file_id, relative_path FROM files WHERE relative_path IS NOT NULL")
+        .fetch_all(pool)
+        .await?;
+    for row in rows {
+        let file_id: String = row.try_get("file_id")?;
+        let rel_path: String = row.try_get("relative_path")?;
+        sqlx::query("UPDATE files SET tags = ? WHERE file_id = ?")
+            .bind(crate::commands::ingest::folder_tags(&rel_path))
+            .bind(&file_id)
+            .execute(pool)
+            .await?;
+    }
+
+    let mapped = sqlx::query(
+        "SELECT DISTINCT pmn.property_name, l.library \
+         FROM path_mapping_nodes pmn JOIN locations l USING (location_id)",
+    )
+    .fetch_all(pool)
+    .await?;
+    for row in mapped {
+        let name: String = row.try_get("property_name")?;
+        let library: String = row.try_get("library")?;
+        let existing: Option<(String, String)> = sqlx::query_as(
+            "SELECT property_id, value_type FROM properties WHERE name = ? AND (library = ? OR library IS NULL) \
+             ORDER BY library IS NULL LIMIT 1",
+        )
+        .bind(&name)
+        .bind(&library)
+        .fetch_optional(pool)
+        .await?;
+        let property_id = match existing {
+            Some((_, value_type)) if value_type == "array" => continue,
+            Some((id, _)) => id,
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                sqlx::query("INSERT INTO properties (property_id, name, library, value_type) VALUES (?, ?, ?, 'free_text')")
+                    .bind(&id)
+                    .bind(&name)
+                    .bind(&library)
+                    .execute(pool)
+                    .await?;
+                id
+            }
+        };
+        // Converts the single values files already hold into lists, and registers them
+        crate::commands::metadata::change_property_type_impl(pool, &property_id, "array", None)
+            .await
+            .map_err(sqlx::Error::Protocol)?;
+    }
     Ok(())
 }
 
@@ -315,7 +340,7 @@ async fn prune_orphan_mapping_keys(pool: &DbPool) -> Result<(), sqlx::Error> {
             "SELECT file_id, metadata FROM files \
              WHERE location_id = ? \
              AND (relative_path = ? OR relative_path LIKE ? || '/%') \
-             AND json_extract(metadata, ?) = ?",
+             AND EXISTS (SELECT 1 FROM json_each(metadata, ?) WHERE value = ?)",
         )
         .bind(&location_id)
         .bind(&folder_rel)

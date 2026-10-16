@@ -247,6 +247,7 @@ pub async fn sync_location(
         .fetch_one(pool)
         .await
         .map_err(|e| e.to_string())?;
+    crate::commands::properties::ensure_tags_property(pool, &location.library).await?;
     let root = PathBuf::from(&location.root_path);
     if !root.is_dir() {
         return Err(format!("{} isn't available. Is the drive connected?", location.root_path));
@@ -445,8 +446,8 @@ async fn update_record(
     Ok(())
 }
 
-/// Recomputes every file's tags from its folder path (undoing earlier promotions;
-/// the mapping is re-applied afterwards).
+/// Recomputes every file's source tags from its folder path: every folder on the
+/// path, whether mapped or not (mapped ones show as covered in the table).
 async fn rebuild_tags(location_id: &str, pool: &DbPool) -> Result<(), String> {
     let rows = sqlx::query("SELECT file_id, relative_path FROM files WHERE location_id = ? AND relative_path IS NOT NULL")
         .bind(location_id)

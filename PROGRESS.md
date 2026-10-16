@@ -107,6 +107,9 @@
   - [x] Database tag pills — 16px tall in the system font (11px) so they sit inside 20pt rows
   - [x] **Columns view rebuilt as Finder column view** (`components/views/columns/ColumnBrowser.tsx`, logic in `src/lib/columnBrowser.ts` with 9 tests): name-only rows (22pt, no stripes/metadata, single-line middle truncation via `middleTruncate`), folders show a chevron and open a new column, files open Finder's preview column, which fills the remaining width with the icon/image scaled to fit (native icon re-rendered in 32pt steps up to 512pt), then name, kind - size, Information with long dates (`formatLongDate`) and Tags; group headings have Finder's 25px gap above and no rule; active-column selection blue, ancestor selections grey; drag a column edge to resize, double-click to fit; new columns inherit the width of the column to their left; root width persisted; arrow-key navigation (↑↓ within a column, → into a folder, ← back, ⌘↓ opens); Sort By / Group By applied per column with folders on top (own "Folders" group when grouping). Takes a generic `BrowserNode` tree — locations currently supply a flat file list, so folders will appear once folder data is passed in
   - [x] Tiles view — fixed 100px cells and fixed gaps (`repeat(auto-fill, 100px)`), so resizing changes how many tiles fit per row, not the spacing; Finder-style selection (grey icon backing, blue label)
+  - [x] **Source tags, Tags and tag promotion** — "Tags" column renamed **Source Tags**: always every folder on the file's path, read-only; a tag already recorded in one of the file's properties shows faded ("covered"). New built-in **Tags** property per library (Multi-select for hand-added tags; config `{"system":"tags"}`; renamable, not deletable, type locked). Drag a pill onto a Select/Multi-select column (hold 0.5s to arm, then release): a source tag maps *every* folder with that name to the property (`folders_named` + `set_folder_labels`, so it survives refresh); a Tags value moves out of Tags into the column. Dropping on "+" creates a new Multi-select. Select columns ask before overwriting existing values (`count_mapping_conflicts`, `OverwriteDialog`). Undoable ("Map Tag", "Move Tag"). Helpers in `src/lib/tagDrag.ts` (10 tests)
+  - [x] **Mapping writes Multi-select by default** — new mapped properties are created as Multi-select; a file in two mapped folders gets both values; mapping no longer strips source tags; Select targets keep existing values unless overwrite is confirmed. "Dropdown" renamed **Select**; "+" menu lists Multi-select first. Deleting a property also removes its folder mappings. Migration v1 (`PRAGMA user_version`) restores stripped source tags and converts existing mapped properties to Multi-select
+  - [x] **Mapping panel: name selected folders** — naming a level applies to the selected folders when only some are selected, otherwise to all (placeholder "Name 2 of 5 folders"; mixed levels show "Client (2) · Project (3)"); mapped folders show their property name; "Name After Parent Folder" button (↰) names each folder after the folder it sits in; batch `set_folder_labels` / `clear_folder_labels`
 
 ---
 
@@ -134,6 +137,11 @@ View editor — remaining gaps against the spec and known bugs:
 - [ ] Duplicate view from the local editor (master editor only today)
 - [ ] Errors from editor commands are unhandled (no user feedback)
 
+Folder mapping — backlog:
+- [ ] Strip a naming prefix from mapped values (e.g. "01 Apollo", "02 Hermes" → "Apollo", "Hermes"): optional per mapping, so numbered folders give clean property values
+- [ ] Singular/plural suggestion when naming after the parent folder ("Projects" → "Project")
+- [ ] Drag a value back onto Source Tags to unmap it; drag between property columns
+
 Housekeeping:
 - [ ] Delete dead `DatabaseView.tsx` (`MainPane` only renders `LocationDatabaseView`)
 - [x] Add a lint setup — ESLint (`npm run lint`): hook rules + invoke/platform convention checks
@@ -151,6 +159,8 @@ Housekeeping:
 - Property bootstrapping uses `infer_value_type` heuristic: RFC3339/ISO-8601 values → "date", >20 distinct values → "free_text", otherwise → "enum"
 - `DatabaseView.tsx` is dead code — `MainPane` renders `LocationDatabaseView` exclusively; edits to `DatabaseView.tsx` have no effect
 - `.gitignore` excludes `node_modules/`, `dist/`, `src-tauri/target/`, `.DS_Store`; repo pushed to https://github.com/j-plm/folderbase (2026-10-13)
+- Source tags (`files.tags`) are derived from the path on every refresh and never edited; "covered" is computed per row as "the value appears in any of the file's properties". Tag promotion is a folder mapping, so it persists through refresh
+- Folder mapping onto a Multi-select appends and is re-applied on every refresh, so removing a mapped value by hand from one file comes back on the next refresh — unmap the folder instead
 - `files.metadata` blob is for user-defined and EXIF properties only — filesystem fields (`file_name`, `extension`, `size_bytes`, `created_at`) belong in dedicated columns; `get_location_properties` reads keys from the blob directly, so anything written there surfaces as a user-visible column
 
 ---

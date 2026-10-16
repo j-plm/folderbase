@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { clearFolderLabel, setFolderLabel } from "../../lib/commands";
+import { clearFolderLabels, countMappingConflicts, setFolderLabels } from "../../lib/commands";
 import type { FolderTreeNode, PathMappingNode } from "../../lib/commands";
 import { SymbolIcon } from "../../lib/fileIcons";
-import { levelNodes, type FolderGroup, type Level, type LevelRendererProps } from "./levels";
+import { useOverwriteConfirm } from "../shared/OverwriteDialog";
+import { levelTargets, type FolderGroup, type Level, type LevelRendererProps } from "./levels";
 import MappingColumns from "./MappingColumns";
 import MappingTiles from "./MappingTiles";
 
@@ -68,6 +69,7 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
   const [savedLevel, setSavedLevel] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { confirm, dialog } = useOverwriteConfirm();
 
   useEffect(() => () => { if (savedTimer.current) clearTimeout(savedTimer.current); }, []);
 
@@ -126,41 +128,85 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
     });
   }
 
-  /** Names exactly the folders shown in this level, i.e. the children of the selected parents. */
-  async function commitLevelName(levelIndex: number, name: string) {
-    const trimmed = name.trim();
-    const nodes = levelNodes(levels[levelIndex]);
-    const targets = trimmed
-      ? nodes.filter((n) => labels[n.folder_path] !== trimmed)
-      : nodes.filter((n) => labels[n.folder_path]);
-    if (targets.length === 0) return;
-
-    setError(null);
-    const done: Record<string, string> = {};
-    const cleared: string[] = [];
-    // Sequential: each call is its own SQLite write transaction.
-    for (const n of targets) {
-      try {
-        if (trimmed) {
-          await setFolderLabel(locationId, n.folder_path, trimmed);
-          done[n.folder_path] = trimmed;
-        } else {
-          await clearFolderLabel(locationId, n.folder_path);
-          cleared.push(n.folder_path);
-        }
-      } catch (e) {
-        setError(String(e));
-      }
-    }
-    setLabels((prev) => {
-      const next = { ...prev, ...done };
-      for (const p of cleared) delete next[p];
-      return next;
-    });
-
+  /** Shows "Saved" under a level's heading for a moment. */
+  function flashSaved(levelIndex: number) {
     setSavedLevel(levelIndex);
     if (savedTimer.current) clearTimeout(savedTimer.current);
     savedTimer.current = setTimeout(() => setSavedLevel(null), 1400);
+  }
+
+  /**
+   * Maps folders, grouped by the property each takes. Asks first when a Select
+   * property would lose values files already hold; Cancel maps nothing.
+   */
+  async function applyNames(byName: Map<string, string[]>): Promise<boolean> {
+    let overwrite = false;
+    for (const [name, paths] of byName) {
+      const conflicts = await countMappingConflicts(locationId, paths, name);
+      if (conflicts > 0) {
+        if (!(await confirm(name, conflicts))) return false;
+        overwrite = true;
+      }
+    }
+    for (const [name, paths] of byName) {
+      await setFolderLabels(locationId, paths, name, overwrite);
+    }
+    setLabels((prev) => {
+      const next = { ...prev };
+      for (const [name, paths] of byName) for (const p of paths) next[p] = name;
+      return next;
+    });
+    return true;
+  }
+
+  /**
+   * Names the level's target folders (see `levelTargets`: the selected ones when
+   * only some are selected, otherwise all of them). A blank name clears them.
+   */
+  async function commitLevelName(levelIndex: number, name: string) {
+    const trimmed = name.trim();
+    const { targets } = levelTargets(levels[levelIndex]);
+    setError(null);
+    try {
+      if (trimmed) {
+        const paths = targets.filter((n) => labels[n.folder_path] !== trimmed).map((n) => n.folder_path);
+        if (paths.length === 0 || !(await applyNames(new Map([[trimmed, paths]])))) return;
+      } else {
+        const paths = targets.filter((n) => labels[n.folder_path]).map((n) => n.folder_path);
+        if (paths.length === 0) return;
+        await clearFolderLabels(locationId, paths);
+        setLabels((prev) => {
+          const next = { ...prev };
+          for (const p of paths) delete next[p];
+          return next;
+        });
+      }
+      flashSaved(levelIndex);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  /** Names each target folder after the folder it sits in: the folders in "Projects" take "Projects". */
+  async function inheritParentName(levelIndex: number) {
+    const level = levels[levelIndex];
+    const { targets } = levelTargets(level);
+    const wanted = new Set(targets.map((n) => n.folder_path));
+    const byName = new Map<string, string[]>();
+    for (const group of level.groups) {
+      const name = folderName(group.parentPath);
+      const paths = group.nodes
+        .filter((n) => wanted.has(n.folder_path) && labels[n.folder_path] !== name)
+        .map((n) => n.folder_path);
+      if (paths.length > 0) byName.set(name, [...(byName.get(name) ?? []), ...paths]);
+    }
+    if (byName.size === 0) return;
+    setError(null);
+    try {
+      if (await applyNames(byName)) flashSaved(levelIndex);
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   const rendererProps: LevelRendererProps = {
@@ -170,6 +216,7 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
     folderName,
     onToggle: toggleSelection,
     onCommit: commitLevelName,
+    onInherit: inheritParentName,
   };
 
   return (
@@ -206,8 +253,8 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
         </div>
         <span className="min-w-0 truncate text-[11px] text-neutral-500">
           {mode === "tiles"
-            ? "Click to expand · double-click to open"
-            : "Click to expand · select several to group"}
+            ? "Click to select · double-click to open"
+            : "Click to select · naming applies to the selection"}
         </span>
         <div className="shrink-0 flex items-center gap-px bg-neutral-800 dark:bg-neutral-700/60 rounded-md p-0.5">
           {MODES.map(({ mode: m, label }) => (
@@ -239,6 +286,7 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
           <MappingColumns {...rendererProps} />
         )}
       </div>
+      {dialog}
     </div>
   );
 }

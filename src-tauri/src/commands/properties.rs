@@ -5,6 +5,50 @@ use uuid::Uuid;
 
 const VALID_VALUE_TYPES: &[&str] = &["enum", "free_text", "array", "date", "number"];
 
+/// Config marking a library's built-in Tags property: a Multi-select for tags
+/// added by hand. It can be renamed, but not deleted or changed to another type.
+pub const TAGS_CONFIG: &str = r#"{"system":"tags"}"#;
+const TAGS_NAME: &str = "Tags";
+
+pub fn is_system(prop: &Property) -> bool {
+    prop.config
+        .as_deref()
+        .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok())
+        .and_then(|c| c.get("system").and_then(|s| s.as_str()).map(|s| s == "tags"))
+        .unwrap_or(false)
+}
+
+/// Gives the library its Tags property, adopting an existing property called
+/// "Tags" (converted to a Multi-select) if there is one.
+pub async fn ensure_tags_property(pool: &DbPool, library: &str) -> Result<(), String> {
+    let props: Vec<Property> = sqlx::query_as("SELECT * FROM properties WHERE library = ?")
+        .bind(library)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    if props.iter().any(is_system) {
+        return Ok(());
+    }
+    if let Some(existing) = props.iter().find(|p| p.name == TAGS_NAME) {
+        return crate::commands::metadata::change_property_type_impl(
+            pool,
+            &existing.property_id,
+            "array",
+            Some(TAGS_CONFIG),
+        )
+        .await;
+    }
+    sqlx::query("INSERT INTO properties (property_id, name, library, value_type, config) VALUES (?, ?, ?, 'array', ?)")
+        .bind(Uuid::new_v4().to_string())
+        .bind(TAGS_NAME)
+        .bind(library)
+        .bind(TAGS_CONFIG)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn validate_value_type(value_type: &str) -> Result<(), String> {
     if VALID_VALUE_TYPES.contains(&value_type) {
         Ok(())
@@ -210,12 +254,29 @@ pub async fn delete_property(
             .fetch_one(db.inner())
             .await
             .map_err(|e| format!("property not found: {e}"))?;
+    if is_system(&prop) {
+        return Err(format!("“{}” is built in and can't be deleted", prop.name));
+    }
 
     sqlx::query("DELETE FROM property_values WHERE property_id = ?")
         .bind(&property_id)
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+
+    // Folder mappings to it go too, or the next refresh would bring its values back
+    match &prop.library {
+        Some(lib) => sqlx::query(
+            "DELETE FROM path_mapping_nodes WHERE property_name = ? \
+             AND location_id IN (SELECT location_id FROM locations WHERE library = ?)",
+        )
+        .bind(&prop.name)
+        .bind(lib),
+        None => sqlx::query("DELETE FROM path_mapping_nodes WHERE property_name = ?").bind(&prop.name),
+    }
+    .execute(db.inner())
+    .await
+    .map_err(|e| e.to_string())?;
 
     sqlx::query("DELETE FROM properties WHERE property_id = ?")
         .bind(&property_id)

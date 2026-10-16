@@ -5,11 +5,15 @@ import { FolderIcon, SymbolIcon } from "../../lib/fileIcons";
 import { middleTruncate } from "../../lib/tileLabel";
 import { measureText, uiFont } from "../../lib/textMeasure";
 import {
+  InheritNameButton,
   LevelNameInput,
+  MappedLabel,
   levelCaption,
   levelKey,
   levelName,
   levelNodes,
+  levelPlaceholder,
+  levelTargets,
   type LevelRendererProps,
 } from "./levels";
 
@@ -44,6 +48,11 @@ function saveRootWidth(width: number) {
   }
 }
 
+/** Room the mapped property label takes beside a folder's name. */
+function labelWidth(label: string | undefined): number {
+  return label ? measureText(label, uiFont(11)) + ICON_GAP : 0;
+}
+
 /** Room left for the name in a row of a column `width` wide. */
 function nameWidth(width: number): number {
   return width - ROW_CHROME - ICON_SIZE - ICON_GAP - CHEVRON_SIZE - ICON_GAP;
@@ -61,6 +70,7 @@ export default function MappingColumns({
   folderName,
   onToggle,
   onCommit,
+  onInherit,
 }: LevelRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const font = useMemo(() => uiFont(13), []);
@@ -117,7 +127,7 @@ export default function MappingColumns({
   return (
     <div ref={containerRef} className="flex-1 flex min-h-0 h-full overflow-x-auto overflow-y-hidden">
       {levels.map((level, levelIndex) => {
-        const { value, mixed } = levelName(levelNodes(level), labels);
+        const { value } = levelName(levelTargets(level).targets, labels);
         const width = colWidths[levelIndex];
         return (
           <div
@@ -126,13 +136,16 @@ export default function MappingColumns({
             className="relative shrink-0 h-full flex flex-col border-r border-neutral-700/60"
           >
             <div className="shrink-0 flex flex-col px-4 pt-2 pb-1.5 border-b border-neutral-700/60">
-              <LevelNameInput
-                key={levelKey(level)}
-                value={value}
-                mixed={mixed}
-                onCommit={(name) => onCommit(levelIndex, name)}
-                className="text-[13px] text-neutral-100"
-              />
+              <div className="flex items-center gap-1">
+                <LevelNameInput
+                  key={levelKey(level)}
+                  value={value}
+                  placeholder={levelPlaceholder(level, labels)}
+                  onCommit={(name) => onCommit(levelIndex, name)}
+                  className="flex-1 text-[13px] text-neutral-100"
+                />
+                <InheritNameButton onClick={() => onInherit(levelIndex)} />
+              </div>
               <span className="text-[11px] text-neutral-500 truncate">
                 {levelCaption(level, savedLevel === levelIndex, folderName)}
               </span>
@@ -150,6 +163,7 @@ export default function MappingColumns({
                   )}
                   {group.nodes.map((node) => {
                     const isSelected = level.selected.includes(node.folder_path);
+                    const label = labels[node.folder_path];
                     return (
                       <div
                         key={node.folder_path}
@@ -161,8 +175,9 @@ export default function MappingColumns({
                       >
                         <FolderIcon size={ICON_SIZE} />
                         <span className="flex-1 min-w-0 whitespace-nowrap overflow-hidden" title={node.folder_name}>
-                          {middleTruncate(node.folder_name, nameWidth(width), (t) => measureText(t, font))}
+                          {middleTruncate(node.folder_name, nameWidth(width) - labelWidth(label), (t) => measureText(t, font))}
                         </span>
+                        <MappedLabel name={label} className="max-w-[45%]" />
                         {node.children.length > 0 && (
                           <SymbolIcon
                             name="chevron.right"

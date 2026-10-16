@@ -77,7 +77,7 @@ pub fn parse_number(text: &str) -> Option<f64> {
     cleaned.parse::<f64>().ok().map(|n| n * scale)
 }
 
-/// The string values a Dropdown or Multi-select value contributes to the registry.
+/// The string values a Select or Multi-select value contributes to the registry.
 fn registry_values(value: &Value) -> Vec<String> {
     match value {
         Value::Array(items) => items.iter().map(scalar_text).filter(|s| !s.is_empty()).collect(),
@@ -118,7 +118,7 @@ pub async fn register_values(
 }
 
 /// The property governing `key` for files in `library`: library-scoped first, then global.
-async fn property_for(
+pub(crate) async fn property_for(
     conn: &mut SqliteConnection,
     key: &str,
     library: Option<&str>,
@@ -193,7 +193,7 @@ pub async fn set_metadata_cells_impl(pool: &DbPool, edits: &[CellEdit]) -> Resul
 }
 
 /// Writes many cells at once (an edit, a fill or a paste) in one transaction.
-/// New Dropdown and Multi-select values are added to the registry.
+/// New Select and Multi-select values are added to the registry.
 #[tauri::command]
 pub async fn set_metadata_cells(edits: Vec<CellEdit>, db: State<'_, DbPool>) -> Result<(), String> {
     set_metadata_cells_impl(db.inner(), &edits).await
@@ -321,6 +321,9 @@ pub async fn change_property_type_impl(
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| format!("property not found: {e}"))?;
+    if crate::commands::properties::is_system(&prop) {
+        return Err(format!("“{}” is always a Multi-select", prop.name));
+    }
 
     sqlx::query("UPDATE properties SET value_type = ?, config = ? WHERE property_id = ?")
         .bind(value_type)

@@ -3,8 +3,11 @@ import type React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { listen } from "@tauri-apps/api/event";
 import {
+  clearFolderLabels,
+  countMappingConflicts,
   createProperty,
   createPropertyValue,
+  foldersNamed,
   deletePropertyValue,
   deleteProperty,
   getLocationProperties,
@@ -14,6 +17,7 @@ import {
   getPropertyValues,
   renameProperty,
   setEditMenuLabels,
+  setFolderLabels,
   setMetadataCells,
   type CellEdit,
   updatePropertyType,
@@ -41,6 +45,17 @@ import { selectionLabel } from "../../lib/selectionStatus";
 import { describeRefresh, type RefreshSummary } from "../../lib/refreshSummary";
 import MenuPopover from "../shared/MenuPopover";
 import Dialog, { DialogButton } from "../shared/Dialog";
+import { useOverwriteConfirm } from "../shared/OverwriteDialog";
+import {
+  DRAG_THRESHOLD,
+  DROP_DWELL_MS,
+  columnAtOffset,
+  columnOffset,
+  countFoldersNamed,
+  coveredValues,
+  withListValue,
+  withoutListValue,
+} from "../../lib/tagDrag";
 import { hasPrimaryModifier, isToggleSelect } from "../../lib/platform";
 import {
   CURRENCIES,
@@ -115,7 +130,8 @@ const STANDARD_COLUMNS: ColumnDef[] = [
   { id: "created", label: "Created", weight: 1.2, minWidth: 100 },
   { id: "modified", label: "Modified", weight: 1.2, minWidth: 100 },
 ];
-const TAGS_COLUMN: ColumnDef = { id: "tags", label: "Tags", weight: 2, minWidth: 120, sortable: false };
+/** Source tags: the folder names on each file's path, read-only (the "Tags" property holds hand-added ones). */
+const TAGS_COLUMN: ColumnDef = { id: "tags", label: "Source Tags", weight: 2, minWidth: 120, sortable: false };
 /** The trailing header cell holding "+" (add property). */
 const ADD_COLUMN: ColumnDef = {
   id: "__add",
@@ -261,7 +277,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   // Property registry for this location's library
   const [library, setLibrary] = useState<string | null>(null);
   const [registry, setRegistry] = useState<Property[]>([]);
-  /** Registered values of Dropdown and Multi-select properties, by property id. */
+  /** Registered values of Select and Multi-select properties, by property id. */
   const [registryValues, setRegistryValues] = useState<Record<string, PropertyValue[]>>({});
 
   // Edits show at once; the files reload once the writes finish
@@ -370,6 +386,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   }, [registry]);
 
   const typeOf = useCallback((name: string): ValueType => propByName.get(name)?.value_type ?? "free_text", [propByName]);
+  /** The library's built-in Tags property (hand-added tags), by its current name. */
+  const tagsProperty = useMemo(
+    () => registry.find((p) => p.library === library && parseConfig(p).system === "tags")?.name ?? null,
+    [registry, library]
+  );
   const configOf = useCallback((name: string): PropertyConfig => parseConfig(propByName.get(name)), [propByName]);
 
   /** Every property this location can show: registered ones and keys found on its files. */
@@ -573,7 +594,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         key: c.id,
       })),
       { type: "separator" },
-      { type: "check", text: "Tags", checked: showTags, action: toggleShowTags, key: TAGS_COLUMN.id },
+      { type: "check", text: TAGS_COLUMN.label, checked: showTags, action: toggleShowTags, key: TAGS_COLUMN.id },
       ...availableProperties.map((name) => ({
         type: "check" as const,
         text: name,
@@ -683,8 +704,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     await afterPropertyChange();
   }
 
-  /** "+": adds a column of this type, named after it, with the name ready to type over. */
-  async function addProperty(label: string, type: ValueType, config: PropertyConfig | null) {
+  /** "+": adds a column of this type, named after it, with the name ready to type over. Returns its name. */
+  async function addProperty(label: string, type: ValueType, config: PropertyConfig | null): Promise<string | null> {
     const name = uniqueName(label, availableProperties);
     const configJson = config ? JSON.stringify(config) : null;
     // Values already on files under this name (adopted), to put back if the add is undone
@@ -693,7 +714,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       await history.queue(() => coreCreate(name, type, configJson));
     } catch (e) {
       setError(String(e));
-      return;
+      return null;
     }
     history.push({
       label: "Add Property",
@@ -704,6 +725,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       redo: () => coreCreate(name, type, configJson),
     });
     setRenaming({ name, text: name });
+    return name;
   }
 
   function showAddMenu(e: React.MouseEvent) {
@@ -800,7 +822,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       check("Percentage", format === "percent", () => changeType(name, "number", { format: "percent" })),
       check("Date", type === "date", () => changeType(name, "date", null)),
       { type: "separator" },
-      check("Dropdown", type === "enum", () => changeType(name, "enum", null)),
+      check("Select", type === "enum", () => changeType(name, "enum", null)),
       check("Multi-select", type === "array", () => changeType(name, "array", null)),
     ];
   }
@@ -829,10 +851,15 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         const name = propName(col.id);
         entries.push(
           { type: "separator" },
-          { type: "item", text: "Rename Property…", action: () => setRenaming({ name, text: name }) },
-          { type: "submenu", text: "Property Type", items: typeMenu(name) },
-          { type: "item", text: "Delete Property…", action: () => setDeleting(name) }
+          { type: "item", text: "Rename Property…", action: () => setRenaming({ name, text: name }) }
         );
+        // The built-in Tags property is always a Multi-select and can't be deleted
+        if (name !== tagsProperty) {
+          entries.push(
+            { type: "submenu", text: "Property Type", items: typeMenu(name) },
+            { type: "item", text: "Delete Property…", action: () => setDeleting(name) }
+          );
+        }
       }
       entries.push({ type: "separator" });
     }
@@ -931,7 +958,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     } finally {
       pendingWrites.current--;
     }
-    // New Dropdown / Multi-select values may have been registered
+    // New Select / Multi-select values may have been registered
     setRegistryValues({});
     if (pendingWrites.current === 0) {
       onChanged?.();
@@ -947,6 +974,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       const value = coerceValue(w.value, typeOf(name), configOf(name));
       return sameValue(value, cellValue(w.row, w.col)) ? [] : [{ file_id: w.row, key: name, value }];
     });
+    await writeEdits(edits, label);
+  }
+
+  /** Writes values exactly as given (already fit for their columns), recorded so they can be undone. */
+  async function writeEdits(edits: CellEdit[], label: string) {
     if (edits.length === 0) return;
     const previous = edits.map((e) => ({ ...e, value: cellValue(e.file_id, PROP_PREFIX + e.key) }));
     history.push({
@@ -1125,6 +1157,233 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           : null
       : null;
 
+  // ── Dragging tags onto columns ────────────────────────────────────────────
+
+  // A source tag (folder name) dropped on a list column maps every folder with
+  // that name to the property; a hand-added tag moves out of Tags into it.
+  // The column must be hovered for DROP_DWELL_MS before a release drops there.
+
+  const [tagDrag, setTagDrag] = useState<TagDrag | null>(null);
+  const { confirm: confirmOverwrite, dialog: overwriteDialog } = useOverwriteConfirm();
+
+  function columnBoxes() {
+    return columns.map((c) => ({ id: c.id, width: layout.widths[c.id] ?? 0 }));
+  }
+
+  /** The column under a point in the window, or null outside the table. */
+  function columnAtPoint(x: number, y: number): string | null {
+    const container = layout.container;
+    if (!container) return null;
+    const r = container.getBoundingClientRect();
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
+    const visual = x - r.left - INSET;
+    // The frozen Name column stays put while the rest scroll under it
+    if (frozenId && visual >= 0 && visual < (layout.widths[frozenId] ?? 0)) return frozenId;
+    return columnAtOffset(visual + container.scrollLeft, columnBoxes());
+  }
+
+  /** Select and Multi-select property columns take a dropped tag, as does "+" (a new Multi-select). */
+  function canDropTag(columnId: string | null, source: TagSource): boolean {
+    if (!columnId) return false;
+    if (columnId === ADD_COLUMN.id) return true;
+    if (!isEditable(columnId)) return false;
+    const name = propName(columnId);
+    const type = typeOf(name);
+    if (type !== "enum" && type !== "array") return false;
+    return !(source === "tags" && name === tagsProperty);
+  }
+
+  function startTagDrag(e: React.MouseEvent, value: string, source: TagSource) {
+    if (e.button !== 0) return;
+    e.preventDefault(); // no text selection while dragging
+    const container = layout.container;
+    const start = { x: e.clientX, y: e.clientY };
+    let last = start;
+    let started = false;
+    let target: string | null = null;
+    let armed = false;
+    let timer = 0;
+    let frame = 0;
+
+    const show = () => setTagDrag({ value, source, x: last.x, y: last.y, target, armed });
+    const retarget = () => {
+      const col = columnAtPoint(last.x, last.y);
+      const next = canDropTag(col, source) ? col : null;
+      if (next !== target) {
+        window.clearTimeout(timer);
+        target = next;
+        armed = false;
+        if (next) {
+          timer = window.setTimeout(() => {
+            armed = true;
+            show();
+          }, DROP_DWELL_MS);
+        }
+      }
+      show();
+    };
+    // Holding near the left or right edge scrolls the table across
+    const tick = () => {
+      if (container) {
+        const r = container.getBoundingClientRect();
+        const edge = 40;
+        const dx =
+          last.x < r.left + edge ? -(r.left + edge - last.x) / 3 : last.x > r.right - edge ? (last.x - r.right + edge) / 3 : 0;
+        if (dx && last.y >= r.top && last.y <= r.bottom) {
+          container.scrollLeft += dx;
+          retarget();
+        }
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    const onMove = (ev: MouseEvent) => {
+      last = { x: ev.clientX, y: ev.clientY };
+      if (!started) {
+        if (Math.hypot(last.x - start.x, last.y - start.y) < DRAG_THRESHOLD) return;
+        started = true;
+        frame = requestAnimationFrame(tick);
+      }
+      retarget();
+    };
+    const finish = (drop: boolean) => {
+      window.clearTimeout(timer);
+      cancelAnimationFrame(frame);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("keydown", onKey, true);
+      setTagDrag(null);
+      if (!started) return;
+      // The click that ends the drag would land on the table and change the selection
+      const swallow = (ev: MouseEvent) => ev.stopPropagation();
+      window.addEventListener("click", swallow, true);
+      window.setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+      if (drop && target && armed) void dropTag(value, source, target);
+    };
+    const onUp = () => finish(true);
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key !== "Escape") return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      finish(false);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("keydown", onKey, true);
+  }
+
+  async function dropTag(value: string, source: TagSource, columnId: string) {
+    let name: string;
+    let type: ValueType;
+    if (columnId === ADD_COLUMN.id) {
+      const added = await addProperty("Multi-select", "array", null);
+      if (!added) return;
+      name = added;
+      type = "array";
+    } else {
+      name = propName(columnId);
+      type = typeOf(name);
+    }
+    try {
+      if (source === "source") await mapTag(value, name, type);
+      else await moveTag(value, name, type);
+    } catch (e) {
+      setError(String(e));
+    }
+  }
+
+  /**
+   * Source tag → column: maps every folder with that name to the property, so it
+   * holds on every refresh. The tag stays (source tags never change) and shows as covered.
+   */
+  async function mapTag(value: string, name: string, type: ValueType) {
+    const folders = await foldersNamed(locationId, value);
+    if (folders.length === 0) return;
+    let overwrite = false;
+    if (type === "enum") {
+      const conflicts = await countMappingConflicts(locationId, folders, name);
+      if (conflicts > 0) {
+        if (!(await confirmOverwrite(name, conflicts))) return;
+        overwrite = true;
+      }
+    }
+    const previous = (await getMappingNodes(locationId)).filter((n) => folders.includes(n.folder_path));
+    const before = snapshot(name);
+    const apply = async () => {
+      await setFolderLabels(locationId, folders, name, overwrite);
+      setHasMappings(true);
+      await afterPropertyChange();
+    };
+    await history.queue(apply);
+    history.push({
+      label: "Map Tag",
+      undo: async () => {
+        // Put each folder's mapping back as it was, then the values it replaced
+        const unmapped = folders.filter((f) => !previous.some((n) => n.folder_path === f));
+        if (unmapped.length > 0) await clearFolderLabels(locationId, unmapped);
+        for (const n of previous) await setFolderLabels(locationId, [n.folder_path], n.property_name);
+        await restoreValues(before);
+        setHasMappings((await getMappingNodes(locationId)).length > 0);
+      },
+      redo: apply,
+    });
+  }
+
+  /** Hand-added tag → column: moves the value out of Tags and into the column on every file that has it. */
+  async function moveTag(value: string, name: string, type: ValueType) {
+    const tags = tagsProperty;
+    if (!tags) return;
+    const affected = rows.filter((f) => listValues(metaValue(f, tags)).includes(value));
+    if (affected.length === 0) return;
+    const multiple = type === "array";
+    if (!multiple) {
+      const conflicts = affected.filter((f) => {
+        const current = metaValue(f, name);
+        return current != null && valueToText(current) !== value;
+      }).length;
+      if (conflicts > 0 && !(await confirmOverwrite(name, conflicts))) return;
+    }
+    await writeEdits(
+      affected.flatMap((f) => [
+        { file_id: f.file_id, key: name, value: withListValue(metaValue(f, name), value, multiple) },
+        { file_id: f.file_id, key: tags, value: withoutListValue(metaValue(f, tags), value) },
+      ]),
+      "Move Tag"
+    );
+    // Gone from every file, so Tags stops offering it (undo registers it again)
+    const prop = propByName.get(tags);
+    const record = prop && registryValues[prop.property_id]?.find((v) => v.value === value);
+    if (record) {
+      await history.queue(() => deletePropertyValue(record.value_id)).catch(() => {});
+      setRegistryValues({});
+    }
+  }
+
+  /** "Move “Acme” to Client · 14 files, 2 folders", shown once a hovered column will take the drop. */
+  function dropHint(d: TagDrag): string {
+    if (!d.target) return "";
+    const into = d.target === ADD_COLUMN.id ? "a new Multi-select" : propName(d.target);
+    const count = (n: number, noun: string) => `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
+    if (d.source === "source") {
+      const files = rows.filter((f) => Array.isArray(f.tags) && f.tags.includes(d.value)).length;
+      const folders = countFoldersNamed(rows.map((f) => f.relative_path), d.value);
+      return `Move “${d.value}” to ${into} · ${count(files, "file")}, ${count(folders, "folder")}`;
+    }
+    const tags = tagsProperty;
+    const files = tags ? rows.filter((f) => listValues(metaValue(f, tags)).includes(d.value)).length : 0;
+    return `Move “${d.value}” to ${into} · ${count(files, "file")}`;
+  }
+
+  /** The hovered column's box in the window, for the drop highlight. */
+  function dropBox(columnId: string): { left: number; top: number; width: number; height: number } | null {
+    const container = layout.container;
+    if (!container) return null;
+    const r = container.getBoundingClientRect();
+    const left = r.left + INSET + columnOffset(columnId, columnBoxes()) - container.scrollLeft;
+    const right = Math.min(r.right, left + (layout.widths[columnId] ?? 0));
+    const clipped = Math.max(r.left, left);
+    return { left: clipped, top: r.top, width: Math.max(0, right - clipped), height: r.height };
+  }
+
   // ── Rendering ─────────────────────────────────────────────────────────────
 
   const frozenId = frozen ? "name" : null;
@@ -1204,7 +1463,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               onCancel={() => endEdit("none")}
             />
           ) : (
-            <PropertyValueView value={value} type={type} config={config} />
+            <PropertyValueView
+              value={value}
+              type={type}
+              config={config}
+              onPillMouseDown={name === tagsProperty ? (e, v) => startTagDrag(e, v, "tags") : undefined}
+            />
           )}
         </div>
         {frame && <SelectionFrame edges={frame} dashed={!selected} />}
@@ -1269,7 +1533,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       case "tags":
         return (
           <div key={col.id} style={style} className={`${CELL} flex items-center`}>
-            <TagPills tags={Array.isArray(file.tags) ? file.tags : []} />
+            <TagPills
+              tags={Array.isArray(file.tags) ? file.tags : []}
+              covered={coveredValues(file.metadata as Record<string, unknown> | null)}
+              onPillMouseDown={(e, tag) => startTagDrag(e, tag, "source")}
+            />
           </div>
         );
       default:
@@ -1287,7 +1555,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     [availableProperties, typeOf, kindOf]
   );
 
-  /** Removes a Dropdown / Multi-select value from the property and from every file that has it. */
+  /** Removes a Select / Multi-select value from the property and from every file that has it. */
   async function coreDeleteValue(name: string, value: string) {
     const prop = await ensureProperty(name);
     const record =
@@ -1298,7 +1566,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     await afterPropertyChange();
   }
 
-  /** Removes a Dropdown / Multi-select value from the property and from every file that has it. */
+  /** Removes a Select / Multi-select value from the property and from every file that has it. */
   async function deleteListValue(columnId: string, value: string) {
     const name = propName(columnId);
     const before = snapshot(name).filter((e) => listValues(e.value).includes(value));
@@ -1648,6 +1916,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         />
       )}
 
+      {overwriteDialog}
+
+      {tagDrag && <TagDragOverlay drag={tagDrag} box={tagDrag.target && tagDrag.armed ? dropBox(tagDrag.target) : null} hint={tagDrag.armed ? dropHint(tagDrag) : ""} />}
+
       {mappingOpen && (
         <PathMappingPanel
           locationId={locationId}
@@ -1677,16 +1949,33 @@ function measurePills(items: string[]): number {
   return pills.reduce((sum, p, i) => sum + measureText(p, pillFont) + 12 + (i > 0 ? 4 : 0), 0);
 }
 
-function TagPills({ tags }: { tags: string[] }) {
+/**
+ * Source tags as pills. A tag already recorded in one of the file's properties
+ * is covered and shows faded; dragging a pill onto a column maps it there.
+ */
+function TagPills({
+  tags,
+  covered,
+  onPillMouseDown,
+}: {
+  tags: string[];
+  covered: Set<string>;
+  onPillMouseDown: (e: React.MouseEvent, tag: string) => void;
+}) {
   if (tags.length === 0) return null;
   const shown = tags.slice(0, MAX_TAGS_SHOWN);
   const overflow = tags.length - MAX_TAGS_SHOWN;
   return (
     <div className="flex flex-nowrap items-center gap-1 overflow-hidden">
-      {shown.map((tag) => (
+      {shown.map((tag, i) => (
         <span
-          key={tag}
-          className="inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 text-neutral-300"
+          // A path can repeat a folder name ("2024/Q1/2024")
+          key={`${i}:${tag}`}
+          onMouseDown={(e) => onPillMouseDown(e, tag)}
+          title={covered.has(tag) ? `“${tag}” is recorded in a property` : undefined}
+          className={`inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 text-neutral-300 ${
+            covered.has(tag) ? "opacity-40" : ""
+          }`}
         >
           {tag}
         </span>
@@ -1696,6 +1985,50 @@ function TagPills({ tags }: { tags: string[] }) {
           +{overflow}
         </span>
       )}
+    </div>
+  );
+}
+
+type TagSource = "source" | "tags";
+
+/** A tag pill being dragged: where it is, and the column it will drop on once armed. */
+interface TagDrag {
+  value: string;
+  source: TagSource;
+  x: number;
+  y: number;
+  target: string | null;
+  armed: boolean;
+}
+
+/** The dragged pill under the pointer, plus the armed column's highlight and what dropping will do. */
+function TagDragOverlay({
+  drag,
+  box,
+  hint,
+}: {
+  drag: TagDrag;
+  box: { left: number; top: number; width: number; height: number } | null;
+  hint: string;
+}) {
+  return (
+    <div aria-hidden className="pointer-events-none fixed inset-0 z-[60]">
+      {box && (
+        <div
+          className="absolute rounded-md border-2 border-blue-500 bg-blue-500/10"
+          style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
+        />
+      )}
+      <div className="absolute flex flex-col items-start gap-1" style={{ left: drag.x + 10, top: drag.y + 8 }}>
+        <span className="inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap bg-neutral-700 text-neutral-100 shadow-md">
+          {drag.value}
+        </span>
+        {hint && (
+          <span className="px-2 py-1 rounded-md text-xs whitespace-nowrap bg-neutral-800 text-neutral-100 border border-neutral-700/60 shadow-lg">
+            {hint}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

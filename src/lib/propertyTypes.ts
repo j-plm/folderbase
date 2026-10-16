@@ -8,7 +8,7 @@ export const TYPE_OPTIONS: { type: ValueType; label: string }[] = [
   { type: "free_text", label: "Text" },
   { type: "number", label: "Number" },
   { type: "date", label: "Date" },
-  { type: "enum", label: "Dropdown" },
+  { type: "enum", label: "Select" },
   { type: "array", label: "Multi-select" },
 ];
 
@@ -165,7 +165,7 @@ export function editText(value: unknown, type: ValueType, config: PropertyConfig
   return valueToText(value);
 }
 
-/** List values in a cell (Dropdown and Multi-select), as an array. */
+/** List values in a cell (Select and Multi-select), as an array. */
 export function listValues(value: unknown): string[] {
   if (value == null || value === "") return [];
   return Array.isArray(value) ? value.map(valueToText).filter(Boolean) : [valueToText(value)];
@@ -175,14 +175,15 @@ export function listValues(value: unknown): string[] {
 export function newPropertyKinds(
   currency: string = defaultCurrency()
 ): { label: string; type: ValueType; config: PropertyConfig | null }[] {
+  // Multi-select first: the default kind of property, as a file can belong to several things
   return [
+    { label: "Multi-select", type: "array", config: null },
+    { label: "Select", type: "enum", config: null },
     { label: "Text", type: "free_text", config: null },
     { label: "Number", type: "number", config: { format: "generic" } },
     { label: "Currency", type: "number", config: { format: "currency", currency } },
     { label: "Percentage", type: "number", config: { format: "percent" } },
     { label: "Date", type: "date", config: null },
-    { label: "Dropdown", type: "enum", config: null },
-    { label: "Multi-select", type: "array", config: null },
   ];
 }
 

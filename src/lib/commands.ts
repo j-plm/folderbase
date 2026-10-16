@@ -362,6 +362,34 @@ export async function clearFolderLabel(
   return invoke<void>("clear_folder_label", { locationId, folderPath });
 }
 
+/** Maps several folders to one property. `overwrite` replaces other values a Select already holds. */
+export async function setFolderLabels(
+  locationId: string,
+  folderPaths: string[],
+  propertyName: string,
+  overwrite = false
+): Promise<void> {
+  return invoke<void>("set_folder_labels", { locationId, folderPaths, propertyName, overwrite });
+}
+
+export async function clearFolderLabels(locationId: string, folderPaths: string[]): Promise<void> {
+  return invoke<void>("clear_folder_labels", { locationId, folderPaths });
+}
+
+/** Every folder in the location with this name, at any depth: the folders a source tag stands for. */
+export async function foldersNamed(locationId: string, name: string): Promise<string[]> {
+  return invoke<string[]>("folders_named", { locationId, name });
+}
+
+/** Files under these folders whose Select value mapping would replace (0 for a Multi-select). */
+export async function countMappingConflicts(
+  locationId: string,
+  folderPaths: string[],
+  propertyName: string
+): Promise<number> {
+  return invoke<number>("count_mapping_conflicts", { locationId, folderPaths, propertyName });
+}
+
 export async function getMappingNodes(locationId: string): Promise<PathMappingNode[]> {
   return invoke<PathMappingNode[]>("get_mapping_nodes", { locationId });
 }

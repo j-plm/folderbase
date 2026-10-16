@@ -4,11 +4,14 @@ import { FolderIcon } from "../../lib/fileIcons";
 import { twoLineLabel } from "../../lib/tileLabel";
 import { measureText, uiFont } from "../../lib/textMeasure";
 import {
+  InheritNameButton,
   LevelNameInput,
+  MappedLabel,
   levelCaption,
   levelKey,
   levelName,
-  levelNodes,
+  levelPlaceholder,
+  levelTargets,
   type LevelRendererProps,
 } from "./levels";
 
@@ -19,12 +22,14 @@ const LABEL_WIDTH = TILE_WIDTH - 8;
 
 function FolderTile({
   node,
+  label,
   isSelected,
   labelFont,
   onSelect,
   onDrillIn,
 }: {
   node: FolderTreeNode;
+  label: string | undefined;
   isSelected: boolean;
   labelFont: string;
   onSelect: () => void;
@@ -78,6 +83,7 @@ function FolderTile({
           </span>
         ))}
       </span>
+      <MappedLabel name={label} className="max-w-full -mt-0.5 text-neutral-100" />
     </div>
   );
 }
@@ -90,6 +96,7 @@ export default function MappingTiles({
   folderName,
   onToggle,
   onCommit,
+  onInherit,
   onDrillIn,
 }: LevelRendererProps & { onDrillIn: (folderPath: string) => void }) {
   const labelFont = useMemo(() => uiFont(12), []);
@@ -97,17 +104,18 @@ export default function MappingTiles({
   return (
     <div className="h-full overflow-y-auto">
       {levels.map((level, levelIndex) => {
-        const { value, mixed } = levelName(levelNodes(level), labels);
+        const { value } = levelName(levelTargets(level).targets, labels);
         return (
           <section key={levelIndex} className={levelIndex > 0 ? "border-t border-neutral-700/60" : ""}>
-            <div className="flex items-baseline gap-3 px-5 pt-2.5">
+            <div className="flex items-center gap-3 px-5 pt-2.5">
               <LevelNameInput
                 key={levelKey(level)}
                 value={value}
-                mixed={mixed}
+                placeholder={levelPlaceholder(level, labels)}
                 onCommit={(name) => onCommit(levelIndex, name)}
                 className="flex-1 text-[15px] text-neutral-400"
               />
+              <InheritNameButton onClick={() => onInherit(levelIndex)} />
               <span className="shrink-0 text-[11px] text-neutral-500">
                 {levelCaption(level, savedLevel === levelIndex, folderName)}
               </span>
@@ -127,6 +135,7 @@ export default function MappingTiles({
                     <FolderTile
                       key={node.folder_path}
                       node={node}
+                      label={labels[node.folder_path]}
                       isSelected={level.selected.includes(node.folder_path)}
                       labelFont={labelFont}
                       onSelect={() => onToggle(levelIndex, node.folder_path)}

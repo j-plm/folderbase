@@ -1,7 +1,15 @@
+//! Folder mapping: a folder's name becomes a value of a property for every file
+//! under it. Mappings are stored per folder (`path_mapping_nodes`), re-applied on
+//! every sync, and never move files or touch their source tags (the folder names
+//! on each file's path, which stay as they are on disk).
+
 use crate::db::DbPool;
+use crate::models::Property;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use sqlx::FromRow;
+use std::collections::BTreeSet;
 use tauri::State;
 use uuid::Uuid;
 
@@ -147,12 +155,49 @@ pub async fn set_folder_label(
     set_folder_label_impl(&location_id, &folder_path, &property_name, db.inner()).await
 }
 
-/// Labels one folder. Relabelling replaces the previous property: its key is
-/// stripped from the files before the new one is written, so no stale keys remain.
+/// Labels one folder, keeping values the files already hold in a Select property.
 pub async fn set_folder_label_impl(
     location_id: &str,
     folder_path: &str,
     property_name: &str,
+    pool: &DbPool,
+) -> Result<(), String> {
+    label_folder(location_id, folder_path, property_name, false, pool).await
+}
+
+/// Labels several folders with one property. With `overwrite`, a Select property
+/// takes the folder's name even where a file already has another value.
+#[tauri::command]
+pub async fn set_folder_labels(
+    location_id: String,
+    folder_paths: Vec<String>,
+    property_name: String,
+    overwrite: bool,
+    db: State<'_, DbPool>,
+) -> Result<(), String> {
+    set_folder_labels_impl(&location_id, &folder_paths, &property_name, overwrite, db.inner()).await
+}
+
+pub async fn set_folder_labels_impl(
+    location_id: &str,
+    folder_paths: &[String],
+    property_name: &str,
+    overwrite: bool,
+    pool: &DbPool,
+) -> Result<(), String> {
+    for folder_path in folder_paths {
+        label_folder(location_id, folder_path, property_name, overwrite, pool).await?;
+    }
+    Ok(())
+}
+
+/// Labels one folder. Relabelling replaces the previous property: the folder's
+/// value is taken out of it before the new one is written, so no stale values remain.
+async fn label_folder(
+    location_id: &str,
+    folder_path: &str,
+    property_name: &str,
+    overwrite: bool,
     pool: &DbPool,
 ) -> Result<(), String> {
     let property_name = property_name.trim();
@@ -160,19 +205,9 @@ pub async fn set_folder_label_impl(
         return Err("property name must not be empty".to_string());
     }
 
-    let root_path: String =
-        sqlx::query_scalar("SELECT root_path FROM locations WHERE location_id = ?")
-            .bind(location_id)
-            .fetch_one(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
+    let root_path = location_root(location_id, pool).await?;
     let folder_rel = folder_rel_from_abs(&root_path, folder_path)?;
-    let depth = if folder_rel.is_empty() {
-        0i64
-    } else {
-        folder_rel.split('/').filter(|s| !s.is_empty()).count() as i64
-    };
+    let depth = folder_rel.split('/').filter(|s| !s.is_empty()).count() as i64;
 
     let previous: Option<String> = sqlx::query_scalar(
         "SELECT property_name FROM path_mapping_nodes WHERE location_id = ? AND folder_path = ?",
@@ -183,37 +218,34 @@ pub async fn set_folder_label_impl(
     .await
     .map_err(|e| e.to_string())?;
 
-    if previous.as_deref() == Some(property_name) {
-        return Ok(());
-    }
-    if let Some(old) = &previous {
+    if let Some(old) = previous.as_deref().filter(|old| *old != property_name) {
         unapply_mapping_from_files(location_id, &root_path, folder_path, old, pool).await?;
     }
 
-    let now = Utc::now().to_rfc3339();
-    let node_id = Uuid::new_v4().to_string();
+    if previous.as_deref() != Some(property_name) {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO path_mapping_nodes \
+             (node_id, location_id, folder_path, property_name, depth, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?) \
+             ON CONFLICT(location_id, folder_path) DO UPDATE SET \
+             property_name = excluded.property_name, \
+             depth = excluded.depth, \
+             updated_at = excluded.updated_at",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(location_id)
+        .bind(folder_path)
+        .bind(property_name)
+        .bind(depth)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
 
-    sqlx::query(
-        "INSERT INTO path_mapping_nodes \
-         (node_id, location_id, folder_path, property_name, depth, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?) \
-         ON CONFLICT(location_id, folder_path) DO UPDATE SET \
-         property_name = excluded.property_name, \
-         depth = excluded.depth, \
-         updated_at = excluded.updated_at",
-    )
-    .bind(&node_id)
-    .bind(location_id)
-    .bind(folder_path)
-    .bind(property_name)
-    .bind(depth)
-    .bind(&now)
-    .bind(&now)
-    .execute(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    apply_mapping_to_files(location_id, &root_path, folder_path, property_name, pool).await
+    apply_mapping(location_id, &root_path, folder_path, property_name, overwrite, pool).await
 }
 
 #[tauri::command]
@@ -223,6 +255,18 @@ pub async fn clear_folder_label(
     db: State<'_, DbPool>,
 ) -> Result<(), String> {
     clear_folder_label_impl(&location_id, &folder_path, db.inner()).await
+}
+
+#[tauri::command]
+pub async fn clear_folder_labels(
+    location_id: String,
+    folder_paths: Vec<String>,
+    db: State<'_, DbPool>,
+) -> Result<(), String> {
+    for folder_path in &folder_paths {
+        clear_folder_label_impl(&location_id, folder_path, db.inner()).await?;
+    }
+    Ok(())
 }
 
 pub async fn clear_folder_label_impl(
@@ -240,12 +284,7 @@ pub async fn clear_folder_label_impl(
     .map_err(|e| e.to_string())?;
 
     if let Some(property_name) = row {
-        let root_path: String =
-            sqlx::query_scalar("SELECT root_path FROM locations WHERE location_id = ?")
-                .bind(location_id)
-                .fetch_one(pool)
-                .await
-                .map_err(|e| e.to_string())?;
+        let root_path = location_root(location_id, pool).await?;
         unapply_mapping_from_files(location_id, &root_path, folder_path, &property_name, pool)
             .await?;
     }
@@ -276,6 +315,111 @@ pub async fn get_mapping_nodes(
     Ok(nodes)
 }
 
+/// Every folder in the location with this name, at any depth (absolute paths).
+/// A source tag is a folder name, so these are the folders it stands for.
+#[tauri::command]
+pub async fn folders_named(
+    location_id: String,
+    name: String,
+    db: State<'_, DbPool>,
+) -> Result<Vec<String>, String> {
+    folders_named_impl(&location_id, &name, db.inner()).await
+}
+
+pub async fn folders_named_impl(
+    location_id: &str,
+    name: &str,
+    pool: &DbPool,
+) -> Result<Vec<String>, String> {
+    let root_path = location_root(location_id, pool).await?;
+    let rel_paths: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT relative_path FROM files WHERE location_id = ? AND relative_path IS NOT NULL",
+    )
+    .bind(location_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let root = root_path.replace('\\', "/");
+    Ok(folders_with_name(&rel_paths, name)
+        .into_iter()
+        .map(|rel| format!("{}/{}", root.trim_end_matches('/'), rel))
+        .collect())
+}
+
+/// Relative paths of the folders, among the parents of `rel_paths`, whose name is `name`.
+fn folders_with_name(rel_paths: &[String], name: &str) -> BTreeSet<String> {
+    let mut found = BTreeSet::new();
+    for rel in rel_paths {
+        let normalized = rel.replace('\\', "/");
+        let parts: Vec<&str> = normalized.split('/').collect();
+        for i in 0..parts.len().saturating_sub(1) {
+            if parts[i] == name {
+                found.insert(parts[..=i].join("/"));
+            }
+        }
+    }
+    found
+}
+
+/// How many files under these folders already hold a different value in
+/// `property_name` that mapping would replace. Always 0 for a Multi-select
+/// (or a property that doesn't exist yet, which mapping creates as one).
+#[tauri::command]
+pub async fn count_mapping_conflicts(
+    location_id: String,
+    folder_paths: Vec<String>,
+    property_name: String,
+    db: State<'_, DbPool>,
+) -> Result<i64, String> {
+    count_mapping_conflicts_impl(&location_id, &folder_paths, &property_name, db.inner()).await
+}
+
+pub async fn count_mapping_conflicts_impl(
+    location_id: &str,
+    folder_paths: &[String],
+    property_name: &str,
+    pool: &DbPool,
+) -> Result<i64, String> {
+    let library = location_library(location_id, pool).await?;
+    let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+    let prop = crate::commands::metadata::property_for(&mut conn, property_name, Some(&library)).await?;
+    if prop.map_or(true, |p| p.value_type == "array") {
+        return Ok(0);
+    }
+    let root_path = location_root(location_id, pool).await?;
+    let mut conflicting = BTreeSet::new();
+    for folder_path in folder_paths {
+        let folder_rel = folder_rel_from_abs(&root_path, folder_path)?;
+        let name = folder_name_of(folder_path);
+        for (file_id, meta) in files_under(location_id, &folder_rel, pool).await? {
+            match meta.get(property_name) {
+                None | Some(Value::Null) => {}
+                Some(Value::String(s)) if *s == name => {}
+                Some(_) => {
+                    conflicting.insert(file_id);
+                }
+            }
+        }
+    }
+    Ok(conflicting.len() as i64)
+}
+
+async fn location_root(location_id: &str, pool: &DbPool) -> Result<String, String> {
+    sqlx::query_scalar("SELECT root_path FROM locations WHERE location_id = ?")
+        .bind(location_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+async fn location_library(location_id: &str, pool: &DbPool) -> Result<String, String> {
+    sqlx::query_scalar("SELECT library FROM locations WHERE location_id = ?")
+        .bind(location_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // Strips root_path prefix from folder_path to get the relative folder path.
 fn folder_rel_from_abs(root_path: &str, folder_path: &str) -> Result<String, String> {
     let root = root_path.replace('\\', "/");
@@ -295,8 +439,140 @@ fn folder_rel_from_abs(root_path: &str, folder_path: &str) -> Result<String, Str
     }
 }
 
-/// Reverses `apply_mapping_to_files`: removes the property key from files whose value
-/// came from this folder, and restores the folder name to their tags.
+fn folder_name_of(folder_path: &str) -> String {
+    folder_path
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .split('/')
+        .last()
+        .unwrap_or("")
+        .to_string()
+}
+
+/// Files anywhere under a folder (relative to the location root), with their metadata.
+async fn files_under(
+    location_id: &str,
+    folder_rel: &str,
+    pool: &DbPool,
+) -> Result<Vec<(String, Map<String, Value>)>, String> {
+    // A prefix match rather than LIKE, so "_" and "%" in folder names match literally
+    let prefix = format!("{folder_rel}/");
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT file_id, metadata FROM files \
+         WHERE location_id = ? AND substr(relative_path, 1, length(?)) = ?",
+    )
+    .bind(location_id)
+    .bind(&prefix)
+    .bind(&prefix)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, meta)| {
+            let parsed = meta
+                .as_deref()
+                .and_then(|m| serde_json::from_str::<Map<String, Value>>(m).ok())
+                .unwrap_or_default();
+            (id, parsed)
+        })
+        .collect())
+}
+
+/// Adds a folder's name to a file's value for `key`. A Multi-select (`list`)
+/// gains it alongside what's there; a Select only takes it when empty, unless
+/// `overwrite`. Returns whether the metadata changed.
+pub fn add_mapped_value(meta: &mut Map<String, Value>, key: &str, value: &str, list: bool, overwrite: bool) -> bool {
+    let new = Value::String(value.to_string());
+    match (list, meta.get(key)) {
+        (true, None | Some(Value::Null)) => {
+            meta.insert(key.to_string(), Value::Array(vec![new]));
+            true
+        }
+        (true, Some(Value::Array(items))) => {
+            if items.contains(&new) {
+                return false;
+            }
+            let mut items = items.clone();
+            items.push(new);
+            meta.insert(key.to_string(), Value::Array(items));
+            true
+        }
+        // A single value left from before the property became a Multi-select
+        (true, Some(other)) => {
+            let old = match other {
+                Value::String(s) => Value::String(s.clone()),
+                v => Value::String(v.to_string()),
+            };
+            let items = if old == new { vec![new] } else { vec![old, new] };
+            meta.insert(key.to_string(), Value::Array(items));
+            true
+        }
+        (false, None | Some(Value::Null)) => {
+            meta.insert(key.to_string(), new);
+            true
+        }
+        (false, Some(existing)) => {
+            if *existing == new || !overwrite {
+                return false;
+            }
+            meta.insert(key.to_string(), new);
+            true
+        }
+    }
+}
+
+/// Takes a folder's name back out of a file's value for `key`, removing the key
+/// when nothing is left. Returns whether the metadata changed.
+pub fn remove_mapped_value(meta: &mut Map<String, Value>, key: &str, value: &str) -> bool {
+    match meta.get(key) {
+        Some(Value::Array(items)) => {
+            let kept: Vec<Value> = items.iter().filter(|v| v.as_str() != Some(value)).cloned().collect();
+            if kept.len() == items.len() {
+                return false;
+            }
+            if kept.is_empty() {
+                meta.remove(key);
+            } else {
+                meta.insert(key.to_string(), Value::Array(kept));
+            }
+            true
+        }
+        Some(Value::String(s)) if s == value => {
+            meta.remove(key);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The property a mapping writes to, created as a Multi-select if it doesn't exist.
+async fn mapping_property(location_id: &str, property_name: &str, pool: &DbPool) -> Result<Property, String> {
+    let library = location_library(location_id, pool).await?;
+    let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+    if let Some(prop) = crate::commands::metadata::property_for(&mut conn, property_name, Some(&library)).await? {
+        return Ok(prop);
+    }
+    let prop = Property {
+        property_id: Uuid::new_v4().to_string(),
+        name: property_name.to_string(),
+        library: Some(library),
+        value_type: "array".to_string(),
+        config: None,
+    };
+    sqlx::query("INSERT INTO properties (property_id, name, library, value_type, config) VALUES (?, ?, ?, ?, NULL)")
+        .bind(&prop.property_id)
+        .bind(&prop.name)
+        .bind(&prop.library)
+        .bind(&prop.value_type)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(prop)
+}
+
+/// Reverses `apply_mapping`: takes the folder's name out of the property on every
+/// file under the folder. Source tags are untouched.
 async fn unapply_mapping_from_files(
     location_id: &str,
     root_path: &str,
@@ -305,57 +581,20 @@ async fn unapply_mapping_from_files(
     pool: &DbPool,
 ) -> Result<(), String> {
     let folder_rel = folder_rel_from_abs(root_path, folder_path)?;
-    let folder_name = folder_path
-        .replace('\\', "/")
-        .split('/')
-        .last()
-        .unwrap_or("")
-        .to_string();
-    let prop_key = crate::db::utils::json_path(&property_name);
+    let folder_name = folder_name_of(folder_path);
+    let files = files_under(location_id, &folder_rel, pool).await?;
 
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-
-    sqlx::query(
-        "UPDATE files \
-         SET tags = json_insert(tags, '$[#]', ?) \
-         WHERE location_id = ? \
-         AND (relative_path = ? OR relative_path LIKE ? || '/%') \
-         AND json_extract(metadata, ?) = ?",
-    )
-    .bind(&folder_name)
-    .bind(location_id)
-    .bind(&folder_rel)
-    .bind(&folder_rel)
-    .bind(&prop_key)
-    .bind(&folder_name)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    sqlx::query(
-        "UPDATE files SET metadata = json_remove(metadata, ?) \
-         WHERE location_id = ? \
-         AND (relative_path = ? OR relative_path LIKE ? || '/%') \
-         AND json_extract(metadata, ?) = ?",
-    )
-    .bind(&prop_key)
-    .bind(location_id)
-    .bind(&folder_rel)
-    .bind(&folder_rel)
-    .bind(&prop_key)
-    .bind(&folder_name)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| e.to_string())?;
-
+    for (file_id, mut meta) in files {
+        if remove_mapped_value(&mut meta, property_name, &folder_name) {
+            save_metadata(&mut tx, &file_id, &meta).await?;
+        }
+    }
     tx.commit().await.map_err(|e| e.to_string())
 }
 
-/// Applies a single mapping node's label to all matching files (merge semantics).
-/// Only writes the value when the property key is currently absent from metadata.
-/// A named folder is never also a tag: its name is removed from the tags of every
-/// file that takes its value, including files that already carry it (re-indexing
-/// rebuilds tags from paths, so the name comes back and must be stripped again).
+/// Applies a single mapping node's label to all matching files, never replacing
+/// values already there (see `add_mapped_value`). Sync calls this after every refresh.
 pub async fn apply_mapping_to_files(
     location_id: &str,
     root_path: &str,
@@ -363,55 +602,106 @@ pub async fn apply_mapping_to_files(
     property_name: &str,
     pool: &DbPool,
 ) -> Result<(), String> {
+    apply_mapping(location_id, root_path, folder_path, property_name, false, pool).await
+}
+
+async fn apply_mapping(
+    location_id: &str,
+    root_path: &str,
+    folder_path: &str,
+    property_name: &str,
+    overwrite: bool,
+    pool: &DbPool,
+) -> Result<(), String> {
     let folder_rel = folder_rel_from_abs(root_path, folder_path)?;
-    let folder_name = folder_path
-        .replace('\\', "/")
-        .split('/')
-        .last()
-        .unwrap_or("")
-        .to_string();
-    let prop_key = crate::db::utils::json_path(&property_name);
+    let folder_name = folder_name_of(folder_path);
+    let prop = mapping_property(location_id, property_name, pool).await?;
+    let list = prop.value_type == "array";
+    let files = files_under(location_id, &folder_rel, pool).await?;
 
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for (file_id, mut meta) in files {
+        if add_mapped_value(&mut meta, property_name, &folder_name, list, overwrite) {
+            save_metadata(&mut tx, &file_id, &meta).await?;
+        }
+    }
+    if prop.value_type == "array" || prop.value_type == "enum" {
+        crate::commands::metadata::register_values(&mut tx, &prop.property_id, [folder_name]).await?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())
+}
 
-    sqlx::query(
-        "UPDATE files \
-         SET tags = COALESCE(\
-           (SELECT json_group_array(value) FROM json_each(tags) WHERE value != ?),\
-           '[]'\
-         ) \
-         WHERE location_id = ? \
-         AND (relative_path = ? OR relative_path LIKE ? || '/%') \
-         AND (json_extract(metadata, ?) IS NULL OR json_extract(metadata, ?) = ?)",
-    )
-    .bind(&folder_name)
-    .bind(location_id)
-    .bind(&folder_rel)
-    .bind(&folder_rel)
-    .bind(&prop_key)
-    .bind(&prop_key)
-    .bind(&folder_name)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    sqlx::query(
-        "UPDATE files SET metadata = json_set(metadata, ?, ?) \
-         WHERE location_id = ? \
-         AND (relative_path = ? OR relative_path LIKE ? || '/%') \
-         AND json_extract(metadata, ?) IS NULL",
-    )
-    .bind(&prop_key)
-    .bind(&folder_name)
-    .bind(location_id)
-    .bind(&folder_rel)
-    .bind(&folder_rel)
-    .bind(&prop_key)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    tx.commit().await.map_err(|e| e.to_string())?;
-
+async fn save_metadata(conn: &mut sqlx::SqliteConnection, file_id: &str, meta: &Map<String, Value>) -> Result<(), String> {
+    sqlx::query("UPDATE files SET metadata = ? WHERE file_id = ?")
+        .bind(Value::Object(meta.clone()).to_string())
+        .bind(file_id)
+        .execute(&mut *conn)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn meta(v: Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn multi_select_gains_the_value_alongside_others() {
+        let mut m = meta(json!({ "Client": ["Beta"] }));
+        assert!(add_mapped_value(&mut m, "Client", "Acme", true, false));
+        assert_eq!(m["Client"], json!(["Beta", "Acme"]));
+        // Already there: nothing to do
+        assert!(!add_mapped_value(&mut m, "Client", "Acme", true, false));
+    }
+
+    #[test]
+    fn multi_select_absorbs_a_legacy_single_value() {
+        let mut m = meta(json!({ "Client": "Beta" }));
+        assert!(add_mapped_value(&mut m, "Client", "Acme", true, false));
+        assert_eq!(m["Client"], json!(["Beta", "Acme"]));
+        let mut same = meta(json!({ "Client": "Acme" }));
+        assert!(add_mapped_value(&mut same, "Client", "Acme", true, false));
+        assert_eq!(same["Client"], json!(["Acme"]));
+    }
+
+    #[test]
+    fn select_keeps_existing_value_unless_overwriting() {
+        let mut m = meta(json!({ "Client": "Beta" }));
+        assert!(!add_mapped_value(&mut m, "Client", "Acme", false, false));
+        assert_eq!(m["Client"], json!("Beta"));
+        assert!(add_mapped_value(&mut m, "Client", "Acme", false, true));
+        assert_eq!(m["Client"], json!("Acme"));
+        let mut empty = Map::new();
+        assert!(add_mapped_value(&mut empty, "Client", "Acme", false, false));
+        assert_eq!(empty["Client"], json!("Acme"));
+    }
+
+    #[test]
+    fn remove_drops_value_and_empty_key() {
+        let mut m = meta(json!({ "Client": ["Acme", "Beta"], "Owner": "Acme" }));
+        assert!(remove_mapped_value(&mut m, "Client", "Acme"));
+        assert_eq!(m["Client"], json!(["Beta"]));
+        assert!(remove_mapped_value(&mut m, "Client", "Beta"));
+        assert!(!m.contains_key("Client"));
+        assert!(remove_mapped_value(&mut m, "Owner", "Acme"));
+        assert!(!remove_mapped_value(&mut m, "Owner", "Acme"));
+    }
+
+    #[test]
+    fn finds_same_named_folders_at_any_depth() {
+        let rels = vec![
+            "Clients/Acme/brief.pdf".to_string(),
+            "Archive/2023/Acme/old.pdf".to_string(),
+            "Acme.pdf".to_string(),
+            "Acme Ltd/x.pdf".to_string(),
+        ];
+        let found: Vec<String> = folders_with_name(&rels, "Acme").into_iter().collect();
+        assert_eq!(found, vec!["Archive/2023/Acme", "Clients/Acme"]);
+        assert!(folders_with_name(&rels, "Nope").is_empty());
+    }
 }

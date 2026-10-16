@@ -1,3 +1,4 @@
+import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Popover from "../../shared/Popover";
 import { SymbolIcon } from "../../../lib/fileIcons";
@@ -10,7 +11,18 @@ export type CommitMove = "down" | "up" | "right" | "left" | "none";
 const MAX_PILLS = 4;
 
 /** A custom property value as shown in its cell: list values as pills, the rest formatted. */
-export function PropertyValueView({ value, type, config }: { value: unknown; type: ValueType; config: PropertyConfig }) {
+export function PropertyValueView({
+  value,
+  type,
+  config,
+  onPillMouseDown,
+}: {
+  value: unknown;
+  type: ValueType;
+  config: PropertyConfig;
+  /** Makes list pills draggable (the Tags property's pills drag onto other columns). */
+  onPillMouseDown?: (e: React.MouseEvent, value: string) => void;
+}) {
   if (type === "enum" || type === "array") {
     const items = listValues(value);
     if (items.length === 0) return null;
@@ -20,6 +32,7 @@ export function PropertyValueView({ value, type, config }: { value: unknown; typ
         {shown.map((item) => (
           <span
             key={item}
+            onMouseDown={onPillMouseDown && ((e) => onPillMouseDown(e, item))}
             className="inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15"
           >
             {item}
@@ -98,9 +111,9 @@ export function TextCellEditor({
 }
 
 /**
- * Value picker for Dropdown and Multi-select cells: the registered values with
+ * Value picker for Select and Multi-select cells: the registered values with
  * the cell's checked, a field that filters them, and "Add" for a new value.
- * A Dropdown commits on the first pick; a Multi-select stays open for more.
+ * A Select commits on the first pick; a Multi-select stays open for more.
  */
 export function ListCellEditor({
   anchor,

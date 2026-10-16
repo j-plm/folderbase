@@ -34,6 +34,7 @@ pub async fn add_location(
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
+    crate::commands::properties::ensure_tags_property(db.inner(), &library).await?;
 
     sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE location_id = ?")
         .bind(&location_id)
