@@ -2,7 +2,7 @@ import { listValues } from "./propertyTypes";
 
 // Dragging a tag pill onto a list column in the database view. A source tag is
 // a folder name (dropping it maps every folder with that name to the column);
-// a hand-added tag moves from the Tags property into the column.
+// a property's value moves from its column into the other (see move_property_value).
 
 /** How long a dragged tag must hover over a column before a release drops it there. */
 export const DROP_DWELL_MS = 500;
@@ -56,20 +56,4 @@ export function columnOffset(id: string, columns: { id: string; width: number }[
     left += col.width;
   }
   return left;
-}
-
-/**
- * A cell's value with `value` added: appended to a Multi-select (once), or
- * replacing a Select's value.
- */
-export function withListValue(current: unknown, value: string, multiple: boolean): unknown {
-  if (!multiple) return value;
-  const items = listValues(current);
-  return items.includes(value) ? items : [...items, value];
-}
-
-/** A Multi-select cell's value without `value`; null when nothing is left. */
-export function withoutListValue(current: unknown, value: string): string[] | null {
-  const rest = listValues(current).filter((v) => v !== value);
-  return rest.length > 0 ? rest : null;
 }

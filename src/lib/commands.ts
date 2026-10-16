@@ -148,6 +148,21 @@ export async function renamePropertyValue(propertyId: string, from: string, to: 
   return invoke<void>("rename_property_value", { propertyId, from, to });
 }
 
+/**
+ * Moves a list value from one property to another on every file in the location
+ * (remapping folders that give it that value). `overwrite` replaces a Select's
+ * existing values.
+ */
+export async function movePropertyValue(
+  locationId: string,
+  value: string,
+  from: string,
+  to: string,
+  overwrite = false
+): Promise<void> {
+  return invoke<void>("move_property_value", { locationId, value, from, to, overwrite });
+}
+
 export async function deletePropertyValue(valueId: string): Promise<void> {
   return invoke<void>("delete_property_value", { valueId });
 }

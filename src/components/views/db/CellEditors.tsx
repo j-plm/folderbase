@@ -1,6 +1,7 @@
 import type React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Popover from "../../shared/Popover";
+import { DELETE_REVEAL_MS } from "../../shared/MenuPopover";
 import { SymbolIcon } from "../../../lib/fileIcons";
 import { showContextMenu, type MenuEntry } from "../../../lib/nativeMenu";
 import { formatValue, listValues } from "../../../lib/propertyTypes";
@@ -160,10 +161,11 @@ export function ListCellEditor({
   const [added, setAdded] = useState<string[]>([]);
   const all = useMemo(
     () =>
-      [...new Set([...options, ...listValues(value), ...added])]
+      // Ticked values too: one just added isn't saved (or in `options`) until the picker closes
+      [...new Set([...options, ...listValues(value), ...added, ...chosen])]
         .filter((o) => !removed.includes(o))
         .sort((a, b) => a.localeCompare(b)),
-    [options, value, removed, added]
+    [options, value, removed, added, chosen]
   );
 
   async function deleteValue(item: string) {
@@ -222,9 +224,15 @@ export function ListCellEditor({
     setQuery("");
   }
 
+  /** A value typed in and added: listed (ticked) right away, and kept listed if unticked again. */
+  function addTyped() {
+    setAdded((a) => [...a, q]);
+    pick(q);
+  }
+
   function activate(index: number) {
     if (index < shown.length) pick(shown[index]);
-    else if (canAdd) pick(q);
+    else if (canAdd) addTyped();
   }
 
   return (
@@ -282,7 +290,7 @@ export function ListCellEditor({
             checked={false}
             highlighted={highlight === shown.length}
             icon="plus"
-            onClick={() => pick(q)}
+            onClick={addTyped}
           />
         )}
         {rowCount === 0 && <p className="px-2 py-1 text-neutral-500">Type to add a value</p>}
@@ -405,8 +413,6 @@ export function ValueListEditor({
   );
 }
 
-/** Hovering this long over a value reveals its delete button. */
-const DELETE_REVEAL_MS = 700;
 
 function OptionRow({
   label,

@@ -91,6 +91,7 @@ pub fn run() {
             commands::locations::include_folder,
             commands::locations::list_subfolders,
             commands::metadata::rename_property_value,
+            commands::path_mapping::move_property_value,
             commands::files::get_location_properties,
         ])
         .run(tauri::generate_context!())

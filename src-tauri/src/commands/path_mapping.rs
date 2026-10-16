@@ -426,6 +426,131 @@ pub async fn count_mapping_conflicts_impl(
     Ok(conflicting.len() as i64)
 }
 
+/// Moves a Select / Multi-select value from one property to another on every
+/// file in the location that has it. Folders whose mapping gives `from` this
+/// value are remapped to `to` (with any rename link), so refreshes keep it there.
+/// A Select target takes the value only where empty unless `overwrite`.
+#[tauri::command]
+pub async fn move_property_value(
+    location_id: String,
+    value: String,
+    from: String,
+    to: String,
+    overwrite: bool,
+    db: State<'_, DbPool>,
+) -> Result<(), String> {
+    move_property_value_impl(&location_id, &value, &from, &to, overwrite, db.inner()).await
+}
+
+pub async fn move_property_value_impl(
+    location_id: &str,
+    value: &str,
+    from: &str,
+    to: &str,
+    overwrite: bool,
+    pool: &DbPool,
+) -> Result<(), String> {
+    if from == to {
+        return Ok(());
+    }
+    let library = location_library(location_id, pool).await?;
+    let to_prop = mapping_property(location_id, to, pool).await?;
+    let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+    let from_prop = crate::commands::metadata::property_for(&mut conn, from, Some(&library)).await?;
+
+    // Folders mapped to `from` that give it this value: their names, and any renamed from
+    let mut folders = Vec::new();
+    let nodes: Vec<PathMappingNode> =
+        sqlx::query_as("SELECT * FROM path_mapping_nodes WHERE location_id = ? AND property_name = ?")
+            .bind(location_id)
+            .bind(from)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|e| e.to_string())?;
+    for node in nodes {
+        let name = folder_name_of(&node.folder_path);
+        let mapped = match &from_prop {
+            Some(p) => crate::commands::metadata::mapped_value(&mut conn, &p.property_id, &name).await?,
+            None => name.clone(),
+        };
+        if mapped == value {
+            folders.push((node.folder_path, name));
+        }
+    }
+    // The rename link goes with them ("01 Apollo" → "Apollo" in the new property too)
+    if let Some(p) = &from_prop {
+        for (_, name) in folders.iter().filter(|(_, name)| name != value) {
+            sqlx::query("INSERT OR REPLACE INTO value_aliases (property_id, source, value) VALUES (?, ?, ?)")
+                .bind(&to_prop.property_id)
+                .bind(name)
+                .bind(value)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+        drop(conn);
+        for (folder_path, _) in &folders {
+            label_folder(location_id, folder_path, to, overwrite, pool).await?;
+        }
+        let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+        for (_, name) in &folders {
+            sqlx::query("DELETE FROM value_aliases WHERE property_id = ? AND source = ?")
+                .bind(&p.property_id)
+                .bind(name)
+                .execute(&mut *conn)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    } else {
+        drop(conn);
+    }
+
+    // Every other file with the value (set by hand, or under folders mapped elsewhere)
+    let list = to_prop.value_type == "array";
+    let rows: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT file_id, metadata FROM files WHERE location_id = ?")
+            .bind(location_id)
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for (file_id, raw) in rows {
+        let Some(mut meta) = raw.and_then(|m| serde_json::from_str::<Map<String, Value>>(&m).ok()) else {
+            continue;
+        };
+        if !remove_mapped_value(&mut meta, from, value) {
+            continue;
+        }
+        add_mapped_value(&mut meta, to, value, list, overwrite);
+        save_metadata(&mut tx, &file_id, &meta).await?;
+    }
+    if list || to_prop.value_type == "enum" {
+        crate::commands::metadata::register_values(&mut tx, &to_prop.property_id, [value.to_string()]).await?;
+    }
+    // `from` stops offering the value once no file in the library has it
+    if let Some(p) = &from_prop {
+        let still_used: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM files WHERE library = ? AND EXISTS \
+             (SELECT 1 FROM json_each(metadata, ?) WHERE value = ?)",
+        )
+        .bind(&library)
+        .bind(crate::db::utils::json_path(from))
+        .bind(value)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+        if still_used == 0 {
+            sqlx::query("DELETE FROM property_values WHERE property_id = ? AND value = ?")
+                .bind(&p.property_id)
+                .bind(value)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
 async fn location_root(location_id: &str, pool: &DbPool) -> Result<String, String> {
     sqlx::query_scalar("SELECT root_path FROM locations WHERE location_id = ?")
         .bind(location_id)

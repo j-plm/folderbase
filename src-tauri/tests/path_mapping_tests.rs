@@ -4,7 +4,7 @@ use common::setup_db;
 use folderbase_lib::commands::metadata::{change_property_type_impl, rename_property_value_impl};
 use folderbase_lib::commands::path_mapping::{
     apply_mapping_to_files, clear_folder_label_impl, count_mapping_conflicts_impl,
-    folders_named_impl, set_folder_label_impl, set_folder_labels_impl,
+    folders_named_impl, move_property_value_impl, set_folder_label_impl, set_folder_labels_impl,
 };
 use folderbase_lib::commands::properties::{ensure_tags_property, get_property_values_impl, TAGS_CONFIG};
 use folderbase_lib::db::{run_migrations, DbPool};
@@ -445,4 +445,58 @@ async fn renaming_onto_an_existing_value_merges() {
     let aliases: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM value_aliases").fetch_one(&pool).await.unwrap();
     assert_eq!(aliases, 0);
     assert!(rename_property_value_impl(&pool, "p-Status", "Draft", "  ").await.is_err());
+}
+
+#[tokio::test]
+async fn moving_a_hand_set_value_between_properties() {
+    let pool = setup_db().await;
+    seed_files(&pool, &[("a", "x.pdf"), ("b", "y.pdf")]).await;
+    add_property(&pool, "Tags", "array").await;
+    add_property(&pool, "Client", "array").await;
+    sqlx::query("UPDATE files SET metadata = '{\"Tags\":[\"Acme\",\"urgent\"],\"Client\":[\"Beta\"]}' WHERE file_id = 'a'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    move_property_value_impl(LOC, "Acme", "Tags", "Client", false, &pool).await.unwrap();
+    assert_eq!(file(&pool, "a").await.0, json!({ "Tags": ["urgent"], "Client": ["Beta", "Acme"] }));
+    assert_eq!(file(&pool, "b").await.0, json!({}));
+}
+
+#[tokio::test]
+async fn moving_a_mapped_value_moves_its_folders_and_rename_link() {
+    let pool = setup_db().await;
+    seed_files(&pool, &[("a", "Work/01 Apollo/brief.pdf")]).await;
+    let folder = format!("{ROOT}/Work/01 Apollo");
+    set_folder_label_impl(LOC, &folder, "Client", &pool).await.unwrap();
+    rename_property_value_impl(&pool, &property_id(&pool, "Client").await, "01 Apollo", "Apollo")
+        .await
+        .unwrap();
+
+    move_property_value_impl(LOC, "Apollo", "Client", "Project", false, &pool).await.unwrap();
+    assert_eq!(file(&pool, "a").await.0, json!({ "Project": ["Apollo"] }));
+    let mapped: String = sqlx::query_scalar("SELECT property_name FROM path_mapping_nodes")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(mapped, "Project");
+
+    // A refresh keeps it in its new property, under its new name
+    apply_mapping_to_files(LOC, ROOT, &folder, "Project", &pool).await.unwrap();
+    assert_eq!(file(&pool, "a").await.0, json!({ "Project": ["Apollo"] }));
+}
+
+#[tokio::test]
+async fn moving_onto_a_select_keeps_its_value_unless_overwriting() {
+    let pool = setup_db().await;
+    seed_files(&pool, &[("a", "x.pdf")]).await;
+    add_property(&pool, "Tags", "array").await;
+    add_property(&pool, "Owner", "enum").await;
+    sqlx::query("UPDATE files SET metadata = '{\"Tags\":[\"Sam\"],\"Owner\":\"Alex\"}' WHERE file_id = 'a'")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    move_property_value_impl(LOC, "Sam", "Tags", "Owner", true, &pool).await.unwrap();
+    assert_eq!(file(&pool, "a").await.0, json!({ "Owner": "Sam" }));
 }

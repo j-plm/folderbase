@@ -4,8 +4,6 @@ import {
   columnOffset,
   countFoldersNamed,
   coveredValues,
-  withListValue,
-  withoutListValue,
 } from "./tagDrag";
 
 describe("countFoldersNamed", () => {
@@ -52,23 +50,5 @@ describe("column hit-testing", () => {
   it("gives a column's starting offset", () => {
     expect(columnOffset("prop:Client", cols)).toBe(100);
     expect(columnOffset("__add", cols)).toBe(180);
-  });
-});
-
-describe("list values", () => {
-  it("appends to a Multi-select once", () => {
-    expect(withListValue(["Beta"], "Acme", true)).toEqual(["Beta", "Acme"]);
-    expect(withListValue(["Acme"], "Acme", true)).toEqual(["Acme"]);
-    expect(withListValue(null, "Acme", true)).toEqual(["Acme"]);
-    expect(withListValue("Beta", "Acme", true)).toEqual(["Beta", "Acme"]);
-  });
-
-  it("replaces a Select", () => {
-    expect(withListValue("Beta", "Acme", false)).toBe("Acme");
-  });
-
-  it("removes a value, clearing an emptied cell", () => {
-    expect(withoutListValue(["Acme", "Beta"], "Acme")).toEqual(["Beta"]);
-    expect(withoutListValue(["Acme"], "Acme")).toBeNull();
   });
 });

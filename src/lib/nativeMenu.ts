@@ -2,10 +2,20 @@ import { CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu } from "@tau
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { menuMetrics } from "./platform";
 
+/**
+ * In the app's own menus (MenuPopover), an entry can offer deleting what it
+ * stands for: a bin on hover, then an inline confirmation. Native menus ignore it.
+ */
+export interface MenuDelete {
+  /** The confirmation shown in the row, e.g. "Delete “Client” from 12 files?". */
+  confirm: string;
+  action: () => void;
+}
+
 export type MenuEntry =
   /** `key` identifies an entry for `alignKey`. */
-  | { type: "check"; text: string; checked: boolean; enabled?: boolean; action: () => void; key?: string }
-  | { type: "item"; text: string; enabled?: boolean; action: () => void; key?: string }
+  | { type: "check"; text: string; checked: boolean; enabled?: boolean; action: () => void; key?: string; onDelete?: MenuDelete }
+  | { type: "item"; text: string; enabled?: boolean; action: () => void; key?: string; onDelete?: MenuDelete }
   | { type: "submenu"; text: string; items: MenuEntry[] }
   | { type: "separator" };
 

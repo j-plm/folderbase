@@ -16,6 +16,7 @@ import {
   getProperties,
   getPropertyValues,
   renameProperty,
+  movePropertyValue,
   renamePropertyValue,
   setEditMenuLabels,
   setFolderLabels,
@@ -56,8 +57,6 @@ import {
   columnOffset,
   countFoldersNamed,
   coveredValues,
-  withListValue,
-  withoutListValue,
 } from "../../lib/tagDrag";
 import { hasPrimaryModifier, isToggleSelect } from "../../lib/platform";
 import {
@@ -700,7 +699,18 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       checked: visibleProperties.includes(name),
       action: () => toggleProperty(name),
       key: PROP_PREFIX + name,
+      // Custom properties can be deleted from here (not values read from the file, nor the built-in Tags)
+      onDelete:
+        EXTRACTED_KEYS.has(name) || name === tagsProperty
+          ? undefined
+          : { confirm: deleteConfirmText(name), action: () => void deletePropertyNamed(name) },
     };
+  }
+
+  /** "Delete “Client” from 12 files?" */
+  function deleteConfirmText(name: string): string {
+    const count = rows.filter((f) => metaValue(f, name) != null).length;
+    return count > 0 ? `Delete “${name}” from ${count.toLocaleString()} file${count === 1 ? "" : "s"}?` : `Delete “${name}”?`;
   }
 
   function columnMenuEntries(): MenuEntry[] {
@@ -951,6 +961,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     if (!deleting) return;
     const name = deleting;
     setDeleting(null);
+    await deletePropertyNamed(name);
+  }
+
+  /** Deletes a property and its values from every file, recorded so it can be undone. */
+  async function deletePropertyNamed(name: string) {
     const prop = propByName.get(name);
     const type = prop?.value_type ?? "free_text";
     const config = prop?.config ?? null;
@@ -1413,7 +1428,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     const name = propName(columnId);
     const type = typeOf(name);
     if (type !== "enum" && type !== "array") return false;
-    return !(source === "tags" && name === tagsProperty);
+    // Anywhere but the column it came from
+    return source === "source" || name !== source.property;
   }
 
   function startTagDrag(e: React.MouseEvent, value: string, source: TagSource) {
@@ -1512,7 +1528,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     }
     try {
       if (source === "source") await mapTag(value, name, type);
-      else await moveTag(value, name, type);
+      else await moveValue(value, source.property, name, type);
     } catch (e) {
       setError(String(e));
     }
@@ -1555,34 +1571,41 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     });
   }
 
-  /** Hand-added tag → column: moves the value out of Tags and into the column on every file that has it. */
-  async function moveTag(value: string, name: string, type: ValueType) {
-    const tags = tagsProperty;
-    if (!tags) return;
-    const affected = rows.filter((f) => listValues(metaValue(f, tags)).includes(value));
+  /**
+   * Property value → another list column: moves it on every file that has it.
+   * A value that comes from mapped folders moves their mapping too (and its
+   * rename link), so refreshes keep it in its new property.
+   */
+  async function moveValue(value: string, from: string, to: string, type: ValueType) {
+    const affected = rows.filter((f) => listValues(metaValue(f, from)).includes(value));
     if (affected.length === 0) return;
-    const multiple = type === "array";
-    if (!multiple) {
+    let overwrite = false;
+    if (type === "enum") {
       const conflicts = affected.filter((f) => {
-        const current = metaValue(f, name);
+        const current = metaValue(f, to);
         return current != null && valueToText(current) !== value;
       }).length;
-      if (conflicts > 0 && !(await confirmOverwrite(name, conflicts))) return;
+      if (conflicts > 0) {
+        if (!(await confirmOverwrite(to, conflicts))) return;
+        overwrite = true;
+      }
     }
-    await writeEdits(
-      affected.flatMap((f) => [
-        { file_id: f.file_id, key: name, value: withListValue(metaValue(f, name), value, multiple) },
-        { file_id: f.file_id, key: tags, value: withoutListValue(metaValue(f, tags), value) },
-      ]),
-      "Move Tag"
-    );
-    // Gone from every file, so Tags stops offering it (undo registers it again)
-    const prop = propByName.get(tags);
-    const record = prop && registryValues[prop.property_id]?.find((v) => v.value === value);
-    if (record) {
-      await history.queue(() => deletePropertyValue(record.value_id)).catch(() => {});
-      setRegistryValues({});
-    }
+    // Both columns as they were, for undo
+    const before = [...snapshot(from), ...snapshot(to)];
+    const apply = async () => {
+      await movePropertyValue(locationId, value, from, to, overwrite);
+      await afterPropertyChange();
+    };
+    await history.queue(apply);
+    history.push({
+      label: "Move Value",
+      undo: async () => {
+        await movePropertyValue(locationId, value, to, from, true);
+        await restoreValues(before);
+        setHasMappings((await getMappingNodes(locationId)).length > 0);
+      },
+      redo: apply,
+    });
   }
 
   /** "Move “Acme” to Client · 14 files, 2 folders", shown once a hovered column will take the drop. */
@@ -1595,8 +1618,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       const folders = countFoldersNamed(rows.map((f) => f.relative_path), d.value);
       return `Move “${d.value}” to ${into} · ${count(files, "file")}, ${count(folders, "folder")}`;
     }
-    const tags = tagsProperty;
-    const files = tags ? rows.filter((f) => listValues(metaValue(f, tags)).includes(d.value)).length : 0;
+    const from = d.source.property;
+    const files = rows.filter((f) => listValues(metaValue(f, from)).includes(d.value)).length;
     return `Move “${d.value}” to ${into} · ${count(files, "file")}`;
   }
 
@@ -1699,7 +1722,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               value={value}
               type={type}
               config={config}
-              onPillMouseDown={name === tagsProperty ? (e, v) => startTagDrag(e, v, "tags") : undefined}
+              // Any Select / Multi-select value can be dragged onto another list column
+              onPillMouseDown={isList ? (e, v) => startTagDrag(e, v, { property: name }) : undefined}
               wrap={isList && wraps(name)}
             />
           )}
@@ -2373,7 +2397,8 @@ function TagPills({
   );
 }
 
-type TagSource = "source" | "tags";
+/** Where a dragged pill came from: Source Tags (a folder name), or a list property's values. */
+type TagSource = "source" | { property: string };
 
 /** A tag pill being dragged: where it is, and the column it will drop on once armed. */
 interface TagDrag {

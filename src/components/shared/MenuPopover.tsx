@@ -17,6 +17,8 @@ interface Props {
 const MARGIN = 6;
 /** Panel padding: a submenu's first row lines up with the row that opened it. */
 const PADDING = 5;
+/** Hovering this long over a deletable item reveals its bin (menus and list values alike). */
+export const DELETE_REVEAL_MS = 700;
 /** How long the pointer may be outside the menu before it closes. */
 const LEAVE_DELAY = 300;
 
@@ -43,8 +45,8 @@ export default function MenuPopover({ anchor, entries, onClose }: Props) {
         const top = r.bottom + MARGIN;
         setPos({ top, right: Math.max(MARGIN, window.innerWidth - r.right), maxHeight: window.innerHeight - top - MARGIN });
       } else {
-        const top = Math.min(anchor.y, window.innerHeight - MARGIN - 200);
-        setPos({ top, left: Math.min(anchor.x, window.innerWidth - MARGIN - 200), maxHeight: window.innerHeight - top - MARGIN });
+        // Placed hidden at the point first, then moved once its real size is known (below)
+        setPos({ top: anchor.y, left: anchor.x, visibility: "hidden" });
       }
     }
     place();
@@ -87,6 +89,19 @@ export default function MenuPopover({ anchor, entries, onClose }: Props) {
       window.removeEventListener("blur", onClose);
     };
   }, [anchor, onClose]);
+
+  // A menu opened at a point: like a native context menu, it opens to the left of
+  // the pointer when there's no room to the right, and moves up to stay in the window
+  useLayoutEffect(() => {
+    if (anchor instanceof HTMLElement || pos?.visibility !== "hidden") return;
+    const panel = [...panels.current][0];
+    if (!panel) return;
+    const { width, height } = panel.getBoundingClientRect();
+    const fitsRight = anchor.x + width <= window.innerWidth - MARGIN;
+    const left = fitsRight ? anchor.x : Math.max(MARGIN, anchor.x - width);
+    const top = Math.max(MARGIN, Math.min(anchor.y, window.innerHeight - MARGIN - height));
+    setPos({ top, left, maxHeight: window.innerHeight - top - MARGIN });
+  }, [anchor, pos]);
 
   if (!pos) return null;
 
@@ -147,6 +162,16 @@ function Panel({
               </button>
             );
           }
+          if (entry.onDelete) {
+            return (
+              <DeletableRow
+                key={entry.key ?? i}
+                entry={entry}
+                onEnter={() => setSub(null)}
+                onClose={onClose}
+              />
+            );
+          }
           const enabled = entry.enabled ?? true;
           return (
             <button
@@ -174,6 +199,95 @@ function Panel({
         <Submenu key={sub.index} entries={open.items} row={sub.row} panels={panels} onClose={onClose} />
       )}
     </>
+  );
+}
+
+/**
+ * A row whose item can be deleted: hovering a moment shows a bin at the far right;
+ * clicking it turns the row into a red confirmation, as deleting a list value
+ * does. Leaving the row cancels.
+ */
+function DeletableRow({
+  entry,
+  onEnter,
+  onClose,
+}: {
+  entry: Extract<MenuEntry, { type: "check" | "item" }>;
+  onEnter: () => void;
+  onClose: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  const enabled = entry.enabled ?? true;
+  const remove = entry.onDelete!;
+
+  function leave() {
+    window.clearTimeout(timer.current);
+    setRevealed(false);
+    setConfirming(false);
+  }
+
+  if (confirming) {
+    return (
+      <div
+        role="menuitem"
+        onMouseLeave={leave}
+        className="w-full h-6 flex items-center gap-1.5 pl-1.5 pr-0.5 rounded-[6px] bg-red-900"
+      >
+        <span className="flex-1 min-w-0 truncate text-red-300">{remove.confirm}</span>
+        <button
+          type="button"
+          onClick={() => {
+            leave();
+            remove.action();
+          }}
+          className="h-5 px-2 rounded-[5px] bg-red-500 text-white text-xs shrink-0"
+        >
+          Delete
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      role={entry.type === "check" ? "menuitemcheckbox" : "menuitem"}
+      aria-checked={entry.type === "check" ? entry.checked : undefined}
+      aria-disabled={!enabled}
+      onMouseEnter={() => {
+        onEnter();
+        window.clearTimeout(timer.current);
+        timer.current = window.setTimeout(() => setRevealed(true), DELETE_REVEAL_MS);
+      }}
+      onMouseLeave={leave}
+      onClick={() => {
+        if (!enabled) return;
+        entry.action();
+        if (entry.type === "item") onClose();
+      }}
+      className={`group w-full h-6 flex items-center gap-1 pl-1.5 pr-0.5 rounded-[6px] text-left whitespace-nowrap cursor-default ${
+        enabled ? "hover:bg-blue-500 hover:text-white" : "text-neutral-500"
+      }`}
+    >
+      <span className="w-4 flex justify-center shrink-0">
+        {entry.type === "check" && entry.checked && <SymbolIcon name="checkmark" size={11} fallback="✓" />}
+      </span>
+      <span className="flex-1 min-w-0 truncate pr-1">{entry.text}</span>
+      <button
+        type="button"
+        title="Delete"
+        aria-label={`Delete ${entry.text}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          setConfirming(true);
+        }}
+        className={`w-5 h-5 shrink-0 flex items-center justify-center rounded-[5px] hover:bg-white/20 ${revealed ? "" : "invisible"}`}
+      >
+        <SymbolIcon name="trash" size={11} fallback="✕" />
+      </button>
+    </div>
   );
 }
 
