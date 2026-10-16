@@ -1,4 +1,4 @@
-use crate::db::utils::{build_constraints_sql, is_core};
+use crate::db::utils::{build_constraints_sql, is_core, json_path_sql};
 use crate::db::DbPool;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -95,17 +95,17 @@ async fn enumerate_folders(
         // CTE unions scalar branch and array branch to handle both value shapes.
         format!(
             "WITH vals AS (\
-               SELECT file_id, json_extract(metadata, '$.{p}') AS val \
-               FROM files WHERE {w} AND json_type(metadata, '$.{p}') != 'array'\
+               SELECT file_id, json_extract(metadata, {p}) AS val \
+               FROM files WHERE {w} AND json_type(metadata, {p}) != 'array'\
                UNION \
                SELECT f.file_id, je.value AS val \
-               FROM files f, json_each(f.metadata, '$.{p}') je \
-               WHERE {w2} AND json_type(f.metadata, '$.{p}') = 'array'\
+               FROM files f, json_each(f.metadata, {p}) je \
+               WHERE {w2} AND json_type(f.metadata, {p}) = 'array'\
              ) \
              SELECT val, COUNT(DISTINCT file_id) AS file_count \
              FROM vals WHERE val IS NOT NULL \
              GROUP BY val ORDER BY val",
-            p = next_prop,
+            p = json_path_sql(next_prop),
             w = where_sql,
             w2 = where_sql,
         )

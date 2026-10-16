@@ -1,5 +1,5 @@
 use crate::commands::virtual_folder::{load_nodes_by_parent, FileRecord, NodeRow};
-use crate::db::utils::is_core;
+use crate::db::utils::{is_core, json_path_sql};
 use crate::db::DbPool;
 use crate::models::PropertyValue;
 use sqlx::Row;
@@ -77,8 +77,8 @@ pub async fn query_library_files_inner(
                 format!("{} {} NULLS LAST, file_id ASC", col, dir)
             } else {
                 format!(
-                    "json_extract(metadata, '$.{}') COLLATE NOCASE {} NULLS LAST, file_id ASC",
-                    col, dir
+                    "json_extract(metadata, {}) COLLATE NOCASE {} NULLS LAST, file_id ASC",
+                    json_path_sql(col), dir
                 )
             }
         }
@@ -112,10 +112,10 @@ fn build_filter_sql(pairs: &[(String, String)]) -> (String, Vec<String>) {
             bindings.push(val.clone());
         } else {
             clauses.push(format!(
-                "((json_type(metadata, '$.{p}') != 'array' AND json_extract(metadata, '$.{p}') = ?) \
-                 OR (json_type(metadata, '$.{p}') = 'array' AND EXISTS (\
-                   SELECT 1 FROM json_each(metadata, '$.{p}') je WHERE je.value = ?)))",
-                p = prop
+                "((json_type(metadata, {p}) != 'array' AND json_extract(metadata, {p}) = ?) \
+                 OR (json_type(metadata, {p}) = 'array' AND EXISTS (\
+                   SELECT 1 FROM json_each(metadata, {p}) je WHERE je.value = ?)))",
+                p = json_path_sql(prop)
             ));
             bindings.push(val.clone());
             bindings.push(val.clone());
@@ -344,7 +344,7 @@ fn is_set_sql(prop: &str) -> String {
     if is_core(prop) {
         format!("{} IS NOT NULL", prop)
     } else {
-        format!("json_extract(metadata, '$.{}') IS NOT NULL", prop)
+        format!("json_extract(metadata, {}) IS NOT NULL", json_path_sql(prop))
     }
 }
 
@@ -352,7 +352,7 @@ fn is_not_set_sql(prop: &str) -> String {
     if is_core(prop) {
         format!("{} IS NULL", prop)
     } else {
-        format!("json_extract(metadata, '$.{}') IS NULL", prop)
+        format!("json_extract(metadata, {}) IS NULL", json_path_sql(prop))
     }
 }
 
@@ -367,10 +367,10 @@ fn push_match_condition(
         bindings.push(val.to_string());
     } else {
         conditions.push(format!(
-            "((json_type(metadata, '$.{p}') != 'array' AND json_extract(metadata, '$.{p}') = ?) \
-             OR (json_type(metadata, '$.{p}') = 'array' AND EXISTS (\
-               SELECT 1 FROM json_each(metadata, '$.{p}') je WHERE je.value = ?)))",
-            p = prop
+            "((json_type(metadata, {p}) != 'array' AND json_extract(metadata, {p}) = ?) \
+             OR (json_type(metadata, {p}) = 'array' AND EXISTS (\
+               SELECT 1 FROM json_each(metadata, {p}) je WHERE je.value = ?)))",
+            p = json_path_sql(prop)
         ));
         bindings.push(val.to_string());
         bindings.push(val.to_string());

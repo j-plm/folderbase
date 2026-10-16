@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_SELECTION, clickSelect, moveSelection, openTargets, selectAll } from "./selection";
+import { EMPTY_SELECTION, clickSelect, gridNeighbor, moveSelection, moveSelectionTo, openTargets, selectAll } from "./selection";
 
 const order = ["a", "b", "c", "d", "e"];
 const plain = { toggle: false, range: false };
@@ -75,5 +75,49 @@ describe("openTargets", () => {
   it("opens just the item when it is outside the selection", () => {
     const s = clickSelect(EMPTY_SELECTION, order, "a", plain);
     expect(openTargets(s, order, "c")).toEqual(["c"]);
+  });
+});
+
+describe("gridNeighbor", () => {
+  // Group 1: a b c / d e      Group 2 (below a header): f g
+  const items = [
+    { id: "a", x: 50, y: 50 },
+    { id: "b", x: 160, y: 50 },
+    { id: "c", x: 270, y: 50 },
+    { id: "d", x: 50, y: 180 },
+    { id: "e", x: 160, y: 180 },
+    { id: "f", x: 50, y: 360 },
+    { id: "g", x: 160, y: 360 },
+  ];
+
+  it("left and right stay in the row, stopping at its ends", () => {
+    expect(gridNeighbor(items, "b", "ArrowRight")).toBe("c");
+    expect(gridNeighbor(items, "b", "ArrowLeft")).toBe("a");
+    expect(gridNeighbor(items, "c", "ArrowRight")).toBeNull();
+    expect(gridNeighbor(items, "d", "ArrowLeft")).toBeNull();
+  });
+
+  it("up and down go to the nearest row, closest column", () => {
+    expect(gridNeighbor(items, "b", "ArrowDown")).toBe("e");
+    expect(gridNeighbor(items, "e", "ArrowUp")).toBe("b");
+    // c has nothing directly below: the nearest item in the next row
+    expect(gridNeighbor(items, "c", "ArrowDown")).toBe("e");
+  });
+
+  it("crosses into the next group and stops at the edges", () => {
+    expect(gridNeighbor(items, "e", "ArrowDown")).toBe("g");
+    expect(gridNeighbor(items, "g", "ArrowDown")).toBeNull();
+    expect(gridNeighbor(items, "a", "ArrowUp")).toBeNull();
+  });
+});
+
+describe("moveSelectionTo", () => {
+  const order = ["a", "b", "c", "d", "e"];
+  it("selects the target, or with Shift the reading-order range from the anchor", () => {
+    const one = moveSelectionTo(EMPTY_SELECTION, order, "b", false);
+    expect(one.state.selected).toEqual(["b"]);
+    const range = moveSelectionTo(one.state, order, "e", true);
+    expect(range.state.selected).toEqual(["b", "c", "d", "e"]);
+    expect(range.state.anchor).toBe("b");
   });
 });

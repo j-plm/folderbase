@@ -14,6 +14,7 @@ import {
   getPropertyValues,
   ingestDirectory,
   renameProperty,
+  setEditMenuLabels,
   setMetadataCells,
   type CellEdit,
   updatePropertyType,
@@ -36,6 +37,7 @@ import { useColumnLayout } from "../../hooks/useColumnLayout";
 import TableHeader from "./shared/TableHeader";
 import { useSelection } from "../../hooks/useSelection";
 import { useUndo } from "../../hooks/useUndo";
+import { setUndoTarget } from "../../lib/editMenu";
 import MenuPopover from "../shared/MenuPopover";
 import Dialog, { DialogButton } from "../shared/Dialog";
 import { hasPrimaryModifier, isToggleSelect } from "../../lib/platform";
@@ -261,7 +263,15 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   // Edits show at once; the files reload once the writes finish
   const [patches, setPatches] = useState<Map<string, Record<string, unknown>>>(() => new Map());
   const pendingWrites = useRef(0);
-  const history = useUndo(locationId, (e) => setError(String(e)));
+  const history = useUndo(
+    locationId,
+    (e) => setError(String(e)),
+    (h) =>
+      setEditMenuLabels(
+        h.past[h.past.length - 1]?.label ?? null,
+        h.future[h.future.length - 1]?.label ?? null
+      ).catch(() => {})
+  );
 
   // Reset view state and load column prefs when switching locations
   useEffect(() => {
@@ -1041,26 +1051,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     }
   }
 
-  // Undo / Redo: Cmd-Z and Shift-Cmd-Z (Ctrl-Z / Ctrl-Y elsewhere). Text fields keep their own undo.
+  // Edit ▸ Undo / Redo (and their shortcuts) reach this view's history while it's shown
   const { undo, redo } = history;
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (!hasPrimaryModifier(e) || e.altKey) return;
-      const key = e.key.toLowerCase();
-      const isRedo = (key === "z" && e.shiftKey) || (key === "y" && !e.shiftKey);
-      if (key !== "z" && !isRedo) return;
-      const target = e.target as HTMLElement | null;
-      const typing =
-        target !== sinkRef.current &&
-        (target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable);
-      if (typing) return;
-      e.preventDefault();
-      if (isRedo) redo();
-      else undo();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [undo, redo]);
+  useEffect(() => setUndoTarget({ undo, redo }), [undo, redo]);
+  useEffect(() => () => void setEditMenuLabels(null, null).catch(() => {}), []);
 
   // ── Fill handle ───────────────────────────────────────────────────────────
 
@@ -1584,6 +1578,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
       <textarea
         ref={sinkRef}
+        data-edit-sink
         aria-hidden
         tabIndex={-1}
         onKeyDown={onTableKeyDown}

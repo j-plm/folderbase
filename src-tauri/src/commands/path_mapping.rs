@@ -311,7 +311,7 @@ async fn unapply_mapping_from_files(
         .last()
         .unwrap_or("")
         .to_string();
-    let prop_key = format!("$.{}", property_name);
+    let prop_key = crate::db::utils::json_path(&property_name);
 
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
 
@@ -370,7 +370,7 @@ pub async fn apply_mapping_to_files(
         .last()
         .unwrap_or("")
         .to_string();
-    let prop_key = format!("$.{}", property_name);
+    let prop_key = crate::db::utils::json_path(&property_name);
 
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
 

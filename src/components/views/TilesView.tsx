@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { FileIcon, isImageMime } from "../../lib/fileIcons";
 import { useSelection } from "../../hooks/useSelection";
+import { gridNeighbor, type ArrowKey } from "../../lib/selection";
 import type { FileRecord } from "../../types";
 import { fileName, groupFiles } from "../../lib/arrange";
 import { showContextMenu } from "../../lib/nativeMenu";
@@ -27,7 +28,27 @@ export default function TilesView({ files }: Props) {
     [files, arrangementCtx.arrangement]
   );
   const shown = useMemo(() => groups.flatMap((g) => g.files), [groups]);
-  const selection = useSelection(shown);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const tileElement = useCallback(
+    (id: string) => containerRef.current?.querySelector<HTMLElement>(`[data-file-id="${CSS.escape(id)}"]`) ?? null,
+    []
+  );
+
+  // Arrow keys move by where tiles sit on screen, so rows follow the window width and groups
+  const gridNavigate = useCallback((fromId: string, key: ArrowKey) => {
+    const tiles = containerRef.current?.querySelectorAll<HTMLElement>("[data-file-id]") ?? [];
+    const boxes = Array.from(tiles, (el) => {
+      const r = el.getBoundingClientRect();
+      return { id: el.dataset.fileId!, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    return gridNeighbor(boxes, fromId, key);
+  }, []);
+
+  const selection = useSelection(shown, {
+    gridNavigate,
+    onReveal: (index) => tileElement(shown[index]?.file_id ?? "")?.scrollIntoView({ block: "nearest" }),
+  });
 
   if (files.length === 0) {
     return (
@@ -39,6 +60,7 @@ export default function TilesView({ files }: Props) {
 
   return (
     <div
+      ref={containerRef}
       className="flex-1 overflow-auto outline-none"
       tabIndex={0}
       onKeyDown={selection.onKeyDown}
@@ -69,6 +91,7 @@ export default function TilesView({ files }: Props) {
               return (
                 <div
                   key={file.file_id}
+                  data-file-id={file.file_id}
                   onClick={(e) => selection.onItemClick(e, file.file_id)}
                   onDoubleClick={(e) => selection.onItemDoubleClick(e, file.file_id)}
                   className="flex flex-col items-center gap-1 cursor-default select-none"

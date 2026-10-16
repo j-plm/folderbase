@@ -77,10 +77,58 @@ export function moveSelection(
     from === -1
       ? order[delta > 0 ? 0 : order.length - 1]
       : order[Math.max(0, Math.min(order.length - 1, from + delta))];
+  return moveSelectionTo(state, order, next, extend);
+}
+
+/** The keyboard moved to `next`: it becomes the selection, or with Shift the range from the anchor to it. */
+export function moveSelectionTo(
+  state: SelectionState,
+  order: string[],
+  next: string,
+  extend: boolean
+): { state: SelectionState; cursor: string } {
   if (extend && state.anchor) {
     return { state: clickSelect(state, order, next, { toggle: false, range: true }), cursor: next };
   }
   return { state: { selected: [next], anchor: next, base: [next] }, cursor: next };
+}
+
+export type ArrowKey = "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight";
+
+export interface ItemBox {
+  id: string;
+  /** Centre of the item on screen. */
+  x: number;
+  y: number;
+}
+
+/**
+ * The item an arrow key moves to in an icon grid, by position as Finder does:
+ * Left / Right go to the neighbour in the same row (stopping at the row's ends);
+ * Up / Down go to the nearest row above / below (across group headers) and the
+ * item there closest horizontally. Null when there's nothing that way.
+ */
+export function gridNeighbor(items: ItemBox[], fromId: string, key: ArrowKey): string | null {
+  const from = items.find((i) => i.id === fromId);
+  if (!from) return null;
+  // Items whose centres are this close vertically share a row
+  const ROW_TOLERANCE = 4;
+  const sameRow = (i: ItemBox) => Math.abs(i.y - from.y) <= ROW_TOLERANCE;
+
+  if (key === "ArrowLeft" || key === "ArrowRight") {
+    const dir = key === "ArrowRight" ? 1 : -1;
+    const candidates = items.filter((i) => i.id !== fromId && sameRow(i) && (i.x - from.x) * dir > 0);
+    candidates.sort((a, b) => Math.abs(a.x - from.x) - Math.abs(b.x - from.x));
+    return candidates[0]?.id ?? null;
+  }
+
+  const dir = key === "ArrowDown" ? 1 : -1;
+  const ahead = items.filter((i) => (i.y - from.y) * dir > ROW_TOLERANCE);
+  if (ahead.length === 0) return null;
+  const rowY = ahead.reduce((best, i) => (Math.abs(i.y - from.y) < Math.abs(best - from.y) ? i.y : best), ahead[0].y);
+  const row = ahead.filter((i) => Math.abs(i.y - rowY) <= ROW_TOLERANCE);
+  row.sort((a, b) => Math.abs(a.x - from.x) - Math.abs(b.x - from.x));
+  return row[0].id;
 }
 
 export function selectAll(order: string[]): SelectionState {

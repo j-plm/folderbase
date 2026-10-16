@@ -318,3 +318,43 @@ async fn test_path_deeper_than_tree_returns_err() {
     assert!(result.is_err(), "expected Err for path deeper than tree");
     assert!(result.unwrap_err().contains("deeper"));
 }
+
+#[tokio::test]
+async fn test_property_names_with_spaces_and_punctuation() {
+    let pool = setup_db().await;
+    // A space, an apostrophe and a dot: each broke the old unquoted '$.name' paths
+    let prop_date = insert_property(&pool, "shoot date", "enum").await;
+    let prop_client = insert_property(&pool, "client's name", "array").await;
+    let prop_ver = insert_property(&pool, "v1.2", "enum").await;
+    let view_id = insert_view(&pool, "Awkward names").await;
+    let n1 = insert_view_node(&pool, &view_id, None, &prop_date, None, 0).await;
+    let n2 = insert_view_node(&pool, &view_id, Some(&n1), &prop_client, None, 0).await;
+    insert_view_node(&pool, &view_id, Some(&n2), &prop_ver, None, 0).await;
+
+    insert_file(
+        &pool,
+        "/a/1.jpg",
+        None,
+        None,
+        r#"{"shoot date":"2024-03-01","client's name":["Acme","Globex"],"v1.2":"final"}"#,
+    )
+    .await;
+    insert_file(&pool, "/a/2.jpg", None, None, r#"{"shoot date":"2024-04-01"}"#).await;
+
+    let root = query_virtual_folder_inner(&pool, &view_id, &[]).await.unwrap();
+    let QueryResult::Folders(dates) = root else { panic!("expected Folders") };
+    assert_eq!(dates.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["2024-03-01", "2024-04-01"]);
+
+    let path = vec!["2024-03-01".to_string()];
+    let QueryResult::Folders(clients) = query_virtual_folder_inner(&pool, &view_id, &path).await.unwrap() else {
+        panic!("expected Folders")
+    };
+    assert_eq!(clients.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Acme", "Globex"]);
+
+    let path = vec!["2024-03-01".to_string(), "Globex".to_string()];
+    let QueryResult::Folders(versions) = query_virtual_folder_inner(&pool, &view_id, &path).await.unwrap() else {
+        panic!("expected Folders")
+    };
+    assert_eq!(versions.len(), 1);
+    assert_eq!(versions[0].name, "final");
+}

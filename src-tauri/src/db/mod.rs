@@ -202,11 +202,11 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
 
         // Strip the key from every existing metadata blob.
         sqlx::query(
-            "UPDATE files SET metadata = json_remove(metadata, '$.' || ?) \
-             WHERE json_extract(metadata, '$.' || ?) IS NOT NULL",
+            "UPDATE files SET metadata = json_remove(metadata, ?) \
+             WHERE json_extract(metadata, ?) IS NOT NULL",
         )
-        .bind(name)
-        .bind(name)
+        .bind(utils::json_path(name))
+        .bind(utils::json_path(name))
         .execute(pool)
         .await?;
     }
@@ -238,7 +238,7 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
             if folder_name.is_empty() {
                 continue;
             }
-            let prop_key = format!("$.{}", property_name);
+            let prop_key = crate::db::utils::json_path(&property_name);
 
             sqlx::query(
                 "UPDATE files \
@@ -310,12 +310,12 @@ async fn prune_orphan_mapping_keys(pool: &DbPool) -> Result<(), sqlx::Error> {
             "SELECT file_id, metadata FROM files \
              WHERE location_id = ? \
              AND (relative_path = ? OR relative_path LIKE ? || '/%') \
-             AND json_extract(metadata, '$.' || ?) = ?",
+             AND json_extract(metadata, ?) = ?",
         )
         .bind(&location_id)
         .bind(&folder_rel)
         .bind(&folder_rel)
-        .bind(&property_name)
+        .bind(utils::json_path(&property_name))
         .bind(&folder_name)
         .fetch_all(pool)
         .await?;

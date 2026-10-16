@@ -6,6 +6,17 @@ pub fn is_core(prop: &str) -> bool {
     CORE_COLS.contains(&prop)
 }
 
+/// SQLite JSON path for a top-level metadata key, quoted so names with spaces,
+/// dots or other punctuation ("shoot date", "v1.2") address the right key.
+pub fn json_path(key: &str) -> String {
+    format!("$.\"{}\"", key.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// `json_path(key)` as an SQL string literal, for paths written into the query text.
+pub fn json_path_sql(key: &str) -> String {
+    format!("'{}'", json_path(key).replace('\'', "''"))
+}
+
 /// Returns (WHERE clause string, ordered bind values).
 /// Caller must bind all values in order to a sqlx query.
 pub fn build_constraints_sql(constraints: &[(String, String)]) -> (String, Vec<String>) {
@@ -20,10 +31,10 @@ pub fn build_constraints_sql(constraints: &[(String, String)]) -> (String, Vec<S
             bindings.push(val.clone());
         } else {
             clauses.push(format!(
-                "((json_type(metadata, '$.{p}') != 'array' AND json_extract(metadata, '$.{p}') = ?) \
-                 OR (json_type(metadata, '$.{p}') = 'array' AND EXISTS (\
-                   SELECT 1 FROM json_each(metadata, '$.{p}') je WHERE je.value = ?)))",
-                p = prop
+                "((json_type(metadata, {p}) != 'array' AND json_extract(metadata, {p}) = ?) \
+                 OR (json_type(metadata, {p}) = 'array' AND EXISTS (\
+                   SELECT 1 FROM json_each(metadata, {p}) je WHERE je.value = ?)))",
+                p = json_path_sql(prop)
             ));
             bindings.push(val.clone());
             bindings.push(val.clone());
@@ -55,6 +66,12 @@ pub fn infer_value_type(values: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn json_path_sql_quotes_for_json_and_sql() {
+        assert_eq!(json_path("shoot date"), "$.\"shoot date\"");
+        assert_eq!(json_path_sql("client's"), "'$.\"client''s\"'");
+    }
+
     use super::*;
 
     #[test]

@@ -19,10 +19,7 @@ pub struct CellEdit {
     pub value: Value,
 }
 
-/// SQLite JSON path for a top-level key. Quoted, so keys with spaces or dots work.
-pub fn json_path(key: &str) -> String {
-    format!("$.\"{}\"", key.replace('\\', "\\\\").replace('"', "\\\""))
-}
+pub use crate::db::utils::json_path;
 
 /// Converts a stored value to `to_type` without losing what the user entered:
 /// lists join into text, text that reads as a number becomes one, and anything

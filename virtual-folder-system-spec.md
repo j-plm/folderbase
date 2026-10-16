@@ -610,7 +610,7 @@ Every change made in the database view can be undone with Cmd-Z and redone with 
 - Adding, renaming and deleting a property, and changing its type. Undoing a type change restores every file's original value, even where the conversion merged values (a list joined into text)
 - Deleting a Dropdown or Multi-select value. Undo re-registers the value and puts it back on every file that had it
 
-Changes and their reversals are applied strictly in order. While a text field has focus, Cmd-Z undoes typing in that field instead. History covers the current location's database view and is cleared when another location is opened. View settings (column visibility, order, widths, filters) are preferences, not changes, and are not part of the history.
+Edit ▸ Undo and Redo in the menu bar do the same, and name the change they will act on ("Undo Paste", "Redo Rename Property"), as native apps do. Changes and their reversals are applied strictly in order. While a text field has focus, Undo (menu or Cmd-Z) undoes typing in that field instead. History covers the current location's database view and is cleared when another location is opened. View settings (column visibility, order, widths, filters) are preferences, not changes, and are not part of the history.
 
 #### Frozen Name column
 

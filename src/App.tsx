@@ -3,11 +3,13 @@ import Welcome from "./components/shell/Welcome";
 import AppShell from "./components/shell/AppShell";
 import { NavigationProvider } from "./contexts/NavigationContext";
 import { getLibraries } from "./lib/commands";
+import { useEditMenu } from "./hooks/useEditMenu";
 
 type AppState = "loading" | "welcome" | "main";
 
 export default function App() {
   const [appState, setAppState] = useState<AppState>("loading");
+  useEditMenu();
 
   useEffect(() => {
     getLibraries()

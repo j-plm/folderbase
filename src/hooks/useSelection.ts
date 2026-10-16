@@ -7,8 +7,10 @@ import {
   EMPTY_SELECTION,
   clickSelect,
   moveSelection,
+  moveSelectionTo,
   openTargets,
   selectAll,
+  type ArrowKey,
   type SelectionState,
 } from "../lib/selection";
 import type { FileRecord } from "../types";
@@ -18,6 +20,11 @@ interface Options {
   arrowKeys?: boolean;
   /** Called with a display index when the keyboard moves the selection, to scroll it into view. */
   onReveal?: (index: number) => void;
+  /**
+   * Grids: all four arrows move, to the item this returns for the key (null:
+   * nothing that way). Shift extends the selection in display order.
+   */
+  gridNavigate?: (fromId: string, key: ArrowKey) => string | null;
 }
 
 /**
@@ -25,7 +32,7 @@ interface Options {
  * Cmd/Ctrl-click toggles, Shift-click selects a range, Cmd-A selects all.
  * Double-click or Cmd-O (Enter off macOS) opens the selection together.
  */
-export function useSelection(files: FileRecord[], { arrowKeys = false, onReveal }: Options = {}) {
+export function useSelection(files: FileRecord[], { arrowKeys = false, onReveal, gridNavigate }: Options = {}) {
   const [state, setState] = useState<SelectionState>(EMPTY_SELECTION);
   const cursor = useRef<string | null>(null);
   const order = useMemo(() => files.map((f) => f.file_id), [files]);
@@ -91,6 +98,26 @@ export function useSelection(files: FileRecord[], { arrowKeys = false, onReveal 
     if (hasPrimaryModifier(e) && e.key === "a") {
       e.preventDefault();
       setState(selectAll(order));
+      return;
+    }
+    if (
+      gridNavigate &&
+      (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "ArrowLeft" || e.key === "ArrowRight") &&
+      !e.metaKey &&
+      !e.ctrlKey
+    ) {
+      e.preventDefault();
+      if (order.length === 0) return;
+      const from = cursor.current && order.includes(cursor.current) ? cursor.current : null;
+      // Nothing selected yet: start from the first item (or last, going up/left)
+      const next = from
+        ? gridNavigate(from, e.key)
+        : order[e.key === "ArrowDown" || e.key === "ArrowRight" ? 0 : order.length - 1];
+      if (!next) return;
+      const moved = moveSelectionTo(state, order, next, e.shiftKey);
+      setState(moved.state);
+      cursor.current = moved.cursor;
+      onReveal?.(order.indexOf(moved.cursor));
       return;
     }
     if (arrowKeys && (e.key === "ArrowDown" || e.key === "ArrowUp") && !e.metaKey && !e.ctrlKey) {

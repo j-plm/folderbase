@@ -58,9 +58,9 @@ pub async fn update_file_metadata(
 ) -> Result<(), String> {
     let value_str = serde_json::to_string(&value).map_err(|e| e.to_string())?;
     sqlx::query(
-        "UPDATE files SET metadata = json_set(COALESCE(metadata, '{}'), '$.' || ?, json(?)) WHERE file_id = ?",
+        "UPDATE files SET metadata = json_set(COALESCE(metadata, '{}'), ?, json(?)) WHERE file_id = ?",
     )
-    .bind(&key)
+    .bind(crate::db::utils::json_path(&key))
     .bind(&value_str)
     .bind(&file_id)
     .execute(db.inner())

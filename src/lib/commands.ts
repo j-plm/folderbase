@@ -374,3 +374,8 @@ export async function getLocationProperties(locationId: string): Promise<string[
 export async function getNativeIcon(kind: string, size: number): Promise<string> {
   return invoke<string>("get_native_icon", { kind, size });
 }
+
+/** Names the changes Edit ▸ Undo / Redo act on ("Undo Paste"); null for plain "Undo". */
+export async function setEditMenuLabels(undo: string | null, redo: string | null): Promise<void> {
+  return invoke<void>("set_edit_menu_labels", { undo, redo });
+}

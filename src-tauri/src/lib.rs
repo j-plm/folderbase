@@ -1,6 +1,7 @@
 pub mod appearance;
 pub mod commands;
 pub mod db;
+pub mod edit_menu;
 pub mod models;
 
 use db::run_migrations;
@@ -27,6 +28,11 @@ pub fn run() {
 
             app.manage(pool);
             appearance::setup(app)?;
+            // macOS routes Cmd-Z through the menu bar; elsewhere the frontend's shortcuts handle it
+            #[cfg(target_os = "macos")]
+            if let Some(menu) = app.menu() {
+                edit_menu::install(app, &menu)?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -57,6 +63,7 @@ pub fn run() {
             commands::properties::delete_property,
             commands::metadata::rename_property,
             commands::metadata::set_metadata_cells,
+            commands::edit_menu::set_edit_menu_labels,
             commands::views::get_views,
             commands::views::get_view_nodes,
             commands::views::create_view,
