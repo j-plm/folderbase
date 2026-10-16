@@ -6,7 +6,7 @@ let bodyFamily: string | undefined;
 /** Widths already measured, per font. Labels are re-measured on every render. */
 const widths = new Map<string, Map<string, number>>();
 /** Bound on cached widths per font, so long sessions don't grow without limit. */
-const MAX_CACHED = 5000;
+const MAX_CACHED = 50000;
 
 /** CSS font shorthand in the app's UI font family. */
 export function uiFont(sizePx: number, weight = 400, family?: string): string {

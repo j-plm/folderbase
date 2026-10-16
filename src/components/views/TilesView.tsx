@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useRef } from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
-import { FileIcon, isImageMime } from "../../lib/fileIcons";
+import Thumbnail from "./shared/Thumbnail";
 import { useSelection } from "../../hooks/useSelection";
 import { gridNeighbor, type ArrowKey } from "../../lib/selection";
 import type { FileRecord } from "../../types";
@@ -28,6 +27,11 @@ export default function TilesView({ files }: Props) {
     [files, arrangementCtx.arrangement]
   );
   const shown = useMemo(() => groups.flatMap((g) => g.files), [groups]);
+  // Laid out once per file list, not on every selection click
+  const labels = useMemo(() => {
+    const measure = (t: string) => measureText(t, labelFont);
+    return new Map(shown.map((f) => [f.file_id, twoLineLabel(fileName(f.file_path), LABEL_WIDTH, measure)]));
+  }, [shown, labelFont]);
   const containerRef = useRef<HTMLDivElement>(null);
 
   const tileElement = useCallback(
@@ -102,24 +106,10 @@ export default function TilesView({ files }: Props) {
                       isSelected ? "bg-neutral-700/70" : ""
                     }`}
                   >
-                    {isImageMime(file.file_type) ? (
-                      <img
-                        src={convertFileSrc(file.file_path)}
-                        alt={name}
-                        loading="lazy"
-                        draggable={false}
-                        className="max-w-16 max-h-16 object-contain shadow-sm"
-                        onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).style.display =
-                            "none";
-                        }}
-                      />
-                    ) : (
-                      <FileIcon path={file.file_path} mimeType={file.file_type} size={64} />
-                    )}
+                    <Thumbnail path={file.file_path} mimeType={file.file_type} size={64} />
                   </div>
                   <TileLabel
-                    lines={twoLineLabel(name, LABEL_WIDTH, (t) => measureText(t, labelFont))}
+                    lines={labels.get(file.file_id) ?? [name]}
                     selected={isSelected}
                     title={name}
                     measure={(t) => measureText(t, labelFont)}

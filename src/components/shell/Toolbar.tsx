@@ -1,5 +1,6 @@
 import { useNavigation } from "../../contexts/NavigationContext";
 import Breadcrumb from "./Breadcrumb";
+import { selectionLabel, useSelectionStatus } from "../../lib/selectionStatus";
 import OverflowBar from "./OverflowBar";
 import { arrangementMenu, useArrangement } from "../../contexts/ArrangementContext";
 import { GROUP_OPTIONS, SORT_OPTIONS } from "../../lib/arrange";
@@ -18,6 +19,7 @@ export default function Toolbar() {
   const { viewMode, setViewMode } = useNavigation();
   const arrangementCtx = useArrangement();
   const { arrangement, setGroupBy, setSortKey } = arrangementCtx;
+  const selectedLabel = selectionLabel(useSelectionStatus());
 
   // Finder's group button: grouping options, then Sort By.
   const groupButtonMenu: MenuEntry[] = [
@@ -49,8 +51,13 @@ export default function Toolbar() {
       style={{ paddingLeft: "calc(var(--sidebar-inset) + 16px)" }}
       className="flex items-center gap-3 px-4 h-[52px] border-b border-neutral-700/60 bg-neutral-900 shrink-0"
     >
-      <div data-tauri-drag-region className="flex-1 min-w-[80px]">
+      <div data-tauri-drag-region className="flex-1 min-w-[80px] flex items-baseline gap-2.5">
         <Breadcrumb viewName="Folderbase" />
+        {selectedLabel && (
+          <span data-tauri-drag-region className="shrink-0 text-xs text-neutral-500 whitespace-nowrap tabular-nums">
+            {selectedLabel}
+          </span>
+        )}
       </div>
 
       <OverflowBar

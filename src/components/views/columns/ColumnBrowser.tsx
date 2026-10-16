@@ -27,6 +27,7 @@ import {
 } from "../../../lib/columnBrowser";
 import { middleTruncate } from "../../../lib/tileLabel";
 import { measureText, uiFont } from "../../../lib/textMeasure";
+import { useReportSelection } from "../../../lib/selectionStatus";
 import { showContextMenu } from "../../../lib/nativeMenu";
 import { arrangementMenu, useArrangement } from "../../../contexts/ArrangementContext";
 
@@ -90,6 +91,8 @@ export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
     ? selected[selected.length - 1]
     : null;
   const activeOrder = (ordered[activeDepth] ?? []).map((n) => n.id);
+  // Finder counts the selection within the column it's in
+  useReportSelection(multi ? sel.selected.length : path.length > 0 ? 1 : 0, activeOrder.length);
 
   function isSelectedAt(depth: number, id: string | undefined): boolean {
     if (id == null) return false;

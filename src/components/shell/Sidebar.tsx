@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import type React from "react";
 import { useNavigation } from "../../contexts/NavigationContext";
-import { getLocations, clearDatabase, deleteLocation } from "../../lib/commands";
+import { listen } from "@tauri-apps/api/event";
+import { getLocations, clearDatabase, deleteLocation, ingestDirectory } from "../../lib/commands";
 import type { Location } from "../../lib/commands";
 import MapLocationModal from "./MapLocationModal";
 import { SymbolIcon } from "../../lib/fileIcons";
+import { showContextMenu } from "../../lib/nativeMenu";
 
 const MIN_WIDTH = 150;
 const MAX_WIDTH = 400;
@@ -51,6 +53,59 @@ export default function Sidebar() {
   const [clearing, setClearing] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  /** Locations being indexed (a refresh, or a newly mapped location). */
+  const [refreshing, setRefreshing] = useState<Set<string>>(() => new Set());
+  const [refreshError, setRefreshError] = useState<{ id: string; message: string } | null>(null);
+
+  function setRefreshingFor(id: string, on: boolean) {
+    setRefreshing((prev) => {
+      if (prev.has(id) === on) return prev;
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  // Indexing reports progress for any location, however it was started
+  useEffect(() => {
+    const unlisten = listen<{ location_id: string; done: boolean; error?: string | null }>("indexing_progress", (e) => {
+      setRefreshingFor(e.payload.location_id, !e.payload.done);
+      if (e.payload.done && e.payload.error) setRefreshError({ id: e.payload.location_id, message: e.payload.error });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, []);
+
+  /**
+   * Brings the location in line with the disk: adds new files, updates edited
+   * ones, follows moved and renamed files (keeping their metadata) and removes
+   * deleted ones, then re-applies the folder mapping.
+   */
+  async function refreshLocation(id: string) {
+    if (refreshing.has(id)) return;
+    setRefreshError(null);
+    setRefreshingFor(id, true);
+    try {
+      await ingestDirectory(id);
+    } catch (e) {
+      setRefreshingFor(id, false);
+      setRefreshError({ id, message: String(e) });
+    }
+  }
+
+  function showLocationMenu(e: React.MouseEvent, loc: Location) {
+    e.preventDefault();
+    showContextMenu(
+      [
+        { type: "item", text: "Refresh", enabled: !refreshing.has(loc.location_id), action: () => refreshLocation(loc.location_id) },
+        { type: "separator" },
+        { type: "item", text: "Remove from Folderbase…", action: () => setConfirmDeleteId(loc.location_id) },
+      ],
+      { event: e }
+    );
+  }
 
   async function loadLocations() {
     try {
@@ -158,27 +213,59 @@ export default function Sidebar() {
               );
             }
 
+            const isRefreshing = refreshing.has(loc.location_id);
+            const error = refreshError?.id === loc.location_id ? refreshError.message : null;
             return (
-              <div key={loc.location_id} className="group relative flex items-center">
-                <button
-                  onClick={() => setActiveLocation(loc.location_id)}
-                  className={`flex items-center gap-2 w-full text-left px-2 h-7 rounded-md pr-7 ${
-                    isActive ? "bg-neutral-700 text-blue-500" : "text-neutral-100"
-                  }`}
-                >
-                  <SymbolIcon name="folder" size={17} className={isActive ? "text-blue-500" : "text-neutral-400"} />
-                  <span className="truncate text-body">{loc.name}</span>
-                </button>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setConfirmDeleteId(loc.location_id);
-                  }}
-                  className="absolute right-1 opacity-0 group-hover:opacity-100 p-1 text-neutral-500 hover:text-red-400 transition-all text-sm leading-none"
-                  title="Remove location"
-                >
-                  ×
-                </button>
+              <div key={loc.location_id} className="flex flex-col">
+                <div className="group relative flex items-center" onContextMenu={(e) => showLocationMenu(e, loc)}>
+                  <button
+                    onClick={() => setActiveLocation(loc.location_id)}
+                    className={`flex items-center gap-2 w-full text-left px-2 h-7 rounded-md pr-12 ${
+                      isActive ? "bg-neutral-700 text-blue-500" : "text-neutral-100"
+                    }`}
+                  >
+                    <SymbolIcon name="folder" size={17} className={isActive ? "text-blue-500" : "text-neutral-400"} />
+                    <span className="truncate text-body">{loc.name}</span>
+                  </button>
+                  <div className="absolute right-1 flex items-center">
+                    {/* Shown on hover, and kept (spinning) while the location is being indexed */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        refreshLocation(loc.location_id);
+                      }}
+                      disabled={isRefreshing}
+                      title={isRefreshing ? "Refreshing…" : "Refresh"}
+                      aria-label={isRefreshing ? `Refreshing ${loc.name}` : `Refresh ${loc.name}`}
+                      className={`w-5 h-5 flex items-center justify-center rounded text-neutral-500 hover:text-neutral-200 ${
+                        isRefreshing ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                      }`}
+                    >
+                      <SymbolIcon
+                        name="arrow.clockwise"
+                        size={12}
+                        fallback="↻"
+                        className={isRefreshing ? "animate-spin" : ""}
+                      />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setConfirmDeleteId(loc.location_id);
+                      }}
+                      className="w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-red-400"
+                      title="Remove location"
+                      aria-label={`Remove ${loc.name}`}
+                    >
+                      <SymbolIcon name="xmark" size={10} fallback="×" />
+                    </button>
+                  </div>
+                </div>
+                {error && (
+                  <p className="px-2 pb-1 text-[11px] text-red-500 truncate" title={error}>
+                    Couldn't refresh: {error}
+                  </p>
+                )}
               </div>
             );
           })}

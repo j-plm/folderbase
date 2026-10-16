@@ -317,7 +317,14 @@ The flow:
 
 1. **Add the location**: choose a folder on disk; it is crawled and indexed (see above)
 2. **Map the structure**: the location's real folder tree is shown, and the user names what folders represent. Naming a folder level `client`, for example, means each folder at that level (`Acme`, `Globex`) becomes a value of `client` for every file beneath it. Names apply only to the folders the user named; sibling folders added later are not inherited automatically
-3. **Re-index** when the files on disk change. Mapped values are re-applied to new files, and values the user has since edited are never overwritten
+3. **Refresh** to bring the location in line with the disk. Refresh is a full sync:
+   - **New files** are added, and the folder mapping is applied to them
+   - **Edited files** (size or modified time changed) have their file details and EXIF re-read; the user's own values are kept
+   - **Moved and renamed files** keep their record, and so their custom metadata. They are recognised by a content fingerprint (size plus the first and last 64 KB) stored with each record. Records made before fingerprints existed match on size and modified time. Identical copies are paired by file name, or left as an addition and a removal when that is still ambiguous
+   - **Deleted files** have their records removed
+   - Unchanged files cost a single `stat`; only new and edited files are read
+   - **Safeguards**: refresh refuses to run when the location's folder is missing or suddenly empty (an unmounted drive or stuck cloud mount looks like that), and never removes records under a subfolder it could not read
+   - Mapped values are only filled in where a file has none, so a file moved to a differently mapped folder keeps its existing value
 
 After mapping, the location's files carry property values derived from their paths, and views can be built over those properties like any others. Folder names that are not mapped are kept as unstructured **tags**.
 
@@ -493,6 +500,7 @@ The application must look and feel like the host operating system's own file man
 | Colours | The system palette, including accent and selection colours | Finder's label, secondary-label, separator, sidebar and selection colours; solid accent-blue selection with white text in lists |
 | Appearance | Light and dark both supported, following the OS by default | View ▸ Appearance: Use System Setting / Light / Dark |
 | File and folder icons | The OS's own icon for each file type and for folders, never a drawn substitute | Rendered by the OS (`NSWorkspace` / `NSImage`) and cached per type and size |
+| Thumbnails | The OS's own thumbnails, as the file manager's icon view shows them | Quick Look (`QLThumbnailGenerator`), rendered at the tile size for the screen's scale and cached on disk; requested as tiles near the screen, a few at a time; the file's icon until ready or when there is none |
 | Interface glyphs | The OS's symbol set for sidebar items, toolbar buttons, chevrons and similar | SF Symbols rendered by the OS and tinted with the current text colour |
 | Menus | Native OS menus for context menus, overflow and option menus | Native `NSMenu` (via Tauri), including checkmarks and submenus |
 | Window chrome | The OS's title bar and window controls, integrated as the native app does | Unified toolbar: traffic lights over the sidebar, toolbar draggable across its full width |
@@ -525,7 +533,11 @@ The sidebar to the right of the icon rail changes based on context:
 
 #### Locations
 
-Mapped locations (drives and folders brought into Folderbase) are listed in the sidebar, as Finder lists Locations. Opening one shows its files as indexed. Mapping a location's structure and re-indexing it are location actions in the location's context menu and its setup sheet; they do not appear in navigation toolbars or in the database view (see [Mapping a Location](#mapping-a-location)).
+Mapped locations (drives and folders brought into Folderbase) are listed in the sidebar, as Finder lists Locations. Opening one shows its files as indexed. Location actions live on the location itself, not in navigation toolbars or the database view (see [Mapping a Location](#mapping-a-location)):
+
+- **Refresh**: a refresh button appears when hovering a location, and stays (spinning) while the location is being indexed, including straight after it is first mapped. Also in the location's context menu
+- **Remove from Folderbase**: in the hover controls and the context menu, with confirmation. Files on disk are untouched
+- **Map Structure**: to move from the database view toolbar to the location's context menu and setup sheet (not yet done)
 
 #### Main Pane
 
@@ -550,6 +562,7 @@ The toolbar sits above the main pane and contains:
 - **Breadcrumb / address bar**: reflects the current navigation path through the virtual layer hierarchy (e.g. `2024 → Rig-A → Component-B`). Style is platform-adaptive — click-through on macOS, editable on Windows
 - **View mode switcher**: Tiles | List | Columns | Database. Tiles, List, and Columns follow standard OS explorer behaviour. Database is an additional mode described below
 - **Group button**: the OS file manager's grouping and sorting menu, shown for Tiles, List and Columns
+- **Selection count**: when two or more files are selected, "3 of 1,204 selected" appears beside the location name, in every view mode. Columns counts within the active column, as Finder does. The database view shows it in its own file count line instead ("1,492 files" becomes "3 of 1,492 selected"), counting files whether rows or cells across several rows are selected
 - **Edit Structure toggle**: opens or closes the local view editor panel (see View Editor section)
 
 ### View Modes

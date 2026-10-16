@@ -14,6 +14,7 @@ import {
   type SelectionState,
 } from "../lib/selection";
 import type { FileRecord } from "../types";
+import { useReportSelection } from "../lib/selectionStatus";
 
 interface Options {
   /** Up/Down move the selection (lists); off for grids. */
@@ -25,6 +26,8 @@ interface Options {
    * nothing that way). Shift extends the selection in display order.
    */
   gridNavigate?: (fromId: string, key: ArrowKey) => string | null;
+  /** Off when the view reports a combined count itself (the database view's rows + cells). */
+  reportStatus?: boolean;
 }
 
 /**
@@ -32,7 +35,10 @@ interface Options {
  * Cmd/Ctrl-click toggles, Shift-click selects a range, Cmd-A selects all.
  * Double-click or Cmd-O (Enter off macOS) opens the selection together.
  */
-export function useSelection(files: FileRecord[], { arrowKeys = false, onReveal, gridNavigate }: Options = {}) {
+export function useSelection(
+  files: FileRecord[],
+  { arrowKeys = false, onReveal, gridNavigate, reportStatus = true }: Options = {}
+) {
   const [state, setState] = useState<SelectionState>(EMPTY_SELECTION);
   const cursor = useRef<string | null>(null);
   const order = useMemo(() => files.map((f) => f.file_id), [files]);
@@ -48,6 +54,7 @@ export function useSelection(files: FileRecord[], { arrowKeys = false, onReveal,
   }, [order]);
 
   const selected = useMemo(() => new Set(state.selected), [state.selected]);
+  useReportSelection(reportStatus ? state.selected.length : 0, reportStatus ? files.length : 0);
 
   function open(ids: string[]) {
     const byId = new Map(files.map((f) => [f.file_id, f.file_path]));

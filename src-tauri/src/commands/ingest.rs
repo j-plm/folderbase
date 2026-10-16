@@ -58,25 +58,8 @@ pub(crate) fn extract_file_data(
     Some((file_type, timestamp, file_size, created_at, metadata))
 }
 
-/// Files per indexing batch: one blocking scan and one database transaction each.
-const INGEST_BATCH: usize = 500;
-
-type Walker = walkdir::FilterEntry<walkdir::IntoIter, fn(&walkdir::DirEntry) -> bool>;
-
-/// A file found while indexing, ready to insert.
-struct ScannedFile {
-    file_path: String,
-    relative_path: Option<String>,
-    file_type: Option<String>,
-    timestamp: Option<String>,
-    created_at: Option<String>,
-    file_size: i64,
-    metadata: Map<String, Value>,
-    tags_json: String,
-}
-
 /// Hidden files and folders (dot-names) are skipped, as Finder hides them.
-fn not_hidden(entry: &walkdir::DirEntry) -> bool {
+pub(crate) fn not_hidden(entry: &walkdir::DirEntry) -> bool {
     !entry
         .file_name()
         .to_str()
@@ -85,41 +68,9 @@ fn not_hidden(entry: &walkdir::DirEntry) -> bool {
 }
 
 /// A file's folder names, as the JSON tags array.
-fn folder_tags(relative_path: &str) -> String {
+pub(crate) fn folder_tags(relative_path: &str) -> String {
     let parts: Vec<&str> = relative_path.split('/').collect();
     serde_json::to_string(&parts[..parts.len().saturating_sub(1)]).unwrap_or_else(|_| "[]".to_string())
-}
-
-/// Reads up to INGEST_BATCH files from the walk (blocking I/O). An empty batch means the walk is done.
-fn scan_batch(mut iter: Walker, root: &std::path::Path) -> (Walker, Vec<ScannedFile>) {
-    let mut batch = Vec::with_capacity(INGEST_BATCH);
-    while batch.len() < INGEST_BATCH {
-        let Some(entry) = iter.next() else { break };
-        let Ok(entry) = entry else { continue };
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let Some((file_type, timestamp, file_size, created_at, metadata)) = extract_file_data(entry.path()) else {
-            continue;
-        };
-        let relative_path = entry
-            .path()
-            .strip_prefix(root)
-            .ok()
-            .map(|p| p.to_string_lossy().replace('\\', "/"));
-        let tags_json = relative_path.as_deref().map(folder_tags).unwrap_or_else(|| "[]".to_string());
-        batch.push(ScannedFile {
-            file_path: entry.path().to_string_lossy().to_string(),
-            relative_path,
-            file_type,
-            timestamp,
-            created_at,
-            file_size,
-            metadata,
-            tags_json,
-        });
-    }
-    (iter, batch)
 }
 
 #[tauri::command]
@@ -131,153 +82,34 @@ pub async fn ingest_directory(
     ingest_location(&location_id, db.inner(), &app).await
 }
 
+/// Indexes or refreshes a location, reporting progress to the frontend as
+/// `indexing_progress` events (the last one with `done` and what changed).
 async fn ingest_location(
     location_id: &str,
     pool: &DbPool,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
-    let location = sqlx::query_as::<_, crate::models::Location>(
-        "SELECT * FROM locations WHERE location_id = ?",
-    )
-    .bind(location_id)
-    .fetch_one(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let mut files_scanned: u64 = 0;
-    let mut new_records: Vec<Map<String, Value>> = Vec::new();
-
-    // Walking a drive and reading EXIF is slow, blocking I/O: it runs on a
-    // blocking thread, a batch at a time, and each batch is written in one
-    // transaction rather than one commit per file.
-    let root = std::path::PathBuf::from(&location.root_path);
-    let mut walker = Some(
-        WalkDir::new(&location.root_path)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(not_hidden as fn(&walkdir::DirEntry) -> bool),
-    );
-
-    while let Some(iter) = walker.take() {
-        let batch_root = root.clone();
-        let (iter, batch) = tauri::async_runtime::spawn_blocking(move || scan_batch(iter, &batch_root))
-            .await
-            .map_err(|e| e.to_string())?;
-        if batch.is_empty() {
-            break;
-        }
-        walker = Some(iter);
-
-        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-        for file in batch {
-            let result = sqlx::query(
-                "INSERT OR IGNORE INTO files \
-                 (file_id, file_path, file_type, timestamp, library, metadata, \
-                  location_id, relative_path, file_size, modified_at, created_at, tags) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(Uuid::new_v4().to_string())
-            .bind(&file.file_path)
-            .bind(&file.file_type)
-            .bind(&file.timestamp)
-            .bind(&location.library)
-            .bind(serde_json::to_string(&file.metadata).unwrap_or_default())
-            .bind(location_id)
-            .bind(&file.relative_path)
-            .bind(file.file_size)
-            .bind(&file.timestamp)
-            .bind(&file.created_at)
-            .bind(&file.tags_json)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?;
-
-            if result.rows_affected() > 0 {
-                files_scanned += 1;
-                new_records.push(file.metadata);
-            }
-        }
-        tx.commit().await.map_err(|e| e.to_string())?;
-
+    let emit = |processed: usize| {
         app.emit(
             "indexing_progress",
-            serde_json::json!({
-                "location_id": location_id,
-                "files_scanned": files_scanned,
-                "done": false
-            }),
+            serde_json::json!({ "location_id": location_id, "files_scanned": processed, "done": false }),
         )
         .ok();
-    }
-
-    bootstrap_properties(&location.library, &new_records, pool).await?;
-
-    // Recompute tags for every file in this location from its relative_path.
-    // This treats tags as a fresh derivation, undoing any prior promotions before
-    // the mapping nodes are re-applied below.
-    {
-        use sqlx::Row;
-        let rows = sqlx::query(
-            "SELECT file_id, relative_path FROM files \
-             WHERE location_id = ? AND relative_path IS NOT NULL",
-        )
-        .bind(location_id)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-        for row in &rows {
-            let file_id: String = row.get("file_id");
-            let rel_path: String = row.get("relative_path");
-            sqlx::query("UPDATE files SET tags = ? WHERE file_id = ?")
-                .bind(folder_tags(&rel_path))
-                .bind(&file_id)
-                .execute(&mut *tx)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-        tx.commit().await.map_err(|e| e.to_string())?;
-    }
-
-    // Re-apply any existing path mapping nodes so newly ingested files are classified.
-    let mapping_nodes: Vec<crate::commands::path_mapping::PathMappingNode> =
-        sqlx::query_as("SELECT * FROM path_mapping_nodes WHERE location_id = ?")
-            .bind(location_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-
-    for node in &mapping_nodes {
-        crate::commands::path_mapping::apply_mapping_to_files(
-            location_id,
-            &location.root_path,
-            &node.folder_path,
-            &node.property_name,
-            pool,
-        )
-        .await?;
-    }
-
-    let now = Utc::now().to_rfc3339();
-    sqlx::query("UPDATE locations SET last_indexed = ? WHERE location_id = ?")
-        .bind(&now)
-        .bind(location_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
+    };
+    let result = crate::commands::sync::sync_location(location_id, pool, &emit).await;
+    let summary = result.as_ref().ok();
     app.emit(
         "indexing_progress",
         serde_json::json!({
             "location_id": location_id,
-            "files_scanned": files_scanned,
-            "done": true
+            "files_scanned": summary.map(|s| s.added + s.updated + s.moved).unwrap_or(0),
+            "done": true,
+            "summary": summary,
+            "error": result.as_ref().err(),
         }),
     )
     .ok();
-
-    Ok(())
+    result.map(|_| ())
 }
 
 pub async fn ingest_directory_impl(
@@ -343,22 +175,30 @@ pub async fn ingest_directory_impl(
     Ok(inserted_count)
 }
 
+/// EXIF fields copied into metadata, and the keys they're stored under. These
+/// keys come from the file, so a refresh replaces them; every other key is the
+/// user's. Keep in step with EXTRACTED_KEYS in src/lib/propertyTypes.ts.
+const EXIF_FIELDS: &[(exif::Tag, &str)] = &[
+    (exif::Tag::DateTime, "date_taken"),
+    (exif::Tag::Make, "camera_make"),
+    (exif::Tag::Model, "camera_model"),
+    (exif::Tag::PixelXDimension, "width"),
+    (exif::Tag::PixelYDimension, "height"),
+    (exif::Tag::PhotographicSensitivity, "iso"),
+    (exif::Tag::FocalLength, "focal_length"),
+    (exif::Tag::GPSLatitude, "latitude"),
+    (exif::Tag::GPSLongitude, "longitude"),
+];
+
+/// Metadata keys whose values are read from the file itself (see EXIF_FIELDS).
+pub(crate) fn extracted_keys() -> impl Iterator<Item = &'static str> {
+    EXIF_FIELDS.iter().map(|(_, key)| *key)
+}
+
 fn extract_exif(exif: &exif::Exif, metadata: &mut Map<String, Value>) {
-    use exif::{In, Tag};
+    use exif::In;
 
-    let tags: &[(Tag, &str)] = &[
-        (Tag::DateTime, "date_taken"),
-        (Tag::Make, "camera_make"),
-        (Tag::Model, "camera_model"),
-        (Tag::PixelXDimension, "width"),
-        (Tag::PixelYDimension, "height"),
-        (Tag::PhotographicSensitivity, "iso"),
-        (Tag::FocalLength, "focal_length"),
-        (Tag::GPSLatitude, "latitude"),
-        (Tag::GPSLongitude, "longitude"),
-    ];
-
-    for (tag, key) in tags {
+    for (tag, key) in EXIF_FIELDS {
         if let Some(field) = exif.get_field(*tag, In::PRIMARY) {
             metadata.insert(
                 key.to_string(),
@@ -368,7 +208,7 @@ fn extract_exif(exif: &exif::Exif, metadata: &mut Map<String, Value>) {
     }
 }
 
-async fn bootstrap_properties(
+pub(crate) async fn bootstrap_properties(
     library: &str,
     records: &[Map<String, Value>],
     pool: &DbPool,
@@ -438,17 +278,6 @@ async fn bootstrap_properties(
 mod tests {
     use super::*;
 
-    fn walker(root: &std::path::Path) -> Walker {
-        WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_entry(not_hidden as fn(&walkdir::DirEntry) -> bool)
-    }
-
-    fn fixtures() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
-    }
-
     #[test]
     fn folder_tags_lists_parent_folders() {
         assert_eq!(folder_tags("Finance/Receipts/a.pdf"), r#"["Finance","Receipts"]"#);
@@ -456,18 +285,9 @@ mod tests {
     }
 
     #[test]
-    fn scan_batch_finds_every_file_with_relative_paths() {
-        let root = fixtures();
-        let (iter, batch) = scan_batch(walker(&root), &root);
-        let expected = WalkDir::new(&root)
-            .into_iter()
-            .filter_map(Result::ok)
-            .filter(|e| e.file_type().is_file() && !e.file_name().to_string_lossy().starts_with('.'))
-            .count();
-        assert_eq!(batch.len(), expected);
-        assert!(batch.iter().all(|f| f.relative_path.as_deref().is_some_and(|p| !p.starts_with('/'))));
-        // The walk is exhausted: the next batch is empty
-        let (_, rest) = scan_batch(iter, &root);
-        assert!(rest.is_empty());
+    fn extracted_keys_are_the_exif_fields() {
+        let keys: Vec<_> = extracted_keys().collect();
+        assert!(keys.contains(&"date_taken") && keys.contains(&"longitude"));
+        assert_eq!(keys.len(), EXIF_FIELDS.len());
     }
 }

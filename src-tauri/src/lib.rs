@@ -42,6 +42,7 @@ pub fn run() {
             commands::feedback::haptic_feedback,
             commands::files::get_libraries,
             commands::icons::get_native_icon,
+            commands::thumbnails::get_thumbnail,
             commands::files::get_files,
             commands::files::get_files_for_location,
             commands::files::update_file_metadata,

@@ -379,3 +379,8 @@ export async function getNativeIcon(kind: string, size: number): Promise<string>
 export async function setEditMenuLabels(undo: string | null, redo: string | null): Promise<void> {
   return invoke<void>("set_edit_menu_labels", { undo, redo });
 }
+
+/** A cached Quick Look thumbnail (PNG path) for a file, or null when there isn't one. */
+export async function getThumbnail(path: string, size: number, scale: number): Promise<string | null> {
+  return invoke<string | null>("get_thumbnail", { path, size, scale });
+}

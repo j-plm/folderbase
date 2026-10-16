@@ -12,7 +12,6 @@ import {
   getMappingNodes,
   getProperties,
   getPropertyValues,
-  ingestDirectory,
   renameProperty,
   setEditMenuLabels,
   setMetadataCells,
@@ -38,6 +37,8 @@ import TableHeader from "./shared/TableHeader";
 import { useSelection } from "../../hooks/useSelection";
 import { useUndo } from "../../hooks/useUndo";
 import { setUndoTarget } from "../../lib/editMenu";
+import { selectionLabel } from "../../lib/selectionStatus";
+import { describeRefresh, type RefreshSummary } from "../../lib/refreshSummary";
 import MenuPopover from "../shared/MenuPopover";
 import Dialog, { DialogButton } from "../shared/Dialog";
 import { hasPrimaryModifier, isToggleSelect } from "../../lib/platform";
@@ -89,6 +90,9 @@ interface IndexingProgress {
   location_id: string;
   files_scanned: number;
   done: boolean;
+  /** On the final event: what changed, or why it failed. */
+  summary?: RefreshSummary | null;
+  error?: string | null;
 }
 
 function fileName(filePath: string): string {
@@ -227,8 +231,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   const [indexing, setIndexing] = useState<{
     scanned: number;
     done: boolean;
+    summary?: RefreshSummary | null;
   } | null>(null);
-  const [reindexing, setReindexing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mappingOpen, setMappingOpen] = useState(false);
   /** The Columns button while its checklist is open. */
@@ -280,7 +284,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     setRules([]);
     setMatch("all");
     setIndexing(null);
-    setReindexing(false);
     setError(null);
     setMappingOpen(false);
     setColumnsAnchor(null);
@@ -335,15 +338,14 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       .catch(() => {});
   }, [registry, registryValues]);
 
-  // Progress banner + refresh available properties after reindex
+  // Progress banner (a refresh started from the sidebar) + reload properties when it finishes
   useEffect(() => {
     let unlisten: (() => void) | null = null;
     listen<IndexingProgress>("indexing_progress", (event) => {
       const p = event.payload;
       if (p.location_id !== locationId) return;
-      setIndexing({ scanned: p.files_scanned, done: p.done });
+      setIndexing(p.done && p.error ? null : { scanned: p.files_scanned, done: p.done, summary: p.summary });
       if (p.done) {
-        setReindexing(false);
         setTimeout(() => setIndexing(null), 2500);
         loadKeys();
         loadRegistry().catch(() => {});
@@ -355,19 +357,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       unlisten?.();
     };
   }, [locationId, loadKeys, loadRegistry]);
-
-  async function handleReindex() {
-    setReindexing(true);
-    setError(null);
-    setIndexing({ scanned: 0, done: false });
-    try {
-      await ingestDirectory(locationId);
-    } catch (e) {
-      setError(String(e));
-      setReindexing(false);
-      setIndexing(null);
-    }
-  }
 
   // ── Properties ────────────────────────────────────────────────────────────
 
@@ -866,6 +855,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   // Rows: clicking a native cell (Name, Size…) selects the row, as in Finder
   const selection = useSelection(sorted, {
+    reportStatus: false,
     arrowKeys: true,
     onReveal: (index) => rowVirtualizer.scrollToIndex(index),
   });
@@ -879,6 +869,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   const [cellSel, setCellSel] = useState<CellSelection>(EMPTY_CELLS);
   useEffect(() => setCellSel((s) => pruneCells(s, grid)), [grid]);
   const solidRect = useMemo(() => isSolidRect(cellSel, grid), [cellSel, grid]);
+  // Files selected (whole rows, or the rows that have a selected cell), shown in the count line
+  const selectedFiles = useMemo(() => {
+    if (cellSel.cells.size === 0) return sorted.filter((f) => selection.isSelected(f.file_id)).length;
+    return new Set([...cellSel.cells].map((k) => parseCellKey(k).row)).size;
+  }, [cellSel, sorted, selection]);
 
   const cellValue = useCallback(
     (row: string, col: string) => metaValue(rowById.get(row), propName(col)),
@@ -1355,9 +1350,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-2.5 border-b border-neutral-700/60 shrink-0">
         <span className="flex-1 min-w-0 truncate whitespace-nowrap text-neutral-500 text-xs">
-          {sorted.length === rows.length
-            ? `${sorted.length.toLocaleString()} files`
-            : `${sorted.length.toLocaleString()} of ${rows.length.toLocaleString()} files`}
+          {/* The table's own count line carries the selection, rather than the toolbar */}
+          {selectionLabel({ selected: selectedFiles, total: sorted.length }) ??
+            (sorted.length === rows.length
+              ? `${sorted.length.toLocaleString()} files`
+              : `${sorted.length.toLocaleString()} of ${rows.length.toLocaleString()} files`)}
         </span>
         <div className="flex items-center gap-1.5 shrink-0">
           <button
@@ -1399,19 +1396,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               menu: [{ type: "item", text: "Map Structure…", action: () => setMappingOpen(true) }],
             },
             {
-              id: "reindex",
-              node: (
-                <button
-                  onClick={handleReindex}
-                  disabled={reindexing}
-                  className={`${TOOLBAR_BUTTON} ${TOOLBAR_BUTTON_IDLE} disabled:opacity-50`}
-                >
-                  {reindexing ? "Indexing…" : "Re-index"}
-                </button>
-              ),
-              menu: [{ type: "item", text: "Re-index", enabled: !reindexing, action: handleReindex }],
-            },
-            {
               id: "columns",
               node: (
                 <button
@@ -1440,12 +1424,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       )}
       {indexing && !indexing.done && (
         <div className="px-4 py-2 bg-blue-950/40 text-blue-300 text-xs border-b border-blue-900/40 shrink-0">
-          Indexing… {indexing.scanned.toLocaleString()} files scanned
+          Refreshing… {indexing.scanned.toLocaleString()} files read
         </div>
       )}
       {indexing && indexing.done && (
         <div className="px-4 py-2 bg-green-950/40 text-green-300 text-xs border-b border-green-900/40 shrink-0">
-          {indexing.scanned.toLocaleString()} files indexed
+          {indexing.summary ? `Refreshed: ${describeRefresh(indexing.summary)}` : "Refreshed"}
         </div>
       )}
 
@@ -1520,7 +1504,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
             {files.length === 0
               ? indexing && !indexing.done
                 ? "Indexing…"
-                : "No files indexed. Try Re-index."
+                : "No files indexed yet. Refresh the location from the sidebar."
               : "No files match your search or filters"}
           </div>
         ) : (

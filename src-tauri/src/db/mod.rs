@@ -139,6 +139,11 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
+    // Content fingerprint, so a refresh can recognise moved and renamed files.
+    let _ = sqlx::query("ALTER TABLE files ADD COLUMN fingerprint TEXT")
+        .execute(pool)
+        .await;
+
     // Type options for a property (number format, currency), as JSON.
     let _ = sqlx::query("ALTER TABLE properties ADD COLUMN config TEXT")
         .execute(pool)
