@@ -9,7 +9,7 @@ interface Props {
   onClose: () => void;
 }
 
-export default function MapLocationModal({ onClose }: Props) {
+export default function AddLocationModal({ onClose }: Props) {
   const { setActiveLocation } = useNavigation();
   const [rootPath, setRootPath] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -61,7 +61,7 @@ export default function MapLocationModal({ onClose }: Props) {
 
   return (
     <Dialog
-      title="Map Location"
+      title="Add Location"
       message="Choose a folder to add to Folderbase. Its files are indexed where they are; nothing on disk is moved."
       onCancel={onClose}
       onSubmit={handleConfirm}
@@ -70,7 +70,7 @@ export default function MapLocationModal({ onClose }: Props) {
           <div className="flex-1" />
           <DialogButton onClick={onClose}>Cancel</DialogButton>
           <DialogButton variant="default" disabled={!rootPath || busy || !name.trim()}>
-            {busy ? "Mapping…" : "Map Location"}
+            {busy ? "Adding…" : "Add"}
           </DialogButton>
         </>
       }

@@ -256,7 +256,7 @@ The app has three distinct activities, and each has its own surface:
 
 | Activity | Question it answers | Surface |
 |----------|--------------------|---------|
-| **Mapping a location** | "Which files on disk does Folderbase know about, and what does their existing folder structure already tell us?" | Location setup (see [Mapping a Location](#mapping-a-location)), a dedicated, occasional task per drive or folder |
+| **Setting up a location** | "Which files on disk does Folderbase know about, and what does their existing folder structure already tell us?" | Location setup (see [Setting Up a Location](#setting-up-a-location)), a dedicated, occasional task per drive or folder |
 | **Configuring a view** | "Which properties make up the levels of this folder tree?" | The view editors (local panel and master editor) |
 | **Navigating a view** | "Show me my files organised this way." | Tiles, List, Columns and Database modes |
 
@@ -309,9 +309,11 @@ On first use, a user points the application at an existing folder on their machi
 
 The physical folder structure is preserved untouched. The user is not required to restructure anything before use.
 
-### Mapping a Location
+### Setting Up a Location
 
-Mapping is the ingestion side of the app: bringing a new drive or folder into Folderbase, and treating its existing folder structure as an initial source of metadata. It is a dedicated function, used once per location and revisited rarely, and it lives on its own surface. It is not a control in everyday navigation or in the database view.
+Setup is the ingestion side of the app: bringing a new drive or folder into Folderbase, and treating its existing folder structure as an initial source of metadata.
+
+**Terminology.** Two verbs are kept apart. A location is **added** (and **removed**): that sets which files Folderbase knows about. A folder is **mapped** (and **unmapped**) to a property value: that says what the folder means. "Map" is used only in the second sense (Map Structure, Map Tag, "Mapped to Client"). "Mount" is not used, because it means attaching a volume to the OS, and a location whose drive is unplugged is described as *offline* or *not connected*. It is a dedicated function, used once per location and revisited rarely, and it lives on its own surface. It is not a control in everyday navigation or in the database view.
 
 The flow:
 
@@ -532,11 +534,11 @@ The sidebar to the right of the icon rail changes based on context:
 
 #### Locations
 
-Mapped locations (drives and folders brought into Folderbase) are listed in the sidebar, as Finder lists Locations. Opening one shows its files as indexed. Location actions live on the location itself, not in navigation toolbars or the database view (see [Mapping a Location](#mapping-a-location)):
+Locations (drives and folders added to Folderbase) are listed in the sidebar, as Finder lists Locations, and added with **Add Location…** below the list. Opening one shows its files as indexed. Location actions live on the location itself, not in navigation toolbars or the database view (see [Setting Up a Location](#setting-up-a-location)):
 
-- **Refresh**: a refresh button appears when hovering a location, and stays (spinning) while the location is being indexed, including straight after it is first mapped. Also in the location's context menu
-- **Remove from Folderbase**: in the hover controls and the context menu, with confirmation. Files on disk are untouched
-- **Map Structure**: to move from the database view toolbar to the location's context menu and setup sheet (not yet done)
+- **Refresh**: a refresh button appears when hovering a location, and stays (spinning) while the location is being indexed, including straight after it is added. Also in the location's context menu
+- **Map Structure…**: in the context menu. Opens the structure panel over the location's files in any view mode, switching to the location first. Also in the database view toolbar for now, where it shows whether the location has mappings
+- **Remove Location…**: in the context menu only (no hover control), confirmed in a dialog sheet. Files on disk are untouched
 
 #### Main Pane
 
@@ -688,7 +690,7 @@ App Window
 │   ├── Sub-view switcher               [top of sidebar, if sub-views exist]
 │   ├── Starred locations within view
 │   ├── OS-standard items (Recents, etc.)
-│   └── Locations                       [mapped drives/folders; setup + mapping via context menu]
+│   └── Locations                       [added drives/folders; Map Structure, Refresh, Remove via context menu]
 │
 ├── Toolbar
 │   ├── Breadcrumb / address bar        [platform-adaptive]

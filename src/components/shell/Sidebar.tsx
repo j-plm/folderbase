@@ -4,7 +4,8 @@ import { useNavigation } from "../../contexts/NavigationContext";
 import { listen } from "@tauri-apps/api/event";
 import { getLocations, clearDatabase, deleteLocation, ingestDirectory } from "../../lib/commands";
 import type { Location } from "../../lib/commands";
-import MapLocationModal from "./MapLocationModal";
+import AddLocationModal from "./AddLocationModal";
+import Dialog, { DialogButton } from "../shared/Dialog";
 import { SymbolIcon } from "../../lib/fileIcons";
 import { showContextMenu } from "../../lib/nativeMenu";
 
@@ -20,7 +21,7 @@ function loadWidth(): number {
 }
 
 export default function Sidebar() {
-  const { activeLocationId, setActiveLocation } = useNavigation();
+  const { activeLocationId, setActiveLocation, openStructureMapping } = useNavigation();
   const [width, setWidth] = useState(loadWidth);
 
   function startResize(e: React.MouseEvent) {
@@ -48,12 +49,13 @@ export default function Sidebar() {
   }, [width]);
 
   const [locations, setLocations] = useState<Location[]>([]);
-  const [mapOpen, setMapOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
-  /** Locations being indexed (a refresh, or a newly mapped location). */
+  /** Locations being indexed (a refresh, or a newly added location). */
   const [refreshing, setRefreshing] = useState<Set<string>>(() => new Set());
   const [refreshError, setRefreshError] = useState<{ id: string; message: string } | null>(null);
 
@@ -99,9 +101,10 @@ export default function Sidebar() {
     e.preventDefault();
     showContextMenu(
       [
+        { type: "item", text: "Map Structure…", action: () => openStructureMapping(loc.location_id) },
         { type: "item", text: "Refresh", enabled: !refreshing.has(loc.location_id), action: () => refreshLocation(loc.location_id) },
         { type: "separator" },
-        { type: "item", text: "Remove from Folderbase…", action: () => setConfirmDeleteId(loc.location_id) },
+        { type: "item", text: "Remove Location…", action: () => setConfirmDeleteId(loc.location_id) },
       ],
       { event: e }
     );
@@ -128,18 +131,26 @@ export default function Sidebar() {
     return () => window.removeEventListener("location-added", onLocationAdded);
   }, []);
 
+  const removing = locations.find((l) => l.location_id === confirmDeleteId) ?? null;
+
   async function handleDeleteLocation(locationId: string) {
     setDeleting(true);
+    setDeleteError(null);
     try {
       await deleteLocation(locationId);
       if (activeLocationId === locationId) setActiveLocation(null);
       setLocations((prev) => prev.filter((l) => l.location_id !== locationId));
-    } catch {
-      // ignore
+      setConfirmDeleteId(null);
+    } catch (e) {
+      setDeleteError(String(e));
     } finally {
       setDeleting(false);
-      setConfirmDeleteId(null);
     }
+  }
+
+  function cancelDelete() {
+    setConfirmDeleteId(null);
+    setDeleteError(null);
   }
 
   async function handleClearDatabase() {
@@ -179,40 +190,10 @@ export default function Sidebar() {
 
         <div className="flex flex-col gap-px px-2 flex-1 overflow-y-auto py-1">
           {locations.length === 0 && (
-            <p className="text-neutral-500 text-xs px-2 py-1">No locations mapped</p>
+            <p className="text-neutral-500 text-xs px-2 py-1">No locations</p>
           )}
           {locations.map((loc) => {
             const isActive = loc.location_id === activeLocationId;
-            const isConfirming = confirmDeleteId === loc.location_id;
-
-            if (isConfirming) {
-              return (
-                <div
-                  key={loc.location_id}
-                  className="flex flex-col gap-1 px-2 py-1.5 rounded bg-neutral-900/60 border border-red-900/30"
-                >
-                  <p className="text-xs text-neutral-400 truncate">
-                    Remove "{loc.name}"?
-                  </p>
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => handleDeleteLocation(loc.location_id)}
-                      disabled={deleting}
-                      className="flex-1 px-2 py-0.5 text-xs rounded bg-red-800/60 text-red-200 hover:bg-red-700/60 disabled:opacity-50 transition-colors"
-                    >
-                      {deleting ? "…" : "Remove"}
-                    </button>
-                    <button
-                      onClick={() => setConfirmDeleteId(null)}
-                      className="flex-1 px-2 py-0.5 text-xs rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 transition-colors"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              );
-            }
-
             const isRefreshing = refreshing.has(loc.location_id);
             const error = refreshError?.id === loc.location_id ? refreshError.message : null;
             return (
@@ -220,7 +201,7 @@ export default function Sidebar() {
                 <div className="group relative flex items-center" onContextMenu={(e) => showLocationMenu(e, loc)}>
                   <button
                     onClick={() => setActiveLocation(loc.location_id)}
-                    className={`flex items-center gap-2 w-full text-left px-2 h-7 rounded-md pr-12 ${
+                    className={`flex items-center gap-2 w-full text-left px-2 h-7 rounded-md pr-7 ${
                       isActive ? "bg-neutral-700 text-blue-500" : "text-neutral-100"
                     }`}
                   >
@@ -248,17 +229,6 @@ export default function Sidebar() {
                         className={isRefreshing ? "animate-spin" : ""}
                       />
                     </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setConfirmDeleteId(loc.location_id);
-                      }}
-                      className="w-5 h-5 flex items-center justify-center rounded opacity-0 group-hover:opacity-100 text-neutral-500 hover:text-red-400"
-                      title="Remove location"
-                      aria-label={`Remove ${loc.name}`}
-                    >
-                      <SymbolIcon name="xmark" size={10} fallback="×" />
-                    </button>
                   </div>
                 </div>
                 {error && (
@@ -273,11 +243,11 @@ export default function Sidebar() {
 
         <div className="px-2 py-2 border-t border-neutral-700/60 flex flex-col gap-1">
           <button
-            onClick={() => setMapOpen(true)}
+            onClick={() => setAddOpen(true)}
             className="w-full flex items-center gap-1.5 px-2 py-1.5 text-xs text-neutral-500 hover:text-neutral-300 hover:bg-neutral-700/40 rounded transition-colors"
           >
             <SymbolIcon name="plus" size={12} fallback={<span className="text-base leading-none">+</span>} />
-            <span>Map Location</span>
+            <span>Add Location…</span>
           </button>
 
           {!confirmClear ? (
@@ -312,7 +282,32 @@ export default function Sidebar() {
         </div>
       </div>
 
-      {mapOpen && <MapLocationModal onClose={() => setMapOpen(false)} />}
+      {addOpen && <AddLocationModal onClose={() => setAddOpen(false)} />}
+      {removing && (
+        <Dialog
+          title={`Remove “${removing.name}” from Folderbase?`}
+          message={
+            <>
+              Its files are removed from Folderbase, with any properties set on them and its folder mappings.
+              Nothing on disk or in the cloud changes, and you can add the folder again later.
+              {deleteError && <span className="block mt-2 text-red-500">Couldn't remove: {deleteError}</span>}
+            </>
+          }
+          onCancel={cancelDelete}
+          onSubmit={() => {
+            if (!deleting) handleDeleteLocation(removing.location_id);
+          }}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton onClick={cancelDelete}>Cancel</DialogButton>
+              <DialogButton variant="default" disabled={deleting} autoFocus>
+                Remove
+              </DialogButton>
+            </>
+          }
+        />
+      )}
     </div>
   );
 }

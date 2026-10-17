@@ -25,8 +25,8 @@ import {
   updatePropertyType,
 } from "../../lib/commands";
 import type { FileRecord, Property, PropertyConfig, PropertyValue, ValueType } from "../../types";
-import PathMappingPanel from "../mapping/PathMappingPanel";
 import { FileIcon, SymbolIcon } from "../../lib/fileIcons";
+import { useNavigation } from "../../contexts/NavigationContext";
 import { formatFinderDate, formatFinderSize, kindCategory } from "../../lib/arrange";
 import {
   CELL_PADDING,
@@ -259,7 +259,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     summary?: RefreshSummary | null;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [mappingOpen, setMappingOpen] = useState(false);
   /** The Columns button while its checklist is open. */
   /**
    * The open property menu: from the Properties or "…" button (the property
@@ -278,6 +277,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   /** A list column whose values are being edited (Edit Values…), and the header it opens from. */
   const [valuesEditor, setValuesEditor] = useState<{ columnId: string; anchor: HTMLElement } | null>(null);
   const [hasMappings, setHasMappings] = useState(false);
+  const { structureLocationId, openStructureMapping } = useNavigation();
+  const structureOpen = structureLocationId === locationId;
 
   // Column visibility
   const [hiddenStandard, setHiddenStandard] = useState<string[]>([]);
@@ -322,7 +323,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     setMatch("all");
     setIndexing(null);
     setError(null);
-    setMappingOpen(false);
     setPropertyMenu(null);
     setPanel(null);
     setRenaming(null);
@@ -339,9 +339,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   }, [locationId]);
 
   useEffect(() => {
-    getMappingNodes(locationId)
-      .then((nodes) => setHasMappings(nodes.length > 0))
-      .catch(() => {});
     getLocations()
       .then((locs) => setLibrary(locs.find((l) => l.location_id === locationId)?.library ?? null))
       .catch(() => {});
@@ -353,6 +350,15 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       .catch(() => {});
   }, [locationId]);
   useEffect(loadKeys, [loadKeys]);
+
+  // Re-read mappings and keys whenever Map Structure closes (and on load)
+  useEffect(() => {
+    if (structureOpen) return;
+    getMappingNodes(locationId)
+      .then((nodes) => setHasMappings(nodes.length > 0))
+      .catch(() => {});
+    loadKeys();
+  }, [locationId, structureOpen, loadKeys]);
 
   const loadRegistry = useCallback(async () => {
     if (!library) {
@@ -1986,13 +1992,13 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               id: "map",
               node: (
                 <button
-                  onClick={() => setMappingOpen(true)}
+                  onClick={() => openStructureMapping(locationId)}
                   className={`${TOOLBAR_BUTTON} ${hasMappings ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
                 >
                   {hasMappings ? "● Map Structure" : "Map Structure"}
                 </button>
               ),
-              menu: [{ type: "item", text: "Map Structure…", action: () => setMappingOpen(true) }],
+              menu: [{ type: "item", text: "Map Structure…", action: () => openStructureMapping(locationId) }],
             },
             {
               id: "columns",
@@ -2282,19 +2288,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
       {tagDrag && <TagDragOverlay drag={tagDrag} box={tagDrag.target && tagDrag.armed ? dropBox(tagDrag.target) : null} hint={tagDrag.armed ? dropHint(tagDrag) : ""} />}
 
-      {mappingOpen && (
-        <PathMappingPanel
-          locationId={locationId}
-          onClose={() => {
-            setMappingOpen(false);
-            getMappingNodes(locationId)
-              .then((nodes) => setHasMappings(nodes.length > 0))
-              .catch(() => {});
-            loadKeys();
-            onChanged?.();
-          }}
-        />
-      )}
     </div>
   );
 }

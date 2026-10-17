@@ -17,6 +17,8 @@ export interface NavigationState {
   currentLibrary: string | null;
   editStructure: boolean;
   masterEditorOpen: boolean;
+  /** The location whose Map Structure panel is open, if any. */
+  structureLocationId: string | null;
   navigateTo: (path: string[]) => void;
   pushSegment: (segment: string) => void;
   /** Sets path to path.slice(0, index). index=0 returns to root. */
@@ -29,6 +31,9 @@ export interface NavigationState {
   setEditStructure: (v: boolean) => void;
   openMasterEditor: () => void;
   closeMasterEditor: () => void;
+  /** Opens Map Structure for a location, switching to it if needed. */
+  openStructureMapping: (locationId: string) => void;
+  closeStructureMapping: () => void;
   refreshViews: () => Promise<void>;
   refreshViewNodes: () => Promise<void>;
 }

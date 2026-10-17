@@ -19,6 +19,7 @@ interface State {
   viewNodes: ViewNode[];
   editStructure: boolean;
   masterEditorOpen: boolean;
+  structureLocationId: string | null;
 }
 
 export type NavAction =
@@ -31,7 +32,9 @@ export type NavAction =
   | { type: "SET_VIEWS"; views: View[] }
   | { type: "SET_VIEW_NODES"; nodes: ViewNode[] }
   | { type: "SET_EDIT_STRUCTURE"; value: boolean }
-  | { type: "SET_MASTER_EDITOR"; open: boolean };
+  | { type: "SET_MASTER_EDITOR"; open: boolean }
+  | { type: "OPEN_STRUCTURE"; locationId: string }
+  | { type: "CLOSE_STRUCTURE" };
 
 const initialState: State = {
   activeLocationId: null,
@@ -42,12 +45,13 @@ const initialState: State = {
   viewNodes: [],
   editStructure: false,
   masterEditorOpen: false,
+  structureLocationId: null,
 };
 
 export function navigationReducer(state: State, action: NavAction): State {
   switch (action.type) {
     case "SET_LOCATION":
-      return { ...state, activeLocationId: action.locationId, activeViewId: null, path: [] };
+      return { ...state, activeLocationId: action.locationId, activeViewId: null, path: [], structureLocationId: null };
     case "SET_VIEW":
       return { ...state, activeViewId: action.viewId, path: [], editStructure: false };
     case "NAVIGATE_TO":
@@ -66,6 +70,17 @@ export function navigationReducer(state: State, action: NavAction): State {
       return { ...state, editStructure: action.value };
     case "SET_MASTER_EDITOR":
       return { ...state, masterEditorOpen: action.open };
+    case "OPEN_STRUCTURE": {
+      // Map Structure opens over the location's files, so switch to it first
+      const switching = state.activeLocationId !== action.locationId;
+      return {
+        ...state,
+        ...(switching ? { activeLocationId: action.locationId, activeViewId: null, path: [] } : {}),
+        structureLocationId: action.locationId,
+      };
+    }
+    case "CLOSE_STRUCTURE":
+      return { ...state, structureLocationId: null };
   }
 }
 
@@ -118,6 +133,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     setEditStructure: (v) => dispatch({ type: "SET_EDIT_STRUCTURE", value: v }),
     openMasterEditor: () => dispatch({ type: "SET_MASTER_EDITOR", open: true }),
     closeMasterEditor: () => dispatch({ type: "SET_MASTER_EDITOR", open: false }),
+    openStructureMapping: (locationId) => dispatch({ type: "OPEN_STRUCTURE", locationId }),
+    closeStructureMapping: () => dispatch({ type: "CLOSE_STRUCTURE" }),
     refreshViews,
     refreshViewNodes,
   };
