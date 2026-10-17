@@ -204,7 +204,7 @@ const MONTHS = [
 ];
 
 /** Finder's date buckets. Returns [label, rank] where a lower rank is more recent. */
-function dateGroup(iso: string | null | undefined, now: Date): [string, number] {
+export function dateGroup(iso: string | null | undefined, now: Date): [string, number] {
   if (!iso) return ["No Date", Number.MAX_SAFE_INTEGER];
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return ["No Date", Number.MAX_SAFE_INTEGER];
@@ -231,13 +231,13 @@ const SIZE_BUCKETS: [number, string][] = [
   [0, "Less than 10 KB"],
 ];
 
-function sizeGroup(bytes: number | null | undefined): [string, number] {
+export function sizeGroup(bytes: number | null | undefined): [string, number] {
   if (bytes == null) return ["Unknown Size", SIZE_BUCKETS.length];
   const i = SIZE_BUCKETS.findIndex(([min]) => bytes >= min);
   return [SIZE_BUCKETS[i][1], i];
 }
 
-function nameGroup(file: FileRecord): [string, number] {
+export function nameGroup(file: FileRecord): [string, number] {
   const first = fileName(file.file_path).charAt(0).toUpperCase();
   if (/[A-Z]/.test(first)) return [first, first.charCodeAt(0)];
   if (/[0-9]/.test(first)) return ["0–9", 0];

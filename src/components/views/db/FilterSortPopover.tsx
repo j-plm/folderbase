@@ -1,4 +1,6 @@
 import Popover, { popoverField, popoverSelect } from "../../shared/Popover";
+import { useRef, useState } from "react";
+import type React from "react";
 import { SymbolIcon } from "../../../lib/fileIcons";
 import {
   FILTER_OPS,
@@ -9,7 +11,7 @@ import {
   type FilterMatch,
   type FilterRule,
 } from "../../../lib/dbTable";
-import type { SortState } from "../../../lib/columns";
+import { dropIndexAt, moveColumnId, type SortState } from "../../../lib/columns";
 
 export interface FilterColumn {
   id: string;
@@ -18,8 +20,8 @@ export interface FilterColumn {
 }
 
 interface Props {
-  /** Which panel: the Filter button's rules or the Sort button's keys. */
-  section: "filter" | "sort";
+  /** Which panel: the Filter button's rules, the Sort button's keys or the Group button's levels. */
+  section: "filter" | "sort" | "group";
   anchor: HTMLElement;
   onClose: () => void;
   columns: FilterColumn[];
@@ -29,11 +31,22 @@ interface Props {
   onRulesChange: (rules: FilterRule[]) => void;
   onMatchChange: (match: FilterMatch) => void;
   onSortsChange: (sorts: SortState[]) => void;
+  /** Grouping levels, outermost first. */
+  groups: SortState[];
+  onGroupsChange: (groups: SortState[]) => void;
+  /** The order a newly added grouping level starts in. */
+  defaultGroupDirection: (columnId: string) => SortState["direction"];
+  /** Folds every group shut (true) or opens them all. */
+  onCollapseAll: (collapse: boolean) => void;
+  /** Whether a grouping level's groups are all collapsed, all open, or some of each. */
+  groupLevelState: (depth: number) => "collapsed" | "expanded" | "mixed";
+  /** Folds every group at one level shut (true) or opens them. */
+  onCollapseLevel: (depth: number, collapse: boolean) => void;
   /** Known values for a list column, offered when filtering it. */
   valuesFor: (columnId: string) => string[];
 }
 
-/** The database view's filter rules (Filter button) or sort keys (Sort button). */
+/** The database view's filter rules (Filter button), sort keys (Sort button) or grouping levels (Group button). */
 export default function FilterSortPopover({
   section,
   anchor,
@@ -45,6 +58,12 @@ export default function FilterSortPopover({
   onRulesChange,
   onMatchChange,
   onSortsChange,
+  groups,
+  onGroupsChange,
+  defaultGroupDirection,
+  onCollapseAll,
+  groupLevelState,
+  onCollapseLevel,
   valuesFor,
 }: Props) {
   const kindOf = (id: string) => columns.find((c) => c.id === id)?.kind ?? "text";
@@ -61,9 +80,10 @@ export default function FilterSortPopover({
   }
 
   const unsorted = columns.filter((c) => !sorts.some((s) => s.key === c.id));
+  const ungrouped = columns.filter((c) => !groups.some((g) => g.key === c.id));
 
   return (
-    <Popover anchor={anchor} onClose={onClose} className={section === "filter" ? "w-[440px]" : "w-[340px]"}>
+    <Popover anchor={anchor} onClose={onClose} className={section === "filter" ? "w-[440px]" : section === "group" ? "w-[380px]" : "w-[360px]"}>
       <div className="flex flex-col gap-2 p-3">
         {section === "filter" && (
           <>
@@ -129,40 +149,54 @@ export default function FilterSortPopover({
           <>
             <p className="font-semibold">Sort</p>
             {sorts.length === 0 && <p className="text-neutral-500">Unsorted.</p>}
-            {sorts.map((sort, i) => (
-              <div key={sort.key} className="flex items-center gap-1.5">
-                <span className="w-[52px] text-right text-neutral-400 shrink-0">{i === 0 ? "Sort by" : "then by"}</span>
-                <select
-                  value={sort.key}
-                  onChange={(e) => onSortsChange(sorts.map((s, j) => (j === i ? { ...s, key: e.target.value } : s)))}
-                  className={`${popoverSelect} flex-1 min-w-0`}
-                >
-                  {columns
-                    .filter((c) => c.id === sort.key || !sorts.some((s) => s.key === c.id))
-                    .map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.label}
-                      </option>
-                    ))}
-                </select>
-                <select
-                  value={sort.direction}
-                  onChange={(e) =>
-                    onSortsChange(sorts.map((s, j) => (j === i ? { ...s, direction: e.target.value as SortState["direction"] } : s)))
-                  }
-                  className={`${popoverSelect} w-[110px]`}
-                >
-                  <option value="asc">Ascending</option>
-                  <option value="desc">Descending</option>
-                </select>
-                <RemoveButton label="Remove sort" onClick={() => onSortsChange(sorts.filter((_, j) => j !== i))} />
-              </div>
-            ))}
+            <LevelList
+              levels={sorts}
+              columns={columns}
+              lead={(i) => (i === 0 ? "Sort by" : "then by")}
+              leadWidth={52}
+              removeLabel="Remove sort"
+              onKeyChange={(key) => ({ key, direction: "asc" })}
+              onChange={onSortsChange}
+            />
             {unsorted.length > 0 && (
               <AddButton onClick={() => onSortsChange([...sorts, { key: unsorted[0].id, direction: "asc" }])}>
                 {sorts.length === 0 ? "Add Sort" : "Add Sort Level"}
               </AddButton>
             )}
+          </>
+        )}
+
+        {section === "group" && (
+          <>
+            <p className="font-semibold">Group</p>
+            {groups.length === 0 && <p className="text-neutral-500">Not grouped.</p>}
+            <LevelList
+              levels={groups}
+              columns={columns}
+              lead={(i) => (i === 0 ? "Group by" : "then by")}
+              leadWidth={62}
+              removeLabel="Remove grouping level"
+              onKeyChange={(key) => ({ key, direction: defaultGroupDirection(key) })}
+              onChange={onGroupsChange}
+              disclosure={{ stateAt: groupLevelState, onToggle: onCollapseLevel }}
+            />
+            <div className="flex items-center">
+              {ungrouped.length > 0 && (
+                <AddButton
+                  onClick={() =>
+                    onGroupsChange([...groups, { key: ungrouped[0].id, direction: defaultGroupDirection(ungrouped[0].id) }])
+                  }
+                >
+                  {groups.length === 0 ? "Add Grouping" : "Add Grouping Level"}
+                </AddButton>
+              )}
+              {groups.length > 0 && (
+                <span className="ml-auto flex items-center gap-1">
+                  <TextButton onClick={() => onCollapseAll(true)}>Collapse All</TextButton>
+                  <TextButton onClick={() => onCollapseAll(false)}>Expand All</TextButton>
+                </span>
+              )}
+            </div>
           </>
         )}
       </div>
@@ -229,6 +263,191 @@ function AddButton({ onClick, children }: { onClick: () => void; children: strin
     >
       <SymbolIcon name="plus" size={11} fallback="+" />
       {children}
+    </button>
+  );
+}
+
+function TextButton({ onClick, children }: { onClick: () => void; children: string }) {
+  return (
+    <button type="button" onClick={onClick} className="h-6 px-1.5 rounded-[6px] text-blue-400 hover:bg-neutral-700/40">
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Sort keys or grouping levels, in order: each row picks a column and a
+ * direction, and drags by its handle to change the order.
+ */
+function LevelList({
+  levels,
+  columns,
+  lead,
+  leadWidth,
+  removeLabel,
+  onKeyChange,
+  onChange,
+  disclosure,
+}: {
+  levels: SortState[];
+  columns: FilterColumn[];
+  /** The words before a row's column ("Sort by", "then by"). */
+  lead: (index: number) => string;
+  leadWidth: number;
+  removeLabel: string;
+  /** A level once its column is changed to `key`. */
+  onKeyChange: (key: string) => SortState;
+  onChange: (levels: SortState[]) => void;
+  /** Grouping only: a per-level arrow that collapses or expands that level's groups. */
+  disclosure?: {
+    stateAt: (index: number) => "collapsed" | "expanded" | "mixed";
+    onToggle: (index: number, collapse: boolean) => void;
+  };
+}) {
+  const listRef = useRef<HTMLDivElement>(null);
+  /** The level being dragged, and the slot (0..levels.length) it would drop into. */
+  const [drag, setDrag] = useState<{ key: string; target: number } | null>(null);
+
+  function rowHeights(): number[] {
+    const list = listRef.current;
+    return list ? [...list.children].filter((el) => el instanceof HTMLElement && el.dataset.level).map((el) => (el as HTMLElement).offsetHeight + 8) : [];
+  }
+
+  function startDrag(e: React.PointerEvent<HTMLElement>, key: string) {
+    if (e.button !== 0 || levels.length < 2) return;
+    e.preventDefault();
+    const handle = e.currentTarget;
+    handle.setPointerCapture(e.pointerId);
+    const heights = rowHeights();
+    const top = listRef.current?.getBoundingClientRect().top ?? 0;
+    const targetAt = (clientY: number) => dropIndexAt(heights, clientY - top, 0);
+    setDrag({ key, target: levels.findIndex((l) => l.key === key) });
+    let target = levels.findIndex((l) => l.key === key);
+    const onMove = (ev: PointerEvent) => {
+      target = targetAt(ev.clientY);
+      setDrag({ key, target });
+    };
+    const onUp = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      setDrag(null);
+      const ids = levels.map((l) => l.key);
+      const order = moveColumnId(ids, key, target);
+      if (order.some((id, i) => id !== ids[i])) onChange(order.map((id) => levels.find((l) => l.key === id)!));
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  }
+
+  // The insertion line: above the row at the target slot, or below the last row
+  const from = drag ? levels.findIndex((l) => l.key === drag.key) : -1;
+  const showLine = drag != null && drag.target !== from && drag.target !== from + 1;
+
+  return (
+    <div ref={listRef} className="relative flex flex-col gap-2">
+      {levels.map((level, i) => (
+        <div
+          key={level.key}
+          data-level={level.key}
+          className={`relative flex items-center gap-1.5 ${drag?.key === level.key ? "opacity-50" : ""}`}
+        >
+          {showLine && drag!.target === i && <DropLine edge="top" />}
+          {showLine && i === levels.length - 1 && drag!.target === levels.length && <DropLine edge="bottom" />}
+          <span
+            onPointerDown={(e) => startDrag(e, level.key)}
+            title={levels.length > 1 ? "Drag to reorder" : undefined}
+            aria-label="Drag to reorder"
+            className={`w-4 h-5 shrink-0 flex items-center justify-center text-neutral-500 ${
+              levels.length > 1 ? "cursor-grab active:cursor-grabbing hover:text-neutral-300" : "opacity-40"
+            }`}
+          >
+            <SymbolIcon name="line.3.horizontal" size={11} fallback="≡" />
+          </span>
+          <span className="text-right text-neutral-400 shrink-0" style={{ width: leadWidth }}>
+            {lead(i)}
+          </span>
+          <select
+            value={level.key}
+            onChange={(e) => onChange(levels.map((l, j) => (j === i ? onKeyChange(e.target.value) : l)))}
+            className={`${popoverSelect} flex-1 min-w-0`}
+          >
+            {columns
+              .filter((c) => c.id === level.key || !levels.some((l) => l.key === c.id))
+              .map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+          </select>
+          <select
+            value={level.direction}
+            onChange={(e) =>
+              onChange(levels.map((l, j) => (j === i ? { ...l, direction: e.target.value as SortState["direction"] } : l)))
+            }
+            className={`${popoverSelect} w-[110px]`}
+          >
+            <option value="asc">Ascending</option>
+            <option value="desc">Descending</option>
+          </select>
+          {disclosure && (
+            <LevelDisclosure
+              state={disclosure.stateAt(i)}
+              name={columns.find((c) => c.id === level.key)?.label ?? ""}
+              // Some open, or all open: collapse; all shut: expand
+              onToggle={(collapse) => disclosure.onToggle(i, collapse)}
+            />
+          )}
+          <RemoveButton label={removeLabel} onClick={() => onChange(levels.filter((_, j) => j !== i))} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DropLine({ edge }: { edge: "top" | "bottom" }) {
+  return (
+    <span
+      aria-hidden
+      className={`absolute left-0 right-0 h-[2px] rounded-full bg-blue-500 pointer-events-none ${
+        edge === "top" ? "-top-[5px]" : "-bottom-[5px]"
+      }`}
+    />
+  );
+}
+
+/**
+ * A grouping level's arrow, as on the table's group headings: pointing down
+ * while its groups are open, right once they are all collapsed. Clicking
+ * collapses the level, or expands it when it's already all collapsed.
+ */
+function LevelDisclosure({
+  state,
+  name,
+  onToggle,
+}: {
+  state: "collapsed" | "expanded" | "mixed";
+  name: string;
+  onToggle: (collapse: boolean) => void;
+}) {
+  const collapse = state !== "collapsed";
+  const label = `${collapse ? "Collapse" : "Expand"} ${name} Groups`;
+  return (
+    <button
+      type="button"
+      title={state === "mixed" ? `${label} (some are collapsed)` : label}
+      aria-label={label}
+      aria-expanded={state !== "collapsed"}
+      onClick={() => onToggle(collapse)}
+      className="w-5 h-5 shrink-0 flex items-center justify-center rounded-full text-neutral-400 hover:text-neutral-100 hover:bg-neutral-700/60"
+    >
+      <SymbolIcon
+        name="chevron.right"
+        size={10}
+        fallback="›"
+        className={`transition-transform duration-150 ${state === "collapsed" ? "" : state === "mixed" ? "rotate-45" : "rotate-90"}`}
+      />
     </button>
   );
 }

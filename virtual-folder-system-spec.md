@@ -311,9 +311,9 @@ The physical folder structure is preserved untouched. The user is not required t
 
 ### Setting Up a Location
 
-Setup is the ingestion side of the app: bringing a new drive or folder into Folderbase, and treating its existing folder structure as an initial source of metadata.
+Setup is the ingestion side of the app: bringing a new drive or folder into Folderbase, and treating its existing folder structure as an initial source of metadata. It is a dedicated function, used once per location and revisited rarely, and it lives on its own surface. It is not a control in everyday navigation or in the database view.
 
-**Terminology.** Two verbs are kept apart. A location is **added** (and **removed**): that sets which files Folderbase knows about. A folder is **mapped** (and **unmapped**) to a property value: that says what the folder means. "Map" is used only in the second sense (Map Structure, Map Tag, "Mapped to Client"). "Mount" is not used, because it means attaching a volume to the OS, and a location whose drive is unplugged is described as *offline* or *not connected*. It is a dedicated function, used once per location and revisited rarely, and it lives on its own surface. It is not a control in everyday navigation or in the database view.
+**Terminology.** Two verbs are kept apart. A location is **added** (and **removed**): that sets which files Folderbase knows about. A folder is **mapped** (and **unmapped**) to a property value: that says what the folder means. "Map" is used only in the second sense (Map Structure, Map Tag, "Mapped to Client"). "Mount" is not used, because it means attaching a volume to the OS, and a location whose drive is unplugged is described as *offline* or *not connected*.
 
 The flow:
 
@@ -613,13 +613,17 @@ Selection follows spreadsheet conventions:
 - **Fill handle**: a selection of cells shows a small accent dot straddling its bottom-right corner. Dragging it up or down repeats the selected values into the cells it covers, as in Excel or Numbers
 - **Copy and paste**: Cmd-C copies the selected cells; Cmd-V pastes. A single copied value fills every selected cell; a block of values pastes from the anchor cell downward and to the right. Pasted text is converted to each column's type, and new Dropdown or Multi-select values are added to the registry
 
-#### Filter and Sort
+#### Filter, Sort and Group
 
 - **Header click** cycles that column through ascending, descending and unsorted
-- Separate **Filter** and **Sort** buttons, side by side to the left of the search field, each open a panel for detailed control:
+- Separate **Filter**, **Sort** and **Group** buttons, side by side to the left of the search field, each open a panel for detailed control:
   - **Filter**: a list of rules (column, condition, value), combined with *all* or *any*. Conditions depend on the column type: contains / is / is not / is empty / is not empty for text; = ≠ > < ≥ ≤ for numbers; is / before / after for dates; has any of / has none of for Dropdown and Multi-select, and for the native Extension and Kind columns, whose values are picked from those the files have
   - **Sort**: an ordered list of sort keys (then by…), each ascending or descending
-- Each button shows how many rules or sort levels are active, so a filtered table is never mistaken for a complete one
+  - **Group**: an ordered list of grouping levels (Group by… then by…), each ascending or descending, with Collapse All and Expand All. Also a header's context menu ▸ Group by *Property*, which adds or removes that level
+- Sort keys and grouping levels are reordered by dragging each row's handle
+- Each button shows how many rules, sort levels or grouping levels are active, so a filtered table is never mistaken for a complete one
+- **Groups** show as heading rows (label and file count) with a disclosure arrow on the left; nested levels step in. Clicking a heading collapses or expands it, and Option-click does the same to every group at that level, as with Finder's disclosure triangles. Right-clicking a heading offers Collapse/Expand that group, Collapse/Expand All *Property* Groups (its level) and, with several levels, Collapse/Expand All Groups. In the Group panel each level has its own arrow, pointing down while its groups are open, right once they are all collapsed and diagonally when some are, which collapses or expands that level alone Rows are sorted by the Sort keys within each group, and striping restarts in each group. Grouping and which groups are collapsed are kept per location
+- **Group keys**: Finder's own buckets for the native columns, as Group By in the other view modes (Name by first letter, Kind by category, Size by range, Created and Modified by Today / Yesterday / Previous 7 Days…); Path by containing folder; properties by value, with Date properties by month and a Multi-select by its combination of values (so each file appears once). Files without a value go in a last "No *Property*" group
 
 #### Undo and redo
 

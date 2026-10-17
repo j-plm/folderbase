@@ -27,7 +27,8 @@ import {
 import type { FileRecord, Property, PropertyConfig, PropertyValue, ValueType } from "../../types";
 import { FileIcon, SymbolIcon } from "../../lib/fileIcons";
 import { useNavigation } from "../../contexts/NavigationContext";
-import { formatFinderDate, formatFinderSize, kindCategory } from "../../lib/arrange";
+import { KIND_CATEGORIES, dateGroup, formatFinderDate, formatFinderSize, kindCategory, nameGroup, sizeGroup } from "../../lib/arrange";
+import { flattenGroups, groupIds as groupIdsAll, groupRows, levelState, setLevelCollapsed, toggleCollapsed, type GroupKey, type GroupLevel, type RowGroup } from "../../lib/dbGroups";
 import {
   CELL_PADDING,
   cellBoxStyle,
@@ -174,6 +175,17 @@ function propertyColumn(name: string, type: ValueType): ColumnDef {
   return { id: PROP_PREFIX + name, label: propertyLabel(name), weight: 1.4, minWidth: 90, align: type === "number" ? "right" : undefined };
 }
 
+/** A column's name as its header shows it. */
+function columnLabel(columnId: string): string {
+  if (columnId.startsWith(PROP_PREFIX)) return propertyLabel(columnId.slice(PROP_PREFIX.length));
+  return [...STANDARD_COLUMNS, TAGS_COLUMN].find((c) => c.id === columnId)?.label ?? columnId;
+}
+
+/** A new grouping level's order: newest and largest first for dates and sizes, as Finder groups them. */
+function defaultGroupDirection(columnId: string): "asc" | "desc" {
+  return columnId === "created" || columnId === "modified" || columnId === "size" ? "desc" : "asc";
+}
+
 /** A native column's value for filtering. */
 function nativeValue(file: FileRecord, key: string): unknown {
   switch (key) {
@@ -210,6 +222,14 @@ const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON
 const CELL = "shrink-0 px-3 truncate whitespace-nowrap";
 // Finder list metrics: 20pt rows, rounded stripes inset 10px.
 const ROW_HEIGHT = 20;
+/** A group's heading row, with room above it to set it off from the rows before. */
+const GROUP_HEIGHT = 30;
+/** Each nested grouping level's heading steps in by this much. */
+const GROUP_INDENT = 16;
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
 const INSET = 10;
 
 const TOOLBAR_BUTTON = "px-2.5 py-1 text-xs rounded-md border whitespace-nowrap transition-colors";
@@ -251,6 +271,9 @@ function saveJson(key: string, value: unknown) {
 export default function LocationDatabaseView({ files, locationId, onChanged }: Props) {
   const [search, setSearch] = useState("");
   const [sorts, setSorts] = useState<SortState[]>([DEFAULT_SORT]);
+  /** Grouping levels (outermost first) and the groups folded shut; both kept per location. */
+  const [groupLevels, setGroupLevelsState] = useState<GroupLevel[]>([]);
+  const [collapsed, setCollapsedState] = useState<ReadonlySet<string>>(() => new Set());
   const [rules, setRules] = useState<FilterRule[]>([]);
   const [match, setMatch] = useState<FilterMatch>("all");
   const [indexing, setIndexing] = useState<{
@@ -266,9 +289,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
    */
   const [propertyMenu, setPropertyMenu] = useState<{ anchor: MenuAnchor; columnId?: string | null } | null>(null);
   /** The Filter or Sort panel, while open. */
-  const [panel, setPanel] = useState<"filter" | "sort" | null>(null);
+  const [panel, setPanel] = useState<"filter" | "sort" | "group" | null>(null);
   const filterButtonRef = useRef<HTMLButtonElement>(null);
   const sortButtonRef = useRef<HTMLButtonElement>(null);
+  const groupButtonRef = useRef<HTMLButtonElement>(null);
   /** A property whose name is being edited in its header. */
   const [renaming, setRenaming] = useState<{ name: string; text: string; error?: string } | null>(null);
   /** Sort order before the last header click, restored when that click turns out to start a double-click. */
@@ -304,6 +328,15 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   // Edits show at once; the files reload once the writes finish
   const [patches, setPatches] = useState<Map<string, Record<string, unknown>>>(() => new Map());
+  /**
+   * A Multi-select cell's ticks while its picker is open: shown in the cell at
+   * once, written (as one undoable edit) when the picker closes. Kept apart from
+   * `patches` so a reload mid-edit (after a rename, say) doesn't drop it.
+   */
+  const [listPreview, setListPreview] = useState<{ file_id: string; key: string; value: unknown } | null>(null);
+  // Read at commit time, which may come from a handler bound before the last tick
+  const listPreviewRef = useRef(listPreview);
+  listPreviewRef.current = listPreview;
   const pendingWrites = useRef(0);
   const history = useUndo(
     locationId,
@@ -336,7 +369,22 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     setFrozen(loadJson(`col-freeze-${locationId}`, true));
     setNoWrap(loadJson<string[]>(`col-nowrap-${locationId}`, []));
     setWrapSourceTags(loadJson(`col-wrap-source-${locationId}`, true));
+    setGroupLevelsState(loadJson<GroupLevel[]>(`col-group-${locationId}`, []));
+    setCollapsedState(new Set(loadJson<string[]>(`col-group-collapsed-${locationId}`, [])));
   }, [locationId]);
+
+  function setGroupLevels(next: GroupLevel[] | ((prev: GroupLevel[]) => GroupLevel[])) {
+    setGroupLevelsState((prev) => {
+      const value = typeof next === "function" ? next(prev) : next;
+      saveJson(`col-group-${locationId}`, value);
+      return value;
+    });
+  }
+
+  function setCollapsed(next: ReadonlySet<string>) {
+    setCollapsedState(next);
+    saveJson(`col-group-collapsed-${locationId}`, [...next]);
+  }
 
   useEffect(() => {
     getLocations()
@@ -451,18 +499,19 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   // ── Rows: edits applied, then search, filters and sort ─────────────────────
 
   const rows = useMemo(() => {
-    if (patches.size === 0) return files;
+    if (patches.size === 0 && !listPreview) return files;
     return files.map((f) => {
       const patch = patches.get(f.file_id);
-      if (!patch) return f;
+      const preview = listPreview?.file_id === f.file_id ? { [listPreview.key]: listPreview.value } : null;
+      if (!patch && !preview) return f;
       const metadata: Record<string, unknown> = { ...(f.metadata ?? {}) };
-      for (const [k, v] of Object.entries(patch)) {
+      for (const [k, v] of Object.entries({ ...patch, ...preview })) {
         if (v == null) delete metadata[k];
         else metadata[k] = v;
       }
       return { ...f, metadata };
     });
-  }, [files, patches]);
+  }, [files, patches, listPreview]);
 
   // Fresh data from disk replaces the optimistic edits once no writes are in flight
   useEffect(() => {
@@ -494,7 +543,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   // Only re-filter and re-sort when the inputs change, not on every render
   // (column drags and selection clicks re-render many times a second)
-  const sorted = useMemo(() => {
+  const matched = useMemo(() => {
     const q = search.toLowerCase();
     const searched = q
       ? rows.filter(
@@ -505,6 +554,80 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       : rows;
     return multiSort(applyFilters(searched, rules, match, columnValue, kindOf), sorts, sortValue);
   }, [rows, search, rules, match, sorts, columnValue, kindOf, sortValue]);
+
+  /** Which group a file falls in for a column: Finder's buckets for its own columns, the value for properties. */
+  const groupKey = useCallback(
+    (file: FileRecord, columnId: string): GroupKey | null => {
+      const bucket = ([label, rank]: [string, number]) => ({ label, rank });
+      if (!columnId.startsWith(PROP_PREFIX)) {
+        switch (columnId) {
+          case "name":
+            return bucket(nameGroup(file));
+          case "type": {
+            const category = kindCategory(file);
+            return { label: category, rank: KIND_CATEGORIES.indexOf(category) };
+          }
+          case "size":
+            if (file.file_size == null) return null;
+            // Buckets run largest first; ranked so ascending is smallest first
+            return { ...bucket(sizeGroup(file.file_size)), rank: -sizeGroup(file.file_size)[1] };
+          case "created":
+          case "modified": {
+            const iso = columnId === "created" ? file.timestamp : file.modified_at ?? file.timestamp;
+            if (!iso) return null;
+            // Ranked so ascending is oldest first (Finder's buckets count back from today)
+            const [label, rank] = dateGroup(iso, new Date());
+            return { label, rank: -rank };
+          }
+          case "path": {
+            const rel = (file.relative_path ?? "").replace(/\\/g, "/");
+            const folder = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
+            return { label: folder || "Top Level", rank: folder };
+          }
+          default: {
+            const v = nativeValue(file, columnId);
+            const list = listValues(v);
+            if (list.length === 0) return v == null || v === "" ? null : { label: String(v), rank: String(v) };
+            const label = [...list].sort((a, b) => a.localeCompare(b)).join(", ");
+            return { label, rank: label };
+          }
+        }
+      }
+      const name = propName(columnId);
+      const v = metaValue(file, name);
+      if (isEmptyValue(v)) return null;
+      const type = typeOf(name);
+      if (type === "number" && typeof v === "number") return { label: valueToText(v), rank: v };
+      if (type === "date") {
+        const key = dateKey(v);
+        if (!key) return { label: valueToText(v), rank: valueToText(v) };
+        const [year, month] = key.split("-");
+        return { label: `${MONTH_NAMES[Number(month) - 1]} ${year}`, rank: `${year}-${month}` };
+      }
+      if (type === "array") {
+        // A file with several values is grouped under that combination
+        const label = [...listValues(v)].sort((a, b) => a.localeCompare(b)).join(", ");
+        return { label, rank: label };
+      }
+      return { label: valueToText(v), rank: valueToText(v) };
+    },
+    [typeOf]
+  );
+
+  // Grouped: headings and rows in display order; `sorted` is the rows left showing
+  const groups = useMemo(() => {
+    if (groupLevels.length === 0) return null;
+    return groupRows(matched, groupLevels, groupKey, (columnId) => `No ${columnLabel(columnId)}`);
+  }, [matched, groupLevels, groupKey]);
+  const { items, rows: sorted } = useMemo(() => flattenGroups(matched, groups, collapsed), [matched, groups, collapsed]);
+  /** Each visible row's position in `items` (which also holds the group headings). */
+  const itemOfRow = useMemo(() => {
+    const out: number[] = [];
+    items.forEach((item, i) => {
+      if (item.type === "row") out.push(i);
+    });
+    return out;
+  }, [items]);
 
   // ── Columns ───────────────────────────────────────────────────────────────
 
@@ -648,7 +771,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   const layout = useColumnLayout(
     columns,
     `db-${locationId}`,
-    (key) => sorted.map((f) => measureCell(f, key)),
+    (key) => matched.map((f) => measureCell(f, key)),
     INSET,
     hideColumn
   );
@@ -691,9 +814,9 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   // Empty and non-empty are judged on the rows shown now (after search and
   // filters), for the custom columns only; the result is a one-off change to
   // the visibility settings
-  const hasValue = (name: string) => sorted.some((f) => !isEmptyValue(metaValue(f, name)));
+  const hasValue = (name: string) => matched.some((f) => !isEmptyValue(metaValue(f, name)));
   const emptyShown =
-    sorted.length > 0 ? customProperties.filter((p) => visibleProperties.includes(p) && !hasValue(p)) : [];
+    matched.length > 0 ? customProperties.filter((p) => visibleProperties.includes(p) && !hasValue(p)) : [];
   const nonEmptyHidden = customProperties.filter((p) => !visibleProperties.includes(p) && hasValue(p));
 
   const allExtractedShown = extractedProperties.every((p) => visibleProperties.includes(p));
@@ -796,6 +919,54 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   const closeColumnsMenu = useCallback(() => setPropertyMenu(null), []);
   const closePanel = useCallback(() => setPanel(null), []);
+  /** Right-click on a group heading: this group, its level, or every group. */
+  function showGroupMenu(e: React.MouseEvent, group: RowGroup<FileRecord>, isCollapsed: boolean) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!groups) return;
+    const level = groupLevels[group.depth];
+    const levelName = level ? columnLabel(level.key) : "";
+    const state = levelState(collapsed, groups, group.depth);
+    const allShut = groupIdsAll(groups).every((id) => collapsed.has(id));
+    showContextMenu(
+      [
+        {
+          type: "item",
+          text: isCollapsed ? `Expand “${group.label}”` : `Collapse “${group.label}”`,
+          action: () => setCollapsed(toggleCollapsed(collapsed, group, groups)),
+        },
+        { type: "separator" },
+        {
+          type: "item",
+          text: `Collapse All ${levelName} Groups`,
+          enabled: state !== "collapsed",
+          action: () => setCollapsed(setLevelCollapsed(collapsed, groups, group.depth, true)),
+        },
+        {
+          type: "item",
+          text: `Expand All ${levelName} Groups`,
+          enabled: state !== "expanded",
+          action: () => setCollapsed(setLevelCollapsed(collapsed, groups, group.depth, false)),
+        },
+        ...(groupLevels.length > 1
+          ? ([
+              { type: "separator" },
+              {
+                type: "item",
+                text: "Collapse All Groups",
+                enabled: !allShut,
+                action: () => setCollapsed(new Set(groupIdsAll(groups))),
+              },
+              { type: "item", text: "Expand All Groups", enabled: collapsed.size > 0, action: () => setCollapsed(new Set()) },
+            ] as MenuEntry[])
+          : []),
+      ],
+      { event: e }
+    );
+  }
+
+  const panelButton = (p: "filter" | "sort" | "group") =>
+    p === "filter" ? filterButtonRef : p === "sort" ? sortButtonRef : groupButtonRef;
 
   // ── Property management ───────────────────────────────────────────────────
 
@@ -848,12 +1019,14 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     });
     setRules((rs) => rs.map((r) => (r.column === oldId ? { ...r, column: newId } : r)));
     setSorts((ss) => ss.map((s) => (s.key === oldId ? { ...s, key: newId } : s)));
+    setGroupLevels((gs) => gs.map((g) => (g.key === oldId ? { ...g, key: newId } : g)));
   }
 
   function removeFromView(name: string) {
     updateVisibleProperties((prev) => prev.filter((p) => p !== name));
     setRules((rs) => rs.filter((r) => r.column !== PROP_PREFIX + name));
     setSorts((ss) => ss.filter((s) => s.key !== PROP_PREFIX + name));
+    setGroupLevels((gs) => gs.filter((g) => g.key !== PROP_PREFIX + name));
   }
 
   async function coreCreate(name: string, type: ValueType, configJson: string | null) {
@@ -1032,7 +1205,17 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       if (col.sortable !== false) {
         entries.push(
           { type: "item", text: "Sort Ascending", action: () => setSorts([{ key: col.id, direction: "asc" }]) },
-          { type: "item", text: "Sort Descending", action: () => setSorts([{ key: col.id, direction: "desc" }]) }
+          { type: "item", text: "Sort Descending", action: () => setSorts([{ key: col.id, direction: "desc" }]) },
+          {
+            type: "check",
+            text: `Group by ${col.label}`,
+            checked: groupLevels.some((g) => g.key === col.id),
+            // Adds a level (inside any already there), or removes it
+            action: () =>
+              setGroupLevels((gs) =>
+                gs.some((g) => g.key === col.id) ? gs.filter((g) => g.key !== col.id) : [...gs, { key: col.id, direction: defaultGroupDirection(col.id) }]
+              ),
+          }
         );
       }
       if (col.id === TAGS_COLUMN.id) {
@@ -1099,33 +1282,40 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       return rowHeightFor(lines);
     });
   }, [columns, isEditable, wraps, wrapSourceTags, shownSourceTags, layout.widths, sorted]);
-  const rowTops = useMemo(() => {
-    if (!rowHeights) return null;
-    const tops = new Array<number>(rowHeights.length);
+  const itemSize = useCallback(
+    (i: number) => {
+      const item = items[i];
+      return item.type === "group" ? GROUP_HEIGHT : rowHeights?.[item.index] ?? ROW_HEIGHT;
+    },
+    [items, rowHeights]
+  );
+  // Each item's top, for finding the row under the pointer while dragging the fill handle
+  const itemTops = useMemo(() => {
+    const tops = new Array<number>(items.length);
     let y = 0;
-    rowHeights.forEach((h, i) => {
+    for (let i = 0; i < items.length; i++) {
       tops[i] = y;
-      y += h;
-    });
+      y += itemSize(i);
+    }
     return tops;
-  }, [rowHeights]);
+  }, [items, itemSize]);
 
   const rowVirtualizer = useVirtualizer({
-    count: sorted.length,
+    count: items.length,
     getScrollElement: () => layout.container,
-    estimateSize: (i) => rowHeights?.[i] ?? ROW_HEIGHT,
+    estimateSize: itemSize,
     overscan: 10,
   });
   // Re-lay out the rows when wrapping changes their heights
   useLayoutEffect(() => {
     rowVirtualizer.measure();
-  }, [rowHeights, rowVirtualizer]);
+  }, [itemSize, rowVirtualizer]);
 
   // Rows: clicking a native cell (Name, Size…) selects the row, as in Finder
   const selection = useSelection(sorted, {
     reportStatus: false,
     arrowKeys: true,
-    onReveal: (index) => rowVirtualizer.scrollToIndex(index),
+    onReveal: (index) => rowVirtualizer.scrollToIndex(itemOfRow[index] ?? index),
   });
 
   // Cells: clicking a custom property cell selects just that cell
@@ -1171,7 +1361,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   function reveal(ref: CellRef | null) {
     const i = ref ? rowIndex.get(ref.row) : undefined;
-    if (i != null) rowVirtualizer.scrollToIndex(i);
+    if (i != null) rowVirtualizer.scrollToIndex(itemOfRow[i] ?? i);
   }
 
   /**
@@ -1342,7 +1532,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
     const rowAt = (clientY: number) => {
       const y = clientY - body.getBoundingClientRect().top;
-      const index = rowTops ? rowAtOffset(rowTops, y) : Math.floor(y / ROW_HEIGHT);
+      // Over a group heading, the row just after it (or the last row, past the end)
+      let item = rowAtOffset(itemTops, y);
+      while (item < items.length && items[item].type === "group") item++;
+      const at = items[item];
+      const index = at?.type === "row" ? at.index : fillGrid.rows.length - 1;
       return Math.max(0, Math.min(fillGrid.rows.length - 1, index));
     };
     const update = () => {
@@ -1956,10 +2150,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       <div className="flex items-center gap-3 px-4 py-2.5 border-b border-neutral-700/60 shrink-0">
         <span className="flex-1 min-w-0 truncate whitespace-nowrap text-neutral-500 text-xs">
           {/* The table's own count line carries the selection, rather than the toolbar */}
-          {selectionLabel({ selected: selectedFiles, total: sorted.length }) ??
-            (sorted.length === rows.length
-              ? `${sorted.length.toLocaleString()} files`
-              : `${sorted.length.toLocaleString()} of ${rows.length.toLocaleString()} files`)}
+          {selectionLabel({ selected: selectedFiles, total: matched.length }) ??
+            (matched.length === rows.length
+              ? `${matched.length.toLocaleString()} files`
+              : `${matched.length.toLocaleString()} of ${rows.length.toLocaleString()} files`)}
         </span>
         <div className="flex items-center gap-1.5 shrink-0">
           <button
@@ -1977,6 +2171,14 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           >
             <SymbolIcon name="arrow.up.arrow.down" size={11} fallback="↕" />
             {sorts.length > 1 ? `Sort (${sorts.length})` : "Sort"}
+          </button>
+          <button
+            ref={groupButtonRef}
+            onClick={() => setPanel((p) => (p === "group" ? null : "group"))}
+            className={`${TOOLBAR_BUTTON} flex items-center gap-1 ${groupLevels.length > 0 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
+          >
+            <SymbolIcon name="square.grid.3x2" size={11} fallback="▦" />
+            {groupLevels.length > 0 ? `Group (${groupLevels.length})` : "Group"}
           </button>
         </div>
         <input
@@ -2119,7 +2321,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
             ) : undefined
           }
         />
-        {sorted.length === 0 ? (
+        {matched.length === 0 ? (
           <div className="flex items-center justify-center py-16 text-neutral-500 text-sm">
             {files.length === 0
               ? indexing && !indexing.done
@@ -2138,11 +2340,55 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               }}
             >
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                const file = sorted[virtualRow.index];
+                const item = items[virtualRow.index];
+                if (item.type === "group") {
+                  const { group } = item;
+                  return (
+                    <div
+                      key={`group:${group.id}`}
+                      role="button"
+                      aria-expanded={!item.collapsed}
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        width: "100%",
+                        height: `${virtualRow.size}px`,
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // Option-click opens or closes every group at this level, as with Finder's disclosure triangles
+                        if (groups) setCollapsed(toggleCollapsed(collapsed, group, groups, e.altKey));
+                      }}
+                      onContextMenu={(e) => showGroupMenu(e, group, item.collapsed)}
+                      className="flex items-end cursor-default select-none"
+                    >
+                      {/* Stays in view when the table scrolls sideways */}
+                      <div
+                        className="sticky flex items-center gap-1 h-[22px] pr-2 text-body"
+                        style={{ left: INSET, paddingLeft: group.depth * GROUP_INDENT }}
+                      >
+                        <SymbolIcon
+                          name="chevron.right"
+                          size={10}
+                          fallback="›"
+                          className={`w-4 text-neutral-500 transition-transform duration-150 ${item.collapsed ? "" : "rotate-90"}`}
+                        />
+                        <span className="font-semibold text-neutral-100 truncate max-w-[480px]">{group.label}</span>
+                        <span className="text-neutral-500 tabular-nums">{group.count.toLocaleString()}</span>
+                      </div>
+                    </div>
+                  );
+                }
+                const file = item.row;
+                const rowIdx = item.index;
                 const isSelected = selection.isSelected(file.file_id);
-                // Adjacent selected rows join into one block, as in Finder
-                const joinsAbove = isSelected && selection.isSelected(sorted[virtualRow.index - 1]?.file_id);
-                const joinsBelow = isSelected && selection.isSelected(sorted[virtualRow.index + 1]?.file_id);
+                // Adjacent selected rows join into one block, as in Finder (not across a group heading)
+                const prev = items[virtualRow.index - 1];
+                const next = items[virtualRow.index + 1];
+                const joinsAbove = isSelected && prev?.type === "row" && selection.isSelected(prev.row.file_id);
+                const joinsBelow = isSelected && next?.type === "row" && selection.isSelected(next.row.file_id);
                 return (
                   <div
                     key={file.file_id}
@@ -2154,7 +2400,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                       height: `${virtualRow.size}px`,
                       transform: `translateY(${virtualRow.start}px)`,
                       // Lift the row with the fill handle so the handle overlaps the row below
-                      zIndex: !editing && solidRect?.r1 === virtualRow.index ? 2 : undefined,
+                      zIndex: !editing && solidRect?.r1 === rowIdx ? 2 : undefined,
                     }}
                     onClick={(e) => {
                       setCellSel(EMPTY_CELLS);
@@ -2166,12 +2412,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                     } ${joinsBelow ? "rounded-b-none" : ""} ${
                       isSelected
                         ? "native-selected"
-                        : virtualRow.index % 2 === 1
+                        : item.stripe % 2 === 1
                           ? "bg-neutral-850"
                           : ""
                     }`}
                   >
-                    {columns.map((col) => renderCell(col, file, virtualRow.index, isSelected))}
+                    {columns.map((col) => renderCell(col, file, rowIdx, isSelected))}
                   </div>
                 );
               })}
@@ -2215,13 +2461,36 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           onRenameValue={(from, to) => renameListValue(editingList.ref.col, from, to)}
           sourcesOf={(value) => sourcesOf(editingList.ref.col, value)}
           usage={(value) => valueUsage(editingList.ref.col, value)}
+          onPreview={(value) => {
+            const name = propName(editingList.ref.col);
+            setListPreview({ file_id: editingList.ref.row, key: name, value: coerceValue(value, typeOf(name), configOf(name)) });
+          }}
           onCommit={(value, move) => {
             listMove.current = move;
+            // Compared with (and undone to) the value from before the ticks were previewed
+            const previewed = listPreviewRef.current;
+            setListPreview(null);
+            if (previewed) {
+              const value_ = coerceValue(value, typeOf(previewed.key), configOf(previewed.key));
+              const original = metaValue(files.find((f) => f.file_id === previewed.file_id), previewed.key);
+              const patched = patches.get(previewed.file_id);
+              const before = patched && previewed.key in patched ? patched[previewed.key] : original;
+              if (sameValue(value_, before)) return;
+              const edit = { file_id: previewed.file_id, key: previewed.key, value: value_ };
+              history.push({
+                label: "Edit",
+                undo: () => applyEdits([{ ...edit, value: before ?? null }], { select: true, queued: false }),
+                redo: () => applyEdits([edit], { select: true, queued: false }),
+              });
+              applyEdits([edit]);
+              return;
+            }
             writeCells([{ ...editingList.ref, value }]);
           }}
           onClose={() => {
             const move = listMove.current;
             listMove.current = "none";
+            setListPreview(null);
             endEdit(move);
           }}
         />
@@ -2249,11 +2518,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         />
       )}
 
-      {panel && (panel === "filter" ? filterButtonRef : sortButtonRef).current && (
+      {panel && panelButton(panel).current && (
         <FilterSortPopover
           key={panel}
           section={panel}
-          anchor={(panel === "filter" ? filterButtonRef : sortButtonRef).current!}
+          anchor={panelButton(panel).current!}
           onClose={closePanel}
           columns={filterColumns}
           rules={rules}
@@ -2262,6 +2531,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           onRulesChange={setRules}
           onMatchChange={setMatch}
           onSortsChange={setSorts}
+          groups={groupLevels}
+          onGroupsChange={setGroupLevels}
+          defaultGroupDirection={defaultGroupDirection}
+          onCollapseAll={(collapse) => setCollapsed(collapse && groups ? new Set(groupIdsAll(groups)) : new Set())}
+          groupLevelState={(depth) => (groups ? levelState(collapsed, groups, depth) : "expanded")}
+          onCollapseLevel={(depth, collapse) => groups && setCollapsed(setLevelCollapsed(collapsed, groups, depth, collapse))}
           valuesFor={valuesFor}
         />
       )}

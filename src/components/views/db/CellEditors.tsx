@@ -118,7 +118,8 @@ export function TextCellEditor({
 /**
  * Value picker for Select and Multi-select cells: the registered values with
  * the cell's checked, a field that filters them, and "Add" for a new value.
- * A Select commits on the first pick; a Multi-select stays open for more.
+ * A Select commits on the first pick; a Multi-select stays open for more,
+ * showing each tick in the cell as it's made and committing when it closes.
  */
 export function ListCellEditor({
   anchor,
@@ -127,6 +128,7 @@ export function ListCellEditor({
   options,
   seed = "",
   onCommit,
+  onPreview,
   onClose,
   onDeleteValue,
   usage,
@@ -140,6 +142,8 @@ export function ListCellEditor({
   /** Text typed into the cell that opened the picker. */
   seed?: string;
   onCommit: (value: unknown, move: CommitMove) => void;
+  /** A Multi-select's ticks so far, to show in the cell before the commit. */
+  onPreview?: (value: unknown) => void;
   onClose: () => void;
   /** Deletes a value from the property and every file that has it. */
   onDeleteValue?: (value: string) => Promise<void>;
@@ -155,6 +159,18 @@ export function ListCellEditor({
   const [highlight, setHighlight] = useState(0);
   const chosenRef = useRef(chosen);
   chosenRef.current = chosen;
+
+  // Each tick shows in the cell straight away (not on the first render: nothing has changed yet)
+  const previewed = useRef(false);
+  useEffect(() => {
+    if (!multiple) return;
+    if (!previewed.current) {
+      previewed.current = true;
+      return;
+    }
+    onPreview?.(chosen.length ? chosen : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chosen, multiple]);
 
   /** Values deleted or renamed while the picker is open, shown as they'll be before the reload catches up. */
   const [removed, setRemoved] = useState<string[]>([]);
