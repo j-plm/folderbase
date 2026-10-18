@@ -75,6 +75,8 @@ import { selectionLabel } from "../../lib/selectionStatus";
 import { describeRefresh, type RefreshSummary } from "../../lib/refreshSummary";
 import MenuPopover, { type MenuAnchor } from "../shared/MenuPopover";
 import Dialog, { DialogButton, DialogField, dialogTextField } from "../shared/Dialog";
+import { useTableViews } from "./db/useTableViews";
+import { DEFAULT_SORT, legacyTable, uniqueViewName, type ViewDefinition } from "../../lib/tableViews";
 import { useOverwriteConfirm } from "../shared/OverwriteDialog";
 import CloudBadge from "./shared/CloudBadge";
 import {
@@ -219,7 +221,6 @@ const INSET = 10;
 const TOOLBAR_BUTTON = "px-2.5 py-1 text-xs rounded-md border whitespace-nowrap transition-colors";
 const TOOLBAR_BUTTON_IDLE = "border-neutral-700 text-neutral-300 hover:text-neutral-100 hover:border-neutral-600";
 const TOOLBAR_BUTTON_ACTIVE = "border-blue-500/60 text-blue-400 hover:text-blue-300 hover:border-blue-400";
-const DEFAULT_SORT: SortState = { key: "path", direction: "asc" };
 
 const ARROWS: Record<string, [number, number]> = {
   ArrowUp: [-1, 0],
@@ -258,7 +259,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   /** The rule being looked at in the Rules panel: the table shows only its files. */
   const [ruleFocus, setRuleFocus] = useState<{ name: string; definition: RuleDefinition } | null>(null);
   /** Grouping levels (outermost first) and the groups folded shut; both kept per location. */
-  const [groupLevels, setGroupLevelsState] = useState<GroupLevel[]>([]);
+  const [groupLevels, setGroupLevels] = useState<GroupLevel[]>([]);
   const [collapsed, setCollapsedState] = useState<ReadonlySet<string>>(() => new Set());
   const [rules, setRules] = useState<FilterRule[]>([]);
   const [match, setMatch] = useState<FilterMatch>("all");
@@ -339,9 +340,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   // Reset view state and load column prefs when switching locations
   useEffect(() => {
     setSearch("");
-    setSorts([DEFAULT_SORT]);
-    setRules([]);
-    setMatch("all");
     setIndexing(null);
     setError(null);
     setPropertyMenu(null);
@@ -349,24 +347,120 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     setRenaming(null);
     setPatches(new Map());
 
-    setShowTags(loadJson(`col-tags-${locationId}`, false));
-    setHideCovered(loadJson(`col-tags-hide-covered-${locationId}`, false));
-    setVisibleProperties(loadJson<string[]>(`col-props-${locationId}`, []));
-    setHiddenStandard(loadJson<string[]>(`col-hidden-${locationId}`, []));
-    setColumnOrder(loadJson<string[]>(`col-order-${locationId}`, []));
-    setFrozen(loadJson(`col-freeze-${locationId}`, true));
-    setNoWrap(loadJson<string[]>(`col-nowrap-${locationId}`, []));
-    setWrapSourceTags(loadJson(`col-wrap-source-${locationId}`, true));
-    setGroupLevelsState(loadJson<GroupLevel[]>(`col-group-${locationId}`, []));
+    // Filters, sorts, groups and columns come from the location's view (useTableViews)
     setCollapsedState(new Set(loadJson<string[]>(`col-group-collapsed-${locationId}`, [])));
   }, [locationId]);
 
-  function setGroupLevels(next: GroupLevel[] | ((prev: GroupLevel[]) => GroupLevel[])) {
-    setGroupLevelsState((prev) => {
-      const value = typeof next === "function" ? next(prev) : next;
-      saveJson(`col-group-${locationId}`, value);
-      return value;
-    });
+  // ── Views ─────────────────────────────────────────────────────────────────
+
+  /** Bumped with each view put into the table, so that render isn't recorded as an edit. */
+  const [appliedView, setAppliedView] = useState(0);
+  /** Puts a view's filters, sorts, groups and columns into the table. */
+  const applyView = useCallback((def: ViewDefinition) => {
+    const t = def.table;
+    setRules(t.filters);
+    setMatch(t.match);
+    setSorts(t.sorts);
+    setGroupLevels(t.groups);
+    setHiddenStandard(t.hiddenStandard);
+    setColumnOrder(t.columnOrder);
+    setShowTags(t.showTags);
+    setHideCovered(t.hideCovered);
+    setWrapSourceTags(t.wrapSourceTags);
+    setVisibleProperties(t.visibleProperties);
+    setNoWrap(t.noWrap);
+    setFrozen(t.frozen);
+    setAppliedView((n) => n + 1);
+  }, []);
+  const tableViews = useTableViews(
+    locationId,
+    applyView,
+    // The default view starts from the column settings kept before views existed
+    () => ({ table: legacyTable((key) => loadJson<unknown>(`${key}-${locationId}`, undefined)) }),
+    setError
+  );
+  const currentView: ViewDefinition = useMemo(
+    () => ({
+      table: {
+        filters: rules,
+        match,
+        sorts,
+        groups: groupLevels,
+        hiddenStandard,
+        columnOrder,
+        showTags,
+        hideCovered,
+        wrapSourceTags,
+        visibleProperties,
+        noWrap,
+        frozen,
+      },
+    }),
+    [rules, match, sorts, groupLevels, hiddenStandard, columnOrder, showTags, hideCovered, wrapSourceTags, visibleProperties, noWrap, frozen]
+  );
+  const recordedApply = useRef(-1);
+  const recordView = tableViews.record;
+  useEffect(() => {
+    // The render a view was applied in (or the first) shows the view itself, not an edit
+    if (recordedApply.current !== appliedView) {
+      recordedApply.current = appliedView;
+      return;
+    }
+    recordView(currentView);
+  }, [currentView, appliedView, recordView]);
+
+  /** Save as New View… or Rename View…, while its sheet is open. */
+  const [viewNaming, setViewNaming] = useState<{ mode: "new" | "rename"; text: string; error?: string } | null>(null);
+  const [deletingView, setDeletingView] = useState(false);
+
+  function showViewMenu(e: React.MouseEvent) {
+    const { views, active, edited } = tableViews;
+    const named = !!active && !active.is_default;
+    showContextMenu(
+      [
+        ...views.map(
+          (v): MenuEntry => ({
+            type: "check",
+            text: v.name,
+            checked: v.view_id === active?.view_id,
+            action: () => void tableViews.select(v.view_id),
+            key: v.view_id,
+          })
+        ),
+        { type: "separator" },
+        { type: "item", text: "Save Changes", enabled: edited, action: () => void tableViews.saveChanges() },
+        { type: "item", text: "Revert Changes", enabled: edited, action: () => void tableViews.revert() },
+        {
+          type: "item",
+          text: "Save as New View…",
+          action: () =>
+            setViewNaming({ mode: "new", text: uniqueViewName(named ? active.name : "New View", views.map((v) => v.name)) }),
+        },
+        { type: "separator" },
+        {
+          type: "item",
+          text: "Rename View…",
+          enabled: named,
+          action: () => active && setViewNaming({ mode: "rename", text: active.name }),
+        },
+        { type: "item", text: "Delete View…", enabled: named, action: () => setDeletingView(true) },
+      ],
+      // A pop-up button: the menu opens with the current view under the pointer
+      { event: e, alignKey: active?.view_id }
+    );
+  }
+
+  async function submitViewName() {
+    if (!viewNaming || !tableViews.active) return;
+    const name = viewNaming.text.trim();
+    if (!name) return;
+    try {
+      if (viewNaming.mode === "new") await tableViews.saveAs(name);
+      else await tableViews.rename(tableViews.active.view_id, name);
+      setViewNaming(null);
+    } catch (e) {
+      setViewNaming({ ...viewNaming, error: String(e) });
+    }
   }
 
   function setCollapsed(next: ReadonlySet<string>) {
@@ -422,6 +516,24 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       .then((entries) => setRegistryValues((prev) => ({ ...prev, ...Object.fromEntries(entries) })))
       .catch(() => {});
   }, [registry, registryValues]);
+
+  /**
+   * Refetches every list property's values, keeping the current ones until the
+   * new arrive: clearing them first would drop the renamed-value aliases for a
+   * render, and covered Source Tags would flash back.
+   */
+  const registryRef = useRef(registry);
+  registryRef.current = registry;
+  const registryReload = useRef(0);
+  const reloadRegistryValues = useCallback(() => {
+    const seq = ++registryReload.current;
+    const lists = registryRef.current.filter((p) => p.value_type === "enum" || p.value_type === "array");
+    Promise.all(lists.map((p) => getPropertyValues(p.property_id).then((vs) => [p.property_id, vs] as const)))
+      .then((entries) => {
+        if (seq === registryReload.current) setRegistryValues(Object.fromEntries(entries));
+      })
+      .catch(() => {});
+  }, []);
 
   // Progress banner (a refresh started from the sidebar) + reload properties when it finishes
   useEffect(() => {
@@ -676,19 +788,16 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       ? hiddenStandard.filter((c) => c !== id)
       : [...hiddenStandard, id];
     setHiddenStandard(next);
-    saveJson(`col-hidden-${locationId}`, next);
   }
 
   function toggleShowTags() {
     const next = !showTags;
     setShowTags(next);
-    saveJson(`col-tags-${locationId}`, next);
   }
 
   function toggleHideCovered() {
     const next = !hideCovered;
     setHideCovered(next);
-    saveJson(`col-tags-hide-covered-${locationId}`, next);
   }
 
   /** A file's source tags as shown: without the covered ones when those are hidden. */
@@ -723,11 +832,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   /** Updates the shown property columns from their latest value (safe inside undo). */
   function updateVisibleProperties(update: (prev: string[]) => string[]) {
-    setVisibleProperties((prev) => {
-      const next = update(prev);
-      saveJson(`col-props-${locationId}`, next);
-      return next;
-    });
+    setVisibleProperties(update);
   }
 
   function toggleProperty(name: string) {
@@ -735,28 +840,18 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   }
 
   function toggleWrap(name: string) {
-    setNoWrap((prev) => {
-      const next = prev.includes(name) ? prev.filter((p) => p !== name) : [...prev, name];
-      saveJson(`col-nowrap-${locationId}`, next);
-      return next;
-    });
+    setNoWrap((prev) => (prev.includes(name) ? prev.filter((p) => p !== name) : [...prev, name]));
   }
 
   function toggleWrapSourceTags() {
-    setWrapSourceTags((w) => {
-      saveJson(`col-wrap-source-${locationId}`, !w);
-      return !w;
-    });
+    setWrapSourceTags((w) => !w);
   }
 
   /** Multi-select values wrap onto more lines, growing the row, unless turned off. */
   const wraps = useCallback((name: string) => typeOf(name) === "array" && !noWrap.includes(name), [typeOf, noWrap]);
 
   function toggleFrozen() {
-    setFrozen((f) => {
-      saveJson(`col-freeze-${locationId}`, !f);
-      return !f;
-    });
+    setFrozen((f) => !f);
   }
 
   const columns = useMemo(
@@ -780,7 +875,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     // Keep saved positions of currently hidden columns after the visible ones.
     const next = [...visibleIds, ...columnOrder.filter((id) => !visibleIds.includes(id))];
     setColumnOrder(next);
-    saveJson(`col-order-${locationId}`, next);
   }
 
   /** Rendered width of a cell's content, for double-click-to-fit. */
@@ -838,9 +932,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   function setNativeShown(shown: boolean) {
     const next = shown ? [] : STANDARD_COLUMNS.map((c) => c.id).filter((id) => id !== "name");
     setHiddenStandard(next);
-    saveJson(`col-hidden-${locationId}`, next);
     setShowTags(shown);
-    saveJson(`col-tags-${locationId}`, shown);
     setPropertiesShown(extractedProperties, shown);
   }
 
@@ -1024,6 +1116,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     loadRules().catch(() => {});
   }, [loadRules, files]);
 
+  /** The view's filter (and search) as a rule's conditions, when it has any. */
+  const viewFilterRule = useMemo(() => {
+    const def = definitionFromFilter(rules, match, search);
+    return def.conditions.length > 0 ? def : null;
+  }, [rules, match, search]);
+
   function openRules(draft: RuleDefinition | null) {
     setRuleDraft(draft);
     setRuleDraftKey((k) => k + 1);
@@ -1076,7 +1174,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     const apply = async () => {
       await applyRuleWrites(plan.edits, plan.writes);
       await loadRules();
-      setRegistryValues({});
+      reloadRegistryValues();
       onChanged?.();
     };
     try {
@@ -1120,7 +1218,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   /** After a property changes: reload the registry, the keys and the files. */
   async function afterPropertyChange() {
-    setRegistryValues({});
+    reloadRegistryValues();
     await loadRegistry();
     loadKeys();
     onChanged?.();
@@ -1144,11 +1242,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     const oldId = PROP_PREFIX + from;
     const newId = PROP_PREFIX + to;
     updateVisibleProperties((prev) => prev.map((p) => (p === from ? to : p)));
-    setColumnOrder((prev) => {
-      const next = prev.map((id) => (id === oldId ? newId : id));
-      saveJson(`col-order-${locationId}`, next);
-      return next;
-    });
+    setColumnOrder((prev) => prev.map((id) => (id === oldId ? newId : id)));
     setRules((rs) => rs.map((r) => (r.column === oldId ? { ...r, column: newId } : r)));
     setSorts((ss) => ss.map((s) => (s.key === oldId ? { ...s, key: newId } : s)));
     setGroupLevels((gs) => gs.map((g) => (g.key === oldId ? { ...g, key: newId } : g)));
@@ -1185,7 +1279,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   async function coreRename(from: string, to: string) {
     const prop = await ensureProperty(from);
+    // Edits waiting to save go first, so the rename (which updates saved views) covers them
+    await tableViews.flush();
     await renameProperty(prop.property_id, to);
+    await tableViews.reload();
     renameInView(from, to);
     await afterPropertyChange();
   }
@@ -1324,7 +1421,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     ];
   }
 
-  // Right-click on a header: actions for that column, then the column list
+  // Right-click on a header: actions for that column, with the column list in a
+  // submenu. Empty header space shows the column list itself, as in Finder.
   function handleHeaderMenu(e: React.MouseEvent, columnId: string | null) {
     e.preventDefault();
     setPropertyMenu({ anchor: { x: e.clientX, y: e.clientY }, columnId });
@@ -1332,85 +1430,90 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   function headerMenuEntries(columnId: string | null): MenuEntry[] {
     const col = columns.find((c) => c.id === columnId && c.id !== ADD_COLUMN.id);
+    if (!col) return columnMenuEntries();
     const entries: MenuEntry[] = [];
-    if (col) {
-      if (col.sortable !== false) {
-        entries.push(
-          { type: "item", text: "Sort Ascending", action: () => setSorts([{ key: col.id, direction: "asc" }]) },
-          { type: "item", text: "Sort Descending", action: () => setSorts([{ key: col.id, direction: "desc" }]) },
-          {
-            type: "check",
-            text: `Group by ${col.label}`,
-            checked: groupLevels.some((g) => g.key === col.id),
-            // Adds a level (inside any already there), or removes it
-            action: () =>
-              setGroupLevels((gs) =>
-                gs.some((g) => g.key === col.id) ? gs.filter((g) => g.key !== col.id) : [...gs, { key: col.id, direction: defaultGroupDirection(col.id) }]
-              ),
-          }
-        );
-      }
-      if (col.id === TAGS_COLUMN.id) {
-        entries.push({ type: "check", text: "Hide Tags Recorded in Properties", checked: hideCovered, action: toggleHideCovered });
-      }
-      entries.push({
-        type: "item",
-        text: `Filter by ${col.label}…`,
-        action: () => {
-          setRules((rs) => [...rs, newRule(col.id, kindOf(col.id))]);
-          setPanel("filter");
-        },
-      });
-      if (col.id === TAGS_COLUMN.id) {
-        entries.push(
-          { type: "separator" },
-          { type: "check", text: "Wrap Values", checked: wrapSourceTags, action: toggleWrapSourceTags }
-        );
-      }
-      if (isEditable(col.id)) {
-        const name = propName(col.id);
-        entries.push(
-          { type: "separator" },
-          { type: "item", text: "Rename Property…", action: () => setRenaming({ name, text: name }) }
-        );
-        if (typeOf(name) === "enum" || typeOf(name) === "array") {
-          entries.push({ type: "item", text: "Edit Values…", action: () => openValuesEditor(col.id) });
+    if (col.sortable !== false) {
+      entries.push(
+        { type: "item", text: "Sort Ascending", action: () => setSorts([{ key: col.id, direction: "asc" }]) },
+        { type: "item", text: "Sort Descending", action: () => setSorts([{ key: col.id, direction: "desc" }]) },
+        {
+          type: "check",
+          text: `Group by ${col.label}`,
+          checked: groupLevels.some((g) => g.key === col.id),
+          // Adds a level (inside any already there), or removes it
+          action: () =>
+            setGroupLevels((gs) =>
+              gs.some((g) => g.key === col.id) ? gs.filter((g) => g.key !== col.id) : [...gs, { key: col.id, direction: defaultGroupDirection(col.id) }]
+            ),
         }
-        if (typeOf(name) === "array") {
-          entries.push({ type: "check", text: "Wrap Values", checked: wraps(name), action: () => toggleWrap(name) });
-        }
-        if (typeOf(name) === "date") {
-          // Each format shown with today's date in it
-          const current = configOf(name).dateFormat ?? "medium";
-          const today = new Date().toISOString().slice(0, 10);
-          entries.push({
-            type: "submenu",
-            text: "Date Format",
-            items: [
-              ...DATE_DISPLAY_FORMATS.map(
-                (f): MenuEntry => ({
-                  type: "check",
-                  text: `${f.label}  ${formatDate(today, f.id)}`,
-                  checked: current === f.id,
-                  action: () => void changeType(name, "date", f.id === "medium" ? null : { dateFormat: f.id }),
-                })
-              ),
-              { type: "separator" },
-              {
+      );
+    }
+    if (col.id === TAGS_COLUMN.id) {
+      entries.push({ type: "check", text: "Hide Tags Recorded in Properties", checked: hideCovered, action: toggleHideCovered });
+    }
+    entries.push({
+      type: "item",
+      text: `Filter by ${col.label}…`,
+      action: () => {
+        setRules((rs) => [...rs, newRule(col.id, kindOf(col.id))]);
+        setPanel("filter");
+      },
+    });
+    if (col.id === TAGS_COLUMN.id) {
+      entries.push(
+        { type: "separator" },
+        { type: "check", text: "Wrap Values", checked: wrapSourceTags, action: toggleWrapSourceTags }
+      );
+    }
+    // Deleting sits with Hide, apart from the settings that change the property
+    let deleteEntry: MenuEntry | null = null;
+    if (isEditable(col.id)) {
+      const name = propName(col.id);
+      entries.push(
+        { type: "separator" },
+        { type: "item", text: "Rename Property…", action: () => setRenaming({ name, text: name }) }
+      );
+      if (typeOf(name) === "enum" || typeOf(name) === "array") {
+        entries.push({ type: "item", text: "Edit Values…", action: () => openValuesEditor(col.id) });
+      }
+      if (typeOf(name) === "date") {
+        // Each format shown with today's date in it
+        const current = configOf(name).dateFormat ?? "medium";
+        const today = new Date().toISOString().slice(0, 10);
+        entries.push({
+          type: "submenu",
+          text: "Date Format",
+          items: [
+            ...DATE_DISPLAY_FORMATS.map(
+              (f): MenuEntry => ({
                 type: "check",
-                text: current.startsWith("custom:") ? `Custom…  ${formatDate(today, current)}` : "Custom…",
-                checked: current.startsWith("custom:"),
-                action: () =>
-                  setDateFormatEditing({ name, pattern: current.startsWith("custom:") ? current.slice(7) : "DD/MM/YYYY" }),
-              },
-            ],
-          });
-        }
+                text: `${f.label}  ${formatDate(today, f.id)}`,
+                checked: current === f.id,
+                action: () => void changeType(name, "date", f.id === "medium" ? null : { dateFormat: f.id }),
+              })
+            ),
+            { type: "separator" },
+            {
+              type: "check",
+              text: current.startsWith("custom:") ? `Custom…  ${formatDate(today, current)}` : "Custom…",
+              checked: current.startsWith("custom:"),
+              action: () =>
+                setDateFormatEditing({ name, pattern: current.startsWith("custom:") ? current.slice(7) : "DD/MM/YYYY" }),
+            },
+          ],
+        });
+      }
+      if (typeOf(name) === "array") {
+        entries.push({ type: "check", text: "Wrap Values", checked: wraps(name), action: () => toggleWrap(name) });
+      }
+      // The built-in Tags property is always a Multi-select, can't be deleted, and
+      // stays flat labels: it's what other properties are scoped to
+      if (name !== tagsProperty) {
+        entries.push(
+          { type: "submenu", text: "Property Type", items: typeMenu(name) },
+          { type: "item", text: "Apply Only Where…", action: () => setScopeEditing(name) }
+        );
         const scope = scopeOf(name);
-        // Tags stay flat labels: they're what other properties are scoped to
-        if (name !== tagsProperty) {
-          entries.push({ type: "item", text: "Apply Only Where…", action: () => setScopeEditing(name) });
-        }
         if (scope) {
           entries.push({
             type: "item",
@@ -1418,20 +1521,18 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
             action: () => void changeScope(name, [], "Apply to All Files"),
           });
         }
-        // The built-in Tags property is always a Multi-select and can't be deleted
-        if (name !== tagsProperty) {
-          entries.push(
-            { type: "submenu", text: "Property Type", items: typeMenu(name) },
-            { type: "item", text: "Delete Property…", action: () => setDeleting(name) }
-          );
-        }
+        deleteEntry = { type: "item", text: "Delete Property…", action: () => setDeleting(name) };
       }
-      entries.push({ type: "separator" });
     }
     entries.push(
-      { type: "check", text: "Freeze Name", checked: frozen, action: toggleFrozen },
       { type: "separator" },
-      ...columnMenuEntries()
+      // Name can't be hidden; freezing only applies to it
+      col.id === "name"
+        ? { type: "check", text: "Freeze Name", checked: frozen, action: toggleFrozen }
+        : { type: "item", text: `Hide “${col.label}”`, action: () => hideColumn(col.id) },
+      ...(deleteEntry ? [deleteEntry] : []),
+      { type: "separator" },
+      { type: "submenu", text: "Show Properties", items: columnMenuEntries() }
     );
     return entries;
   }
@@ -1566,7 +1667,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       pendingWrites.current--;
     }
     // New Select / Multi-select values may have been registered
-    setRegistryValues({});
+    reloadRegistryValues();
     if (pendingWrites.current === 0) {
       onChanged?.();
       loadKeys();
@@ -2302,7 +2403,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     const visible = at === -1 ? [...ids, newId] : [...ids.slice(0, at + 1), newId, ...ids.slice(at + 1)];
     const next = [...visible, ...columnOrder.filter((id) => !visible.includes(id))];
     setColumnOrder(next);
-    saveJson(`col-order-${locationId}`, next);
   }
 
   /**
@@ -2806,6 +2906,18 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         </span>
         <div className="flex items-center gap-1.5 shrink-0">
           <button
+            onClick={showViewMenu}
+            title="Saved views of this location: filters, sorts, groups and columns"
+            className={`${TOOLBAR_BUTTON} flex items-center gap-1 max-w-[220px] ${
+              tableViews.active && !tableViews.active.is_default ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE
+            }`}
+          >
+            <SymbolIcon name="rectangle.stack" size={11} fallback="▤" />
+            <span className="truncate">{tableViews.active?.name ?? "View"}</span>
+            {tableViews.edited && <span className="text-neutral-500 shrink-0">— Edited</span>}
+            <SymbolIcon name="chevron.down" size={8} fallback="▾" />
+          </button>
+          <button
             ref={filterButtonRef}
             onClick={() => setPanel((p) => (p === "filter" ? null : "filter"))}
             className={`${TOOLBAR_BUTTON} flex items-center gap-1 ${activeRules.length > 0 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
@@ -3213,6 +3325,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           properties={availableProperties.filter((n) => propByName.has(n)).map((n) => ({ name: n, type: typeOf(n) }))}
           valuesFor={valuesFor}
           draft={ruleDraft}
+          viewFilter={viewFilterRule}
           onSave={saveRuleHere}
           onDelete={async (id) => {
             await deleteRule(id);
@@ -3260,6 +3373,64 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               </DialogButton>
               <DialogButton variant="default" autoFocus>
                 Remove
+              </DialogButton>
+            </>
+          }
+        />
+      )}
+
+      {viewNaming && (
+        <Dialog
+          title={viewNaming.mode === "new" ? "Save as New View" : "Rename View"}
+          message={
+            viewNaming.mode === "new"
+              ? "A view keeps this table's filters, sorts, groups and columns, to come back to."
+              : undefined
+          }
+          onCancel={() => setViewNaming(null)}
+          onSubmit={() => void submitViewName()}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton onClick={() => setViewNaming(null)}>Cancel</DialogButton>
+              <DialogButton variant="default" disabled={!viewNaming.text.trim()}>
+                {viewNaming.mode === "new" ? "Save" : "Rename"}
+              </DialogButton>
+            </>
+          }
+        >
+          <div className="flex flex-col gap-1.5">
+            <DialogField label="Name:">
+              <input
+                autoFocus
+                value={viewNaming.text}
+                onChange={(e) => setViewNaming({ ...viewNaming, text: e.target.value, error: undefined })}
+                onFocus={(e) => e.currentTarget.select()}
+                className={dialogTextField}
+              />
+            </DialogField>
+            {viewNaming.error && <p className="pl-[80px] text-xs text-red-500">{viewNaming.error}</p>}
+          </div>
+        </Dialog>
+      )}
+
+      {deletingView && tableViews.active && (
+        <Dialog
+          title={`Delete “${tableViews.active.name}”?`}
+          message="The view is removed. Files and their values aren't changed."
+          onCancel={() => setDeletingView(false)}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton onClick={() => setDeletingView(false)}>Cancel</DialogButton>
+              <DialogButton
+                variant="destructive"
+                onClick={() => {
+                  setDeletingView(false);
+                  if (tableViews.active) tableViews.remove(tableViews.active.view_id).catch((e) => setError(String(e)));
+                }}
+              >
+                Delete
               </DialogButton>
             </>
           }

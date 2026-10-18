@@ -214,6 +214,28 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Saved views of a location's files (see commands::location_views)
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS location_views (
+            view_id     TEXT PRIMARY KEY,
+            location_id TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            is_default  INTEGER NOT NULL DEFAULT 0,
+            position    INTEGER NOT NULL DEFAULT 0,
+            definition  TEXT NOT NULL,
+            draft       TEXT,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_location_views_default ON location_views(location_id) WHERE is_default = 1",
+    )
+    .execute(pool)
+    .await?;
+
     // Type options for a property (number format, currency), as JSON.
     let _ = sqlx::query("ALTER TABLE properties ADD COLUMN config TEXT")
         .execute(pool)

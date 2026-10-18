@@ -55,6 +55,11 @@ pub async fn delete_location(
     db: State<'_, DbPool>,
 ) -> Result<(), String> {
     let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM location_views WHERE location_id = ?")
+        .bind(&location_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM location_exclusions WHERE location_id = ?")
         .bind(&location_id)
         .execute(&mut *tx)

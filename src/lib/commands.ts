@@ -14,6 +14,7 @@ import type {
   ViewNode,
 } from "../types";
 import type { RuleWrite, StoredRule } from "./rules";
+import type { StoredView } from "./tableViews";
 
 export interface Location {
   location_id: string;
@@ -107,6 +108,21 @@ export async function createProperty(
     valueType,
     config,
   });
+}
+
+/** A location's saved views: the default first, then the rest in order. */
+export async function getLocationViews(locationId: string): Promise<StoredView[]> {
+  return invoke<StoredView[]>("get_location_views", { locationId });
+}
+
+/** Creates (empty view_id) or updates a view; returns it as stored. */
+export async function saveLocationView(view: StoredView): Promise<StoredView> {
+  return invoke<StoredView>("save_location_view", { view });
+}
+
+/** Deletes a named view (the default can't be). */
+export async function deleteLocationView(viewId: string): Promise<void> {
+  return invoke<void>("delete_location_view", { viewId });
 }
 
 /** The library's rules, in order. */

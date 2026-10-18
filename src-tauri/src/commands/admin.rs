@@ -20,6 +20,10 @@ pub async fn clear_database(db: State<'_, DbPool>) -> Result<(), String> {
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
+    sqlx::query("DELETE FROM location_views")
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM locations")
         .execute(&mut *tx)
         .await

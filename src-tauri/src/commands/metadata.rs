@@ -276,8 +276,9 @@ pub async fn rename_property_impl(pool: &DbPool, property_id: &str, new_name: &s
         }
     }
 
-    // Rules name the properties they read and write
+    // Rules name the properties they read and write; saved views the ones they show
     crate::commands::rules::rename_property_in_rules(&mut tx, prop.library.as_deref(), &prop.name, new_name).await?;
+    crate::commands::location_views::rename_property_in_views(&mut tx, prop.library.as_deref(), &prop.name, new_name).await?;
 
     // Folder mappings name the property they assign, so they follow the rename
     match &prop.library {

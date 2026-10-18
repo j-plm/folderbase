@@ -57,6 +57,29 @@ pub struct Rule {
     pub updated_at: String,
 }
 
+/// A saved view of a location's files. `definition` is JSON read by
+/// src/lib/tableViews.ts: `{ "table": { filters, sorts, groups, columns… } }`,
+/// with room for other presentations later. `draft` holds a named view's
+/// unsaved edits; the default view has none (its edits save as they happen).
+#[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
+pub struct LocationView {
+    #[serde(default)]
+    pub view_id: String,
+    pub location_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub is_default: bool,
+    #[serde(default)]
+    pub position: i64,
+    pub definition: String,
+    #[serde(default)]
+    pub draft: Option<String>,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
 /// A value a rule wrote to a file (`value` is JSON: one value, or one item added to a list).
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
 pub struct RuleWrite {

@@ -35,6 +35,8 @@ interface Props {
   valuesFor: (columnId: string) => string[];
   /** A new rule to start from (Make Rule from Filter…). */
   draft: RuleDefinition | null;
+  /** The view's current filter as a rule, offered as a starting point (null: no filter). */
+  viewFilter: RuleDefinition | null;
   onSave: (rule: StoredRule) => Promise<StoredRule | null>;
   onDelete: (ruleId: string) => Promise<void>;
   onReorder: (ruleIds: string[]) => Promise<void>;
@@ -131,9 +133,9 @@ export default function RulesPanel(props: Props) {
     setEditing(rule ? editingOf(rule) : null);
   }
 
-  function startNew() {
+  function startNew(def: RuleDefinition = emptyDefinition()) {
     setSelected(NEW);
-    setEditing({ rule_id: "", name: "New Rule", enabled: false, def: emptyDefinition(), dirty: true });
+    setEditing({ rule_id: "", name: "New Rule", enabled: false, def, dirty: true });
   }
 
   const change = (patch: Partial<Editing>) => setEditing((e) => (e ? { ...e, ...patch, dirty: true } : e));
@@ -187,7 +189,8 @@ export default function RulesPanel(props: Props) {
           selected={selected}
           newSelected={selected === NEW}
           onSelect={(id) => void select(id)}
-          onNew={startNew}
+          onNew={() => startNew()}
+          onNewFromFilter={props.viewFilter ? () => startNew(props.viewFilter!) : undefined}
           onToggle={(rule) => void props.onSave({ ...rule, enabled: !rule.enabled })}
           onReorder={props.onReorder}
         />
@@ -196,7 +199,6 @@ export default function RulesPanel(props: Props) {
           {!editing ? (
             <div className="h-full flex flex-col items-center justify-center gap-2 text-neutral-500">
               <p>No rule selected.</p>
-              <AddButton onClick={startNew}>New Rule</AddButton>
             </div>
           ) : (
             <RuleEditor
@@ -262,6 +264,7 @@ function RuleList({
   newSelected,
   onSelect,
   onNew,
+  onNewFromFilter,
   onToggle,
   onReorder,
 }: {
@@ -271,6 +274,8 @@ function RuleList({
   newSelected: boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
+  /** Present when the view is filtered. */
+  onNewFromFilter?: () => void;
   onToggle: (rule: StoredRule) => void;
   onReorder: (ids: string[]) => Promise<void>;
 }) {
@@ -348,8 +353,9 @@ function RuleList({
           <span className="truncate flex-1 italic">New Rule</span>
         </div>
       )}
-      <div className="mt-1">
+      <div className="mt-1 flex flex-col">
         <AddButton onClick={onNew}>New Rule</AddButton>
+        {onNewFromFilter && <AddButton onClick={onNewFromFilter}>New Rule from Current Filter</AddButton>}
       </div>
     </div>
   );

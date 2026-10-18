@@ -191,6 +191,7 @@ Housekeeping:
 - `.gitignore` excludes `node_modules/`, `dist/`, `src-tauri/target/`, `.DS_Store`; repo pushed to https://github.com/j-plm/folderbase (2026-10-13)
 - Source tags (`files.tags`) are derived from the path on every refresh and never edited; "covered" is computed per row as "the value appears in any of the file's properties". Tag promotion is a folder mapping, so it persists through refresh
 - Folder mapping onto a Multi-select appends and is re-applied on every refresh, so removing a mapped value by hand from one file comes back on the next refresh — unmap the folder instead
+- Saved views (`location_views`, per location) are separate from the virtual-folder `views` / `view_nodes` tables for now. A view's `definition` is `{ "table": … }`, so a folder presentation with its own movable layers can sit beside it later. Database grouping is deliberately not treated as folder layers. Each location has one default view that saves as it changes; named views keep unsaved edits in `draft` (shown as "— Edited") until Save Changes / Revert Changes. Search, selection and folded groups aren't part of a view. Column widths stay per location in local storage
 - `files.metadata` blob is for user-defined and EXIF properties only — filesystem fields (`file_name`, `extension`, `size_bytes`, `created_at`) belong in dedicated columns; `get_location_properties` reads keys from the blob directly, so anything written there surfaces as a user-visible column
 
 ---
