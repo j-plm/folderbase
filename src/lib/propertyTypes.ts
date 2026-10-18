@@ -155,10 +155,7 @@ export function formatValue(value: unknown, type: ValueType | undefined, config:
   }
   if (type === "date") {
     const key = dateKey(value);
-    if (key) {
-      const [y, m, d] = key.split("-").map(Number);
-      return new Date(y, m - 1, d).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-    }
+    if (key) return formatDate(key, config.dateFormat);
   }
   return valueToText(value);
 }
@@ -201,4 +198,92 @@ export function uniqueName(base: string, taken: string[]): string {
     const name = `${base} ${n}`;
     if (!lower.has(name.toLowerCase())) return name;
   }
+}
+
+// ── Date formats ────────────────────────────────────────────────────────────
+
+/** The date formats offered for a Date property, with an example of each. */
+export const DATE_DISPLAY_FORMATS: { id: string; label: string }[] = [
+  { id: "short", label: "Short" },
+  { id: "medium", label: "Medium" },
+  { id: "long", label: "Long" },
+  { id: "full", label: "Full" },
+  { id: "iso", label: "ISO 8601" },
+  { id: "relative", label: "Relative" },
+];
+
+const DAY_MS = 86_400_000;
+
+/**
+ * A stored date (YYYY-MM-DD) as a Date property shows it. The named formats
+ * follow the system's own date styles; "custom:<pattern>" uses tokens:
+ * YYYY YY (year) · MMMM MMM MM M (month) · DD D (day) · dddd ddd (weekday);
+ * text in [brackets] is shown as it is.
+ */
+export function formatDate(key: string, format: string | undefined, now: Date = new Date()): string {
+  const [y, m, d] = key.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  try {
+    switch (format ?? "medium") {
+      case "short":
+        return date.toLocaleDateString(undefined, { dateStyle: "short" });
+      case "long":
+        return date.toLocaleDateString(undefined, { dateStyle: "long" });
+      case "full":
+        return date.toLocaleDateString(undefined, { dateStyle: "full" });
+      case "iso":
+        return key;
+      case "relative": {
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+        const days = Math.round((date.getTime() - today) / DAY_MS);
+        // A week either way reads as days ("yesterday", "in 3 days"); further off, as a date
+        if (Math.abs(days) <= 7) return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(days, "day");
+        return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+      }
+      case "medium":
+        return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+      default:
+        if (format?.startsWith("custom:")) return formatDatePattern(date, format.slice("custom:".length));
+        return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+    }
+  } catch {
+    return key;
+  }
+}
+
+/** A date written out with a pattern's tokens (see formatDate). */
+export function formatDatePattern(date: Date, pattern: string): string {
+  const name = (opts: Intl.DateTimeFormatOptions) => date.toLocaleDateString(undefined, opts);
+  const tokens: [string, () => string][] = [
+    ["YYYY", () => String(date.getFullYear()).padStart(4, "0")],
+    ["YY", () => String(date.getFullYear() % 100).padStart(2, "0")],
+    ["MMMM", () => name({ month: "long" })],
+    ["MMM", () => name({ month: "short" })],
+    ["MM", () => String(date.getMonth() + 1).padStart(2, "0")],
+    ["M", () => String(date.getMonth() + 1)],
+    ["DD", () => String(date.getDate()).padStart(2, "0")],
+    ["D", () => String(date.getDate())],
+    ["dddd", () => name({ weekday: "long" })],
+    ["ddd", () => name({ weekday: "short" })],
+  ];
+  let out = "";
+  let i = 0;
+  while (i < pattern.length) {
+    if (pattern[i] === "[") {
+      const close = pattern.indexOf("]", i);
+      if (close !== -1) {
+        out += pattern.slice(i + 1, close);
+        i = close + 1;
+        continue;
+      }
+    }
+    const token = tokens.find(([t]) => pattern.startsWith(t, i));
+    if (token) {
+      out += token[1]();
+      i += token[0].length;
+    } else {
+      out += pattern[i++];
+    }
+  }
+  return out;
 }

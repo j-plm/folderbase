@@ -12,6 +12,13 @@ import {
   type FilterRule,
 } from "../../../lib/dbTable";
 import { dropIndexAt, moveColumnId, type SortState } from "../../../lib/columns";
+import { compilePattern, isPatternError } from "../../../lib/patterns";
+
+/** What's wrong with a "matches pattern" value, or null. */
+function patternProblem(pattern: string): string | null {
+  const c = compilePattern(pattern);
+  return isPatternError(c) ? c.error : null;
+}
 
 export interface FilterColumn {
   id: string;
@@ -44,6 +51,8 @@ interface Props {
   onCollapseLevel: (depth: number, collapse: boolean) => void;
   /** Known values for a list column, offered when filtering it. */
   valuesFor: (columnId: string) => string[];
+  /** Opens the Rules panel with a new rule made from these filters. */
+  onMakeRule?: () => void;
 }
 
 /** The database view's filter rules (Filter button), sort keys (Sort button) or grouping levels (Group button). */
@@ -65,19 +74,9 @@ export default function FilterSortPopover({
   groupLevelState,
   onCollapseLevel,
   valuesFor,
+  onMakeRule,
 }: Props) {
-  const kindOf = (id: string) => columns.find((c) => c.id === id)?.kind ?? "text";
   const first = columns[0];
-
-  function updateRule(id: string, patch: Partial<FilterRule>) {
-    onRulesChange(
-      rules.map((r) => {
-        if (r.id !== id) return r;
-        const next = { ...r, ...patch };
-        return patch.column ? fitRule({ ...next, value: "" }, kindOf(patch.column)) : next;
-      })
-    );
-  }
 
   const unsorted = columns.filter((c) => !sorts.some((s) => s.key === c.id));
   const ungrouped = columns.filter((c) => !groups.some((g) => g.key === c.id));
@@ -104,44 +103,22 @@ export default function FilterSortPopover({
               )}
             </div>
             {rules.length === 0 && <p className="text-neutral-500">No filters. Every file is shown.</p>}
-            {rules.map((rule) => {
-              const kind = kindOf(rule.column);
-              return (
-                <div key={rule.id} className="flex items-center gap-1.5">
-                  <select
-                    value={rule.column}
-                    onChange={(e) => updateRule(rule.id, { column: e.target.value })}
-                    className={`${popoverSelect} w-[120px]`}
-                  >
-                    {columns.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.label}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    value={rule.op}
-                    onChange={(e) => updateRule(rule.id, { op: e.target.value as FilterRule["op"] })}
-                    className={`${popoverSelect} w-[118px]`}
-                  >
-                    {FILTER_OPS[kind].map((o) => (
-                      <option key={o.op} value={o.op}>
-                        {o.label}
-                      </option>
-                    ))}
-                  </select>
-                  {opNeedsValue(rule.op) ? (
-                    <RuleValue kind={kind} value={rule.value} values={valuesFor(rule.column)} onChange={(value) => updateRule(rule.id, { value })} />
-                  ) : (
-                    <span className="flex-1" />
-                  )}
-                  <RemoveButton label="Remove filter" onClick={() => onRulesChange(rules.filter((r) => r.id !== rule.id))} />
-                </div>
-              );
-            })}
-            {first && (
-              <AddButton onClick={() => onRulesChange([...rules, newRule(first.id, first.kind)])}>Add Filter</AddButton>
-            )}
+            <ConditionRows columns={columns} rules={rules} onChange={onRulesChange} valuesFor={valuesFor} removeLabel="Remove filter" />
+            <div className="flex items-center">
+              {first && (
+                <AddButton onClick={() => onRulesChange([...rules, newRule(first.id, first.kind)])}>Add Filter</AddButton>
+              )}
+              {onMakeRule && (
+                <button
+                  type="button"
+                  onClick={onMakeRule}
+                  title="A rule that sets values on the files these filters show"
+                  className="ml-auto h-6 px-1.5 rounded-[6px] text-blue-400 hover:bg-neutral-700/40"
+                >
+                  Make Rule from Filter…
+                </button>
+              )}
+            </div>
           </>
         )}
 
@@ -204,15 +181,95 @@ export default function FilterSortPopover({
   );
 }
 
+/**
+ * Filter rules as rows (column, condition, value, remove): the Filter panel's,
+ * and a rule's When section in the Rules panel.
+ */
+export function ConditionRows({
+  columns,
+  rules,
+  onChange,
+  valuesFor,
+  removeLabel,
+}: {
+  columns: FilterColumn[];
+  rules: FilterRule[];
+  onChange: (rules: FilterRule[]) => void;
+  valuesFor: (columnId: string) => string[];
+  removeLabel: string;
+}) {
+  const kindOf = (id: string) => columns.find((c) => c.id === id)?.kind ?? "text";
+  function updateRule(id: string, patch: Partial<FilterRule>) {
+    onChange(
+      rules.map((r) => {
+        if (r.id !== id) return r;
+        const next = { ...r, ...patch };
+        return patch.column ? fitRule({ ...next, value: "" }, kindOf(patch.column)) : next;
+      })
+    );
+  }
+  return (
+    <>
+      {rules.map((rule) => {
+        const kind = kindOf(rule.column);
+        const problem = rule.op === "matches" && rule.value.trim() ? patternProblem(rule.value.trim()) : null;
+        return (
+          <div key={rule.id} className="flex flex-col gap-0.5">
+            <div className="flex items-center gap-1.5">
+              <select
+                value={rule.column}
+                onChange={(e) => updateRule(rule.id, { column: e.target.value })}
+                className={`${popoverSelect} w-[120px]`}
+              >
+                {columns.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={rule.op}
+                onChange={(e) => updateRule(rule.id, { op: e.target.value as FilterRule["op"] })}
+                className={`${popoverSelect} w-[118px]`}
+              >
+                {FILTER_OPS[kind].map((o) => (
+                  <option key={o.op} value={o.op}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+              {opNeedsValue(rule.op) ? (
+                <RuleValue
+                  kind={kind}
+                  value={rule.value}
+                  values={valuesFor(rule.column)}
+                  placeholder={rule.op === "matches" ? "{Date:6}_{Person}" : undefined}
+                  onChange={(value) => updateRule(rule.id, { value })}
+                />
+              ) : (
+                <span className="flex-1" />
+              )}
+              <RemoveButton label={removeLabel} onClick={() => onChange(rules.filter((r) => r.id !== rule.id))} />
+            </div>
+            {problem && <p className="pl-[246px] text-[11px] text-red-500">{problem}</p>}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function RuleValue({
   kind,
   value,
   values,
+  placeholder,
   onChange,
 }: {
   kind: ColumnKind;
   value: string;
   values: string[];
+  placeholder?: string;
   onChange: (value: string) => void;
 }) {
   const cls = `${popoverField} flex-1 min-w-0`;
@@ -234,13 +291,14 @@ function RuleValue({
       autoFocus={value === ""}
       inputMode={kind === "number" ? "decimal" : undefined}
       value={value}
+      placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
       className={cls}
     />
   );
 }
 
-function RemoveButton({ label, onClick }: { label: string; onClick: () => void }) {
+export function RemoveButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <button
       type="button"
@@ -254,7 +312,7 @@ function RemoveButton({ label, onClick }: { label: string; onClick: () => void }
   );
 }
 
-function AddButton({ onClick, children }: { onClick: () => void; children: string }) {
+export function AddButton({ onClick, children }: { onClick: () => void; children: string }) {
   return (
     <button
       type="button"

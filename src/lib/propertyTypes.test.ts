@@ -84,3 +84,30 @@ describe("uniqueName", () => {
     expect(uniqueName("Date", ["Text"])).toBe("Date");
   });
 });
+
+describe("date formats", () => {
+  // Locale-dependent formats are checked loosely; ISO, relative and patterns exactly
+  const now = new Date(2026, 9, 18);
+  it("writes ISO and custom patterns", async () => {
+    const { formatDate, formatDatePattern } = await import("./propertyTypes");
+    expect(formatDate("2025-03-01", "iso")).toBe("2025-03-01");
+    expect(formatDatePattern(new Date(2025, 2, 1), "DD/MM/YYYY")).toBe("01/03/2025");
+    expect(formatDatePattern(new Date(2025, 2, 1), "D.M.YY")).toBe("1.3.25");
+    expect(formatDatePattern(new Date(2025, 2, 1), "YYYY-MM-DD [week]")).toBe("2025-03-01 week");
+    expect(formatDate("2025-03-01", "custom:YYYYMMDD")).toBe("20250301");
+  });
+
+  it("reads close dates relatively, and the rest as dates", async () => {
+    const { formatDate } = await import("./propertyTypes");
+    const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+    expect(formatDate("2026-10-17", "relative", now)).toBe(rtf.format(-1, "day"));
+    expect(formatDate("2026-10-21", "relative", now)).toBe(rtf.format(3, "day"));
+    expect(formatDate("2025-03-01", "relative", now)).toContain("2025");
+  });
+
+  it("defaults to the medium style, and shows dates through formatValue", async () => {
+    const { formatDate, formatValue } = await import("./propertyTypes");
+    expect(formatDate("2025-03-01", undefined)).toBe(formatDate("2025-03-01", "medium"));
+    expect(formatValue("2025-03-01", "date", { dateFormat: "iso" })).toBe("2025-03-01");
+  });
+});

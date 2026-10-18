@@ -9,6 +9,8 @@ pub mod locations;
 pub mod metadata;
 pub mod path_mapping;
 pub mod properties;
+pub mod rules;
+pub mod scopes;
 pub mod sync;
 pub mod thumbnails;
 pub mod views;

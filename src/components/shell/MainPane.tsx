@@ -1,5 +1,6 @@
 import { useNavigation } from "../../contexts/NavigationContext";
 import { useLocationFiles } from "../../hooks/useLocationFiles";
+import { useRuleRunner } from "../../hooks/useRuleRunner";
 import TilesView from "../views/TilesView";
 import ListView from "../views/ListView";
 import ColumnsView from "../views/ColumnsView";
@@ -13,6 +14,8 @@ const INSET = { paddingLeft: "var(--sidebar-inset)" };
 export default function MainPane() {
   const { activeLocationId, viewMode, structureLocationId, closeStructureMapping } = useNavigation();
   const { files, loading, refresh } = useLocationFiles(activeLocationId);
+  // The library's rules run over the location's files whenever they load or change
+  useRuleRunner(activeLocationId, files, refresh);
 
   if (!activeLocationId) {
     return (

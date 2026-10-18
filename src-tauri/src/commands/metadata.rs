@@ -276,6 +276,9 @@ pub async fn rename_property_impl(pool: &DbPool, property_id: &str, new_name: &s
         }
     }
 
+    // Rules name the properties they read and write
+    crate::commands::rules::rename_property_in_rules(&mut tx, prop.library.as_deref(), &prop.name, new_name).await?;
+
     // Folder mappings name the property they assign, so they follow the rename
     match &prop.library {
         Some(lib) => sqlx::query(
@@ -476,6 +479,8 @@ pub async fn rename_property_value_impl(pool: &DbPool, property_id: &str, from: 
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
+    // Properties scoped to the value follow it
+    crate::commands::scopes::move_condition_value(&mut tx, property_id, from, property_id, to).await?;
 
     for (file_id, mut meta) in files_in_scope(&mut tx, prop.library.as_deref()).await? {
         if meta.get_mut(&prop.name).is_some_and(|v| rename_in_value(v, from, to)) {

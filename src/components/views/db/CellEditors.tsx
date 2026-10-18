@@ -18,31 +18,53 @@ export function PropertyValueView({
   type,
   config,
   onPillMouseDown,
+  onPillContextMenu,
   wrap = false,
+  implied = [],
+  opens,
 }: {
   value: unknown;
   type: ValueType;
   config: PropertyConfig;
   /** Makes list pills draggable (the Tags property's pills drag onto other columns). */
   onPillMouseDown?: (e: React.MouseEvent, value: string) => void;
+  /** Right-click on a pill (Make Property from…). */
+  onPillContextMenu?: (e: React.MouseEvent, value: string) => void;
   /** Shows every pill, wrapping onto more lines (the row grows to fit). */
   wrap?: boolean;
+  /** Values held only by implication (from a scoped property's value): shown faded after the stored ones. */
+  implied?: string[];
+  /** The scoped properties a value opens into, if any: marked "›". */
+  opens?: (value: string) => string[];
 }) {
   if (type === "enum" || type === "array") {
-    const items = listValues(value);
+    const items = [...listValues(value), ...implied];
     if (items.length === 0) return null;
     const shown = wrap ? items : items.slice(0, MAX_PILLS);
     return (
       <div className={`flex items-center gap-x-1 ${wrap ? "flex-wrap gap-y-0.5" : "flex-nowrap overflow-hidden"}`}>
-        {shown.map((item) => (
-          <span
-            key={item}
-            onMouseDown={onPillMouseDown && ((e) => onPillMouseDown(e, item))}
-            className="inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 data-[pressed]:bg-blue-500 data-[pressed]:text-white data-[pressed]:opacity-100"
-          >
-            {item}
-          </span>
-        ))}
+        {shown.map((item, i) => {
+          const isImplied = i >= items.length - implied.length;
+          const into = opens?.(item) ?? [];
+          const notes = [
+            isImplied ? "Implied by a value in another property" : null,
+            into.length > 0 ? `Opens into ${into.join(", ")}` : null,
+          ].filter(Boolean);
+          return (
+            <span
+              key={`${i}:${item}`}
+              onMouseDown={onPillMouseDown && !isImplied ? (e) => onPillMouseDown(e, item) : undefined}
+              onContextMenu={onPillContextMenu && ((e) => onPillContextMenu(e, item))}
+              title={notes.length > 0 ? notes.join(" · ") : undefined}
+              className={`inline-flex items-center gap-0.5 h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 data-[pressed]:bg-blue-500 data-[pressed]:text-white data-[pressed]:opacity-100 ${
+                isImplied ? "opacity-40" : ""
+              }`}
+            >
+              {item}
+              {into.length > 0 && <span className="opacity-60">›</span>}
+            </span>
+          );
+        })}
         {!wrap && items.length > MAX_PILLS && (
           <span className="text-[11px] text-neutral-500 shrink-0">+{items.length - MAX_PILLS}</span>
         )}
@@ -134,6 +156,8 @@ export function ListCellEditor({
   usage,
   onRenameValue,
   sourcesOf,
+  stored,
+  impliedBy,
 }: {
   anchor: HTMLElement;
   value: unknown;
@@ -141,7 +165,11 @@ export function ListCellEditor({
   options: string[];
   /** Text typed into the cell that opened the picker. */
   seed?: string;
-  onCommit: (value: unknown, move: CommitMove) => void;
+  /**
+   * The values set directly, and the implied values unticked (to be dropped,
+   * which clears what implies them). Implied values left as they are aren't in either.
+   */
+  onCommit: (value: unknown, move: CommitMove, dropped?: string[]) => void;
   /** A Multi-select's ticks so far, to show in the cell before the commit. */
   onPreview?: (value: unknown) => void;
   onClose: () => void;
@@ -153,8 +181,17 @@ export function ListCellEditor({
   onRenameValue?: (from: string, to: string) => Promise<void>;
   /** Folder names a value was renamed from, shown greyed beside it. */
   sourcesOf?: (value: string) => string[];
+  /** The cell's values set directly (the rest of `value` is implied). */
+  stored?: string[];
+  /** Properties whose values imply a value on this file ("from House"). */
+  impliedBy?: (value: string) => string[];
 }) {
-  const [chosen, setChosen] = useState<string[]>(() => listValues(value));
+  // Ticked values are the ones set directly; implied ones show by themselves (faded) unless dropped
+  const [chosen, setChosen] = useState<string[]>(() => stored ?? listValues(value));
+  const [dropped, setDropped] = useState<string[]>([]);
+  const droppedRef = useRef(dropped);
+  droppedRef.current = dropped;
+  const isImplied = (item: string) => (impliedBy?.(item).length ?? 0) > 0;
   const [query, setQuery] = useState(seed);
   const [highlight, setHighlight] = useState(0);
   const chosenRef = useRef(chosen);
@@ -224,19 +261,41 @@ export function ListCellEditor({
   function close(move: CommitMove = "none") {
     if (multiple && !committed.current) {
       committed.current = true;
-      onCommit(chosenRef.current.length ? chosenRef.current : null, move);
+      onCommit(chosenRef.current.length ? chosenRef.current : null, move, droppedRef.current);
     }
     onClose();
   }
 
+  /** A Select's pick: any implied value it replaces is dropped. */
+  function commitSingle(item: string | null) {
+    committed.current = true;
+    const replaced = listValues(value).filter((v) => v !== item && isImplied(v) && !(stored ?? []).includes(v));
+    onCommit(item, "down", replaced);
+    onClose();
+  }
+
+  /**
+   * A Multi-select's click. An implied value steps through three states:
+   * implied (faded ✓) → set directly (✓) → unticked (dropped) → implied again.
+   * Any other value is simply ticked or unticked.
+   */
   function pick(item: string) {
     if (!multiple) {
-      committed.current = true;
-      onCommit(item, "down");
-      onClose();
+      commitSingle(item);
       return;
     }
-    setChosen((c) => (c.includes(item) ? c.filter((x) => x !== item) : [...c, item]));
+    if (isImplied(item)) {
+      if (chosen.includes(item)) {
+        setChosen((c) => c.filter((x) => x !== item));
+        setDropped((d) => [...d, item]);
+      } else if (dropped.includes(item)) {
+        setDropped((d) => d.filter((x) => x !== item));
+      } else {
+        setChosen((c) => [...c, item]);
+      }
+    } else {
+      setChosen((c) => (c.includes(item) ? c.filter((x) => x !== item) : [...c, item]));
+    }
     setQuery("");
   }
 
@@ -281,23 +340,21 @@ export function ListCellEditor({
       />
       <div role="listbox" aria-multiselectable={multiple} className="max-h-[240px] overflow-y-auto">
         {!multiple && chosen.length > 0 && q === "" && (
-          <OptionRow label="None" checked={false} highlighted={false} muted onClick={() => {
-            committed.current = true;
-            onCommit(null, "down");
-            onClose();
-          }} />
+          <OptionRow label="None" checked={false} highlighted={false} muted onClick={() => commitSingle(null)} />
         )}
         {shown.map((item, i) => (
           <OptionRow
             key={item}
             label={item}
-            checked={chosen.includes(item)}
+            checked={chosen.includes(item) || (isImplied(item) && !dropped.includes(item))}
             highlighted={i === highlight && q !== ""}
             onClick={() => pick(item)}
             onDelete={onDeleteValue ? () => deleteValue(item) : undefined}
             onRename={onRenameValue ? (to) => renameValue(item, to) : undefined}
             sources={sourcesOf?.(item)}
             usage={usage?.(item)}
+            impliedBy={impliedBy?.(item)}
+            impliedOnly={!chosen.includes(item) && isImplied(item) && !dropped.includes(item)}
           />
         ))}
         {canAdd && (
@@ -442,6 +499,8 @@ function OptionRow({
   renameOnClick,
   sources,
   usage,
+  impliedBy,
+  impliedOnly,
 }: {
   label: string;
   checked: boolean;
@@ -458,6 +517,10 @@ function OptionRow({
   /** Folder names the value was renamed from, shown greyed beside it. */
   sources?: string[];
   usage?: number;
+  /** Properties whose values imply this one on the file ("from House"). */
+  impliedBy?: string[];
+  /** Ticked only by implication, not set directly: the tick shows faded. */
+  impliedOnly?: boolean;
 }) {
   const [revealed, setRevealed] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -540,10 +603,10 @@ function OptionRow({
       } ${highlighted ? "bg-blue-500 text-white" : muted ? "text-neutral-400" : ""}`}
     >
       <span className="w-4 flex justify-center shrink-0">
-        {checked && <SymbolIcon name="checkmark" size={11} fallback="✓" />}
+        {checked && <SymbolIcon name="checkmark" size={11} fallback="✓" className={impliedOnly ? "opacity-40" : ""} />}
         {icon && <SymbolIcon name={icon} size={11} fallback="+" />}
       </span>
-      <span className="min-w-0 truncate">{label}</span>
+      <span className={`min-w-0 truncate ${impliedOnly ? "opacity-60" : ""}`}>{label}</span>
       {/* Where a renamed value came from */}
       {sources && sources.length > 0 && (
         <span title={`Folder: ${sources.join(", ")}`} className="min-w-0 truncate text-[11px] opacity-50">
@@ -551,6 +614,19 @@ function OptionRow({
         </span>
       )}
       <span className="flex-1" />
+      {/* Set by implication (from a scoped property's value), alone or as well as directly */}
+      {impliedBy && impliedBy.length > 0 && !revealed && (
+        <span
+          title={
+            impliedOnly
+              ? `Implied by ${impliedBy.join(", ")}: not set directly. Unticking it clears ${impliedBy.join(", ")}`
+              : `Set directly, and also implied by ${impliedBy.join(", ")}`
+          }
+          className="min-w-0 truncate text-[11px] opacity-50 pl-2"
+        >
+          {impliedOnly ? "from" : "also from"} {impliedBy.join(", ")}
+        </span>
+      )}
       {revealed && (
         <button
           type="button"

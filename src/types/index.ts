@@ -53,8 +53,21 @@ export interface PropertyConfig {
   format?: NumberFormat;
   /** ISO 4217 code, for the currency format. */
   currency?: string;
+  /**
+   * How a Date property shows its dates: "short", "medium" (the default),
+   * "long", "full", "iso", "relative", or "custom:<pattern>" (DD/MM/YYYY…).
+   * Dates are always stored as YYYY-MM-DD.
+   */
+  dateFormat?: string;
   /** Marks the library's built-in Tags property (renamable, not deletable, always Multi-select). */
   system?: "tags";
+}
+
+/** One condition on a scoped property: it applies where `condition_property_id` holds `value`. */
+export interface PropertyScope {
+  property_id: string;
+  condition_property_id: string;
+  value: string;
 }
 
 export interface PropertyValue {

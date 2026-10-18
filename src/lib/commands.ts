@@ -7,11 +7,13 @@ import type {
   FolderEntry,
   PathSegmentMeta,
   Property,
+  PropertyScope,
   PropertyValue,
   QueryResult,
   View,
   ViewNode,
 } from "../types";
+import type { RuleWrite, StoredRule } from "./rules";
 
 export interface Location {
   location_id: string;
@@ -105,6 +107,53 @@ export async function createProperty(
     valueType,
     config,
   });
+}
+
+/** The library's rules, in order. */
+export async function getRules(library: string): Promise<StoredRule[]> {
+  return invoke<StoredRule[]>("get_rules", { library });
+}
+
+/** Creates (empty rule_id) or updates a rule; returns it as stored. */
+export async function saveRule(rule: StoredRule): Promise<StoredRule> {
+  return invoke<StoredRule>("save_rule", { rule });
+}
+
+/** Deletes a rule (the values it wrote stay). */
+export async function deleteRule(ruleId: string): Promise<void> {
+  return invoke<void>("delete_rule", { ruleId });
+}
+
+export async function reorderRules(ruleIds: string[]): Promise<void> {
+  return invoke<void>("reorder_rules", { ruleIds });
+}
+
+/** Every value the library's rules have written (so hand edits stick). */
+export async function getRuleWrites(library: string): Promise<RuleWrite[]> {
+  return invoke<RuleWrite[]>("get_rule_writes", { library });
+}
+
+/** Writes a rule run's values and records them as the rules'. */
+export async function applyRuleWrites(edits: CellEdit[], writes: RuleWrite[]): Promise<void> {
+  return invoke<void>("apply_rule_writes", { edits, writes });
+}
+
+/** Forgets recorded writes (undoing Apply Now). */
+export async function forgetRuleWrites(writes: RuleWrite[]): Promise<void> {
+  return invoke<void>("forget_rule_writes", { writes });
+}
+
+/** Every scoped property's conditions in a library (and global ones). */
+export async function getPropertyScopes(library: string | null): Promise<PropertyScope[]> {
+  return invoke<PropertyScope[]>("get_property_scopes", { library });
+}
+
+/** Replaces a property's conditions (any of them); an empty list makes it apply to every file. Refuses cycles. */
+export async function setPropertyScope(
+  propertyId: string,
+  conditions: { property_id: string; value: string }[]
+): Promise<void> {
+  return invoke<void>("set_property_scope", { propertyId, conditions });
 }
 
 /** Changes the type (and options), converting the values files already hold. */

@@ -39,6 +39,48 @@ pub struct Property {
     pub config: Option<String>,
 }
 
+/// A rule: when its conditions hold, set its values. `definition` is JSON
+/// (conditions, match, actions), read by src/lib/rules.ts.
+#[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
+pub struct Rule {
+    #[serde(default)]
+    pub rule_id: String,
+    pub library: String,
+    pub name: String,
+    pub enabled: bool,
+    #[serde(default)]
+    pub position: i64,
+    pub definition: String,
+    #[serde(default)]
+    pub created_at: String,
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+/// A value a rule wrote to a file (`value` is JSON: one value, or one item added to a list).
+#[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
+pub struct RuleWrite {
+    pub rule_id: String,
+    pub file_id: String,
+    pub key: String,
+    pub value: String,
+}
+
+/// One condition on a scoped property: it applies where `condition_property_id` holds `value`.
+#[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
+pub struct PropertyScope {
+    pub property_id: String,
+    pub condition_property_id: String,
+    pub value: String,
+}
+
+/// A condition as the frontend sends it.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScopeCondition {
+    pub property_id: String,
+    pub value: String,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow)]
 pub struct PropertyValue {
     pub value_id: String,

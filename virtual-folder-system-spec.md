@@ -124,7 +124,7 @@ value          TEXT               e.g. "Rig-A", "Front", "Apollo"
 |-----------|--------------|-----------|---------|
 | Text | `free_text` | JSON string | Free text input |
 | Number | `number` | JSON number | Numeric input; `config.format` is `generic`, `currency` (with `config.currency`, an ISO 4217 code) or `percent` (stored as a fraction, 0.25 = 25%) |
-| Date | `date` | ISO date string (`YYYY-MM-DD`) | Date picker |
+| Date | `date` | ISO date string (`YYYY-MM-DD`) | Date picker. **Date Format** (header menu) sets how it shows: Short, Medium (the default), Long and Full follow the system's date styles; ISO 8601; Relative ("yesterday", "in 3 days" within a week, else Medium); or Custom… with a pattern (`DD/MM/YYYY`, `D MMM YY`, `dddd D MMMM`; other words in [brackets]), previewed as it's typed. Stored as `config.dateFormat`; only the display changes |
 | Dropdown | `enum` | JSON string | One value from the registered list, with "Add value" |
 | Multi-select | `array` | JSON array of strings | Any number of values from the registered list, with "Add value". The type that gives multi-folder presence |
 
@@ -146,6 +146,102 @@ Users do not need to define properties up front via a settings screen. The regis
 - Dragging files into `Front` assigns `"angle": "Front"` to those files via the contextual upload mechanism
 
 This means folder creation at any level of the virtual tree is the primary way the property vocabulary grows. The registry records the result; the user never interacts with it directly as a configuration surface.
+
+#### Tags, Properties and Scoped Properties
+
+*Built in the database view (registry, implied values, cell states, promotion, removal prompt); the folder-view parts ([Scoped properties in views](#scoped-properties-in-views)) wait for views to return to the UI.*
+
+Three roles are kept distinct:
+
+| Role | What it is | Example |
+|------|-----------|---------|
+| **Tag** | A flat label: "this is about X". Hand-added tags are values of the built-in **Tags** property; **source tags** are the folder names on a file's path | `housing` |
+| **Property** | A question that can be asked of a file | *Housing*: "what kind of housing document?" |
+| **Value** | One answer to a property | `Rent`, `House Insurance` |
+
+A tag is a virtual folder: opening `housing` shows every file with that tag. It is a different presentation of a filter, and properties make that filter richer and multi-level.
+
+##### Independent and scoped properties
+
+- An **independent** property applies to every file (Client, Year, Kind). Any combination of values is meaningful, so independent properties can be stacked in a view in any order
+- A **scoped** property applies only where a condition holds: *Housing* **applies when** Tags has `housing`. The condition is one or more values of other properties, combined with *any*: *Insurance Type* can apply when Tags has `housing` or `car`. Scoping is a statement about meaning, not about position in a tree
+
+This is the single link between properties. It is what "promoting a tag" creates, and it is how a property can also be a value of another property: *Housing* can be a property in its own right and the property that refines the `Housing` value of *Category*, or of Tags.
+
+Rules:
+
+- **No cycles**: a property cannot apply when another holds a value if that other property is itself scoped to it, directly or through others
+- **Several conditions are allowed**: a property may refine values of more than one property, or several values of one. A strict one-parent tree is deliberately not required, because real categories cross over (insurance for a house and for a car)
+- **Widening is lossless**: a scoped property can be made independent ("applies to all files") at any time without changing any file's values, so a wrong first guess is cheap to correct
+- **Same names are linked, never accidental**: creating a property whose name matches an existing value (or the reverse) offers to link the two rather than leaving unrelated things with one name
+
+The link lives in the property registry, not in views, because it is a fact about meaning that holds in every view. Views use it as their default structure and can still be arranged freely.
+
+##### Implied rules
+
+- **A value implies its condition**: giving a file a *Housing* value adds `housing` to its Tags. The implied tag is shown like a covered tag (faded) rather than stored a second time. Filters, sorting and grouping count implied values as held
+  - Only a property with a **single** condition implies it: with several (`housing` or `car`), which one holds is unknown, so nothing is implied
+  - A value is implied into a single-value (Select) property only while that property is empty; it never replaces a value
+- **A condition without a value is a real state**: a file tagged `housing` with no *Housing* value yet is "about housing, not yet classified". It sits loose in the `housing` folder, not in any of its child folders, and is listed as incomplete
+- **A tag set by hand is stored**: if the user adds `housing` directly, it is stored, so clearing *Housing* later leaves the file tagged `housing` rather than untagged. A tag that is only implied disappears when the value is cleared
+- **Removing an implying tag asks first**: removing `housing` from a file that has a *Housing* value prompts that this also clears *Housing* (and any properties scoped beneath it), as one undoable change. The picker tells the two apart as the cell does: a value set directly has a ✓; one held only by implication has a faded ✓ and "from House" beside it; one that's both reads "also from House". Opening and closing the picker changes nothing. Clicking an implied value steps through three states: implied (faded ✓) → set directly (✓, so it stays if House is cleared) → unticked (on closing, asks before clearing House) → implied again. Other values tick and untick as usual. In a Select, picking a different value drops an implied one the same way. A property keeps its value if another of its conditions still holds. Bulk edits (paste, fill, Delete) don't prompt: they change only stored values, and implied ones stay shown
+
+##### Cells and pills
+
+- A scoped property's cell shows three states:
+  - **Has a value**: the value, as usual
+  - **Expected**: the condition holds but there is no value, shown as a muted "Choose…" placeholder with a dashed outline
+  - **Doesn't apply**: the condition doesn't hold, shown as a greyed "—". Setting a value here anyway adds the implied tag, so the property starts to apply
+- Pills stay single-colour. State is shown by tone and a glyph, not by extra colours:
+  - **Faded**: the tag is covered, because a property's value already records it (as for source tags today)
+  - **Trailing "›"** (`housing ›`): the value opens into a scoped property. This is also what marks it as a folder with more structure inside
+- A scoped property's **header** shows its origin in a muted tone after the name; hovering gives the full condition ("Applies when Tags has Car"). Each condition shows its value, with the property it's in unless that's Tags (the usual source); a value that only repeats the header's name shows its source instead:
+  - *Housing ‹ home*: Tags has `home`
+  - *Car ‹ Tags*: Tags has `Car` (not "Car ‹ Car")
+  - *Insurance Type ‹ Housing: House Insurance*
+  - *Cover ‹ housing, car*: either
+
+##### Promoting a tag
+
+Dragging a tag or value pill (the existing 0.5s hold to arm) chooses what it becomes by where it's dropped. The drop hint always names the outcome, because some targets sit close together:
+
+| Drop target | Result |
+|-------------|--------|
+| A **property's header** | Opens the dialog with that property's name, so Return **links** the tag to it (it gains the tag as a condition). Changing the name makes a new property instead |
+| **Between two headers** (within 10px of the edge; a blue insertion line shows where) | Opens the dialog with the tag's name, capitalised, and the type (Select or Multi-select). The new property's column goes at that point |
+| The **"+"** header, or a header that can't take it (Name, Size…, the tag's own column) | As between headers: a new property, at the end or just after that column |
+| A property's **column** (any cell) | The tag becomes a value of that property (as before) |
+| The **"+"** column below its header, or the empty area **to the right of the table** | The tag becomes a value of a new Multi-select (as dropping on "+" did before) |
+
+- Right-click a pill ▸ **Make Property from "housing"…** opens the same dialog
+- The dialog always shows the name, so the outcome can be changed either way with one edit: a name that matches an existing property **links** (no type choice; the title reads "Link "housing" to Housing"), and any other name **creates** a property (type shown)
+- From the pill menu, the new column goes just after the column the tag came from
+- **A source tag** is a folder name, so its folders are mapped into Tags first and the condition is Tags has `housing`; that keeps holding on every refresh, and the source tag shows covered. Folders already mapped to a property make that property's value the condition instead
+- **Scoping an existing property** (the reverse of promotion: property first, tag second): header menu ▸ **Apply Only Where…** opens a list of conditions, each "*Property* has *value*" (Select and Multi-select properties only, combined with *or*), with Add Condition. Properties that depend on this one aren't offered, as they would make a cycle. The dialog says what the scope would do before applying: "Applies to 3 of 5 files: 2 with a value, 1 to fill in. Files given a Housing value also get "housing"". Not offered for the built-in Tags property, which stays a set of flat labels
+- **Widening**: a scoped property's header menu has **Apply to All Files (not just housing)**, which removes its conditions
+- **Unlinking one value**: right-click a pill that opens into a property (`housing ›`) ▸ **Unlink "housing" from Housing** removes just that condition; with none left, the property applies to all files
+- **Removing a link keeps what it showed**: values a condition was implying (a faded `housing` on files with a Housing value) are written as stored values when the condition goes, by Unlink, Apply to All Files or Apply Only Where…, so no file loses a tag it was showing. One undo restores both the link and the files
+- **Independent properties never imply tags.** A property only implies values where it has been scoped, by promotion or Apply Only Where…. A tag named after every property with a value would repeat the column headers on most files and bury the tags chosen by hand
+- All of these are undoable (Make Property, Apply Only Where, Apply to All Files)
+- In grouping, a scoped property's files it doesn't apply to form a **Doesn't Apply** group, separate from the "No *Property*" group of files still missing a value
+
+##### Storage
+
+`property_scopes (property_id, condition_property_id, value)`, one row per condition; no rows means the property applies to every file. `set_property_scope` replaces a property's conditions and refuses a cycle. Conditions follow their values: renaming a value or moving it to another property moves its conditions, and deleting a value or property removes them.
+
+##### Scoped properties in views
+
+Because scoping is a condition rather than a position, views can still order levels freely:
+
+| View order | Result |
+|------------|--------|
+| Tags › Housing | `housing/` holds Rent and House Insurance, plus the files tagged `housing` with no value yet. Other tags have no Housing level: it doesn't apply there |
+| Tags › Year › Housing | Housing appears under `housing/2024/`: the condition holds in that branch. The levels need not be adjacent |
+| Housing › Tags | Putting a scoped property first narrows the view to the files it applies to. Inside `Rent/`, Tags still splits by the files' other tags (`tax`, `2024`); `housing` is the same for all of them |
+
+- **Forks are derived**: a branch's next level only offers properties that apply there, so the Photos/Videos split in [Forking Hierarchies](#forking-hierarchies) follows from *Rig* applying to photos and *Project* to videos, without declaring the fork in the view
+- **Dropping into a folder** sets every condition on its path, whatever the view's order: dropping into `housing/Rent` adds the tag and sets *Housing* = Rent
+- **Dragging out of a folder** is the ambiguous direction (which condition should go?), so "Remove from this folder" removes only the deepest level's value and the removal prompt above covers implied tags
 
 #### Registry as a Restorable Artefact
 
@@ -195,11 +291,15 @@ Library: Media
 
 In this configuration, navigating into a Photos folder presents Rig sub-folders; navigating into a Videos folder presents Project sub-folders. Both branches live in the same view, the same database, and the same library. The fork is a structural declaration in the view tree, not a separation of data.
 
+With [scoped properties](#tags-properties-and-scoped-properties), most forks need no declaration: if *Rig* applies when Type is Photos and *Project* when Type is Videos, each branch only offers the properties that apply to it. Explicit `fork_value` nodes remain for a view that wants a different structure from the registry's.
+
 #### Completeness and Empty Properties
 
 Because a view's layer tree defines which properties are expected at each branch, the system can determine whether any given file is fully classified within that view. A file is considered **incomplete** in a view if it possesses the properties required to reach some intermediate node but is missing the properties needed to reach the leaf of its branch.
 
 This completeness model is view-relative — the same file may be complete in a shallow view and incomplete in a deeper one. There is no global notion of a complete file independent of a view.
+
+Scoped properties sharpen this: a level whose property doesn't apply to a file is not missing for that file. Only the **expected** state (the condition holds, no value yet) counts as incomplete.
 
 ---
 
@@ -329,6 +429,63 @@ The flow:
    - Mapped values are only filled in where a file has none, so a file moved to a differently mapped folder keeps its existing value
 
 After mapping, the location's files carry property values derived from their paths, and views can be built over those properties like any others. Folder names that are not mapped are kept as unstructured **tags**.
+
+### Rules
+
+A **rule** says "when these conditions hold, set these values". It is how values are derived from what files already carry — most often their names — across a subset of the library, without typing them file by file. Property values stay plain stored values: there are no formula-driven properties. The formula lives in the rule, and decides only what is written and when.
+
+```
+Rule: "Ruben's statements"                                [✓ Keep running]
+When  [all] of:   Name  matches  {Date:6}_{Person}.pdf
+                  Tags  has      Ruben
+Then set:         Person  to     Ruben                       (a fixed value)
+                  Date    from   {Date} as YYMMDD             (taken from the name)
+Preview: 6 match · 6 will change · 0 already set               [Apply Now]
+```
+
+#### Conditions
+
+The **When** section is the database view's filter: any native column or property, combined with *all* or *any*, counting implied values as filters do. Text columns gain **starts with**, **ends with** and **matches pattern** (also available in the Filter panel).
+
+#### Taking values from names: three levels, one engine
+
+1. **Pick from an example** (the default): the editor shows a matching file's name as selectable text. Selecting `AB12` in `Q3_AB12_final.docx` and naming it *Code* generates the pattern `{*}_{Code}_{*}.docx`, tried at once on every matching file in the preview
+2. **Pattern** (always visible, editable):
+   - `{Code}` captures any text; `{Code:4}` exactly 4 characters
+   - `{*}` matches any text without capturing it; `{*:2}` exactly 2 characters
+   - Everything else is matched literally, ignoring case. A pattern without an extension is matched against the name without its extension
+   - Patterns come from route and format-string matching (`/users/{id}`; Python's `parse`): they read like the names they describe
+3. **Formula** (full control), Notion-style functions for what a pattern can't say, usable as an action's value: `slice(name, 3, 7)`, `left`, `right`, `before(name, "_")`, `after`, `match(name, "regex")` (first group), `replace(text, "regex", "with")`, `upper`, `lower`, `trim`, `date(text, "YYMMDD")`, `prop("Client")`, joined with `&`. Pattern slots can be used inside formulas: `upper({Code})`. Names available: `name` (without extension), `filename`, `ext`, `path`, `folder`
+
+A file that meets the conditions but doesn't fit the pattern is shown as **no match** in the preview, and nothing is written to it.
+
+#### Actions
+
+**Then set** is a list, so one rule can set several properties. The property menu ends with **New Property…**, which makes one in place: named after the slot it takes ({Date} → Date) and typed by how its value is read (a date format → Date, a number → Number, a typed-in value → Select, otherwise Text), both changeable before Create. Each action writes a fixed value, a pattern slot (optionally read as a date with a format such as `YYMMDD`, or as a number), or a formula's result.
+
+- **Fill only empty values** (the default): a Select, Text, Number or Date property is written only where it's empty; a Multi-select gains the value if it doesn't have it. **Overwrite existing values** is an option per action
+- **Hand edits win**: each value a rule writes is recorded (rule, file, property, value). Once a rule has written a file's value, it never writes that value again, so changing or clearing it by hand sticks. Re-applying over hand edits is an explicit choice in the editor
+- Actions on properties that no longer exist are skipped and flagged
+
+#### When rules run
+
+| Moment | What happens |
+|--------|--------------|
+| **Apply Now** in the editor | This rule runs over the matching files after the preview; undoable as one step |
+| A rule is on (**Keep running**) | It runs whenever the location's files load or change: after a refresh brings in new or edited files, and after any edit that might make a file match (three conditions of four, then the fourth is set) |
+
+Because rules only fill empty values and never rewrite their own, re-checking always settles. Rules are an ordered list: when two fill the same empty property, the earlier wins. Automatic runs aren't part of undo history; Apply Now is.
+
+Rules are evaluated by the app (`src/lib/rules.ts`) rather than the database, so a rule's conditions match exactly what the Filter panel shows, including implied values. They run for the **open location** whenever its files load, in any view mode; another location of the same library is brought up to date when it's opened.
+
+New rules start with Keep running off, so nothing is written until Apply Now or the rule is switched on. The rules list has an on/off tick per rule. Switching to another rule, or closing the panel, saves the one being edited. Delete Rule leaves the values a rule wrote on the files.
+
+#### Where rules live
+
+- Rules belong to a library and are stored in the database (`rules`, `rule_writes`), so they travel with it
+- **Rules…** in the database view toolbar opens the **Rules panel**: the list on the left (name, on/off, how many files match now, drag ≡ to reorder) and the selected rule's editor on the right. Selecting a rule shows only its matching files in the table, until the panel closes
+- **Make Rule from Filter…** in the Filter panel opens the Rules panel with a new rule preloaded with the current context: every filter rule and its *all/any*, and the search text as "Name contains …" (in folder views, the folder path as conditions). The loaded conditions can be changed like any other
+- Renaming a property renames it in every rule; folder mapping is conceptually a built-in rule and may later be expressed as one
 
 ### Contextual File Upload
 
@@ -609,6 +766,7 @@ Selection follows spreadsheet conventions:
 
 - **Clicking a native cell** (including Name) selects the whole row, as in a Finder list. Row selection supports Shift and Cmd as usual
 - **Clicking a custom cell** selects that cell only. A cell selection is drawn as an accent-colour outline around the whole selected block (rounded at its outer corners), as in Numbers, rather than filled. Cmd-click adds or removes single cells; Shift-click selects the rectangle from the anchor cell. The arrow keys move the selection
+- **Drag to select**: press on a cell and drag to select the block of cells to the one under the pointer, as in a spreadsheet; the table scrolls when the pointer nears an edge, and group headings are skipped. Shift-drag extends from the selection's anchor, ⌘-drag (Ctrl-drag) adds the block to the selection. Delete then clears every selected cell as one undoable change
 - **Editing**: double-click a selected cell, press Return or just start typing to edit it in place with the editor for its type. Return commits, Escape cancels, Tab commits and moves right. Delete clears the selected cells
 - **Fill handle**: a selection of cells shows a small accent dot straddling its bottom-right corner. Dragging it up or down repeats the selected values into the cells it covers, as in Excel or Numbers
 - **Copy and paste**: Cmd-C copies the selected cells; Cmd-V pastes. A single copied value fills every selected cell; a block of values pastes from the anchor cell downward and to the right. Pasted text is converted to each column's type, and new Dropdown or Multi-select values are added to the registry

@@ -1,5 +1,6 @@
 import { compareSortValues, type SortState } from "./columns";
 import { dateKey, listValues, parseNumber } from "./propertyTypes";
+import { compilePattern, isPatternError, matchPattern, type CompiledPattern } from "./patterns";
 
 // Filter rules and multi-key sorting for the database view. Pure: the view
 // supplies how to read a column's value and what kind of column it is.
@@ -9,6 +10,9 @@ export type ColumnKind = "text" | "number" | "date" | "list";
 export type FilterOp =
   | "contains"
   | "not_contains"
+  | "starts_with"
+  | "ends_with"
+  | "matches"
   | "is"
   | "is_not"
   | "eq"
@@ -37,6 +41,9 @@ export const FILTER_OPS: Record<ColumnKind, { op: FilterOp; label: string }[]> =
   text: [
     { op: "contains", label: "contains" },
     { op: "not_contains", label: "does not contain" },
+    { op: "starts_with", label: "starts with" },
+    { op: "ends_with", label: "ends with" },
+    { op: "matches", label: "matches pattern" },
     { op: "is", label: "is" },
     { op: "is_not", label: "is not" },
     { op: "empty", label: "is empty" },
@@ -126,6 +133,13 @@ export function matchesRule(value: unknown, kind: ColumnKind, rule: FilterRule):
       const b = target.toLowerCase();
       switch (rule.op) {
         case "contains": return a.includes(b);
+        case "starts_with": return a.startsWith(b);
+        case "ends_with": return a.endsWith(b);
+        case "matches": {
+          const pattern = patternFor(target);
+          // A pattern with a mistake in it matches nothing (the editor shows the mistake)
+          return pattern != null && matchPattern(pattern, Array.isArray(value) ? value.join(", ") : String(value ?? "")) != null;
+        }
         case "not_contains": return !a.includes(b);
         case "is": return a === b;
         case "is_not": return a !== b;
@@ -133,6 +147,19 @@ export function matchesRule(value: unknown, kind: ColumnKind, rule: FilterRule):
       }
     }
   }
+}
+
+const patternCache = new Map<string, CompiledPattern | null>();
+/** A "matches pattern" rule's compiled pattern (null if it has a mistake), kept between rows. */
+export function patternFor(text: string): CompiledPattern | null {
+  let p = patternCache.get(text);
+  if (p === undefined) {
+    const c = compilePattern(text);
+    p = isPatternError(c) ? null : c;
+    if (patternCache.size > 200) patternCache.clear();
+    patternCache.set(text, p);
+  }
+  return p;
 }
 
 /** Rows passing all (or any) of `rules`. No rules keeps every row. */

@@ -14,17 +14,43 @@ import {
   getLocations,
   getMappingNodes,
   getProperties,
+  applyRuleWrites,
+  deleteRule,
+  forgetRuleWrites,
+  getPropertyScopes,
   getPropertyValues,
+  getRuleWrites,
+  getRules,
+  reorderRules,
+  saveRule,
   renameProperty,
   movePropertyValue,
   renamePropertyValue,
   setEditMenuLabels,
   setFolderLabels,
   setMetadataCells,
+  setPropertyScope,
   type CellEdit,
   updatePropertyType,
 } from "../../lib/commands";
-import type { FileRecord, Property, PropertyConfig, PropertyValue, ValueType } from "../../types";
+import type { FileRecord, Property, PropertyConfig, PropertyScope, PropertyValue, ValueType } from "../../types";
+import {
+  applies,
+  dependsOn,
+  describeScope,
+  impliedValues,
+  opensInto,
+  propertiesToClear,
+  scopeCoverage,
+  scopeOrigin,
+  scopeState,
+  scopesByName,
+  type ScopeCondition,
+} from "../../lib/scopes";
+import ScopeDialog from "./db/ScopeDialog";
+import RulesPanel from "./db/RulesPanel";
+import { definitionFromFilter, writeKeys, type RuleDefinition, type RuleEnv, type RulePlan, type RuleWrite, type StoredRule } from "../../lib/rules";
+import { KIND_BY_TYPE, NATIVE_KINDS, PROP_PREFIX, fileExtension, fileName, metaValue, nativeValue, propName } from "../../lib/fileColumns";
 import { FileIcon, SymbolIcon } from "../../lib/fileIcons";
 import { useNavigation } from "../../contexts/NavigationContext";
 import { KIND_CATEGORIES, dateGroup, formatFinderDate, formatFinderSize, kindCategory, nameGroup, sizeGroup } from "../../lib/arrange";
@@ -48,7 +74,7 @@ import { setUndoTarget } from "../../lib/editMenu";
 import { selectionLabel } from "../../lib/selectionStatus";
 import { describeRefresh, type RefreshSummary } from "../../lib/refreshSummary";
 import MenuPopover, { type MenuAnchor } from "../shared/MenuPopover";
-import Dialog, { DialogButton } from "../shared/Dialog";
+import Dialog, { DialogButton, DialogField, dialogTextField } from "../shared/Dialog";
 import { useOverwriteConfirm } from "../shared/OverwriteDialog";
 import CloudBadge from "./shared/CloudBadge";
 import {
@@ -62,6 +88,9 @@ import {
 import { hasPrimaryModifier, isToggleSelect } from "../../lib/platform";
 import {
   CURRENCIES,
+  DATE_DISPLAY_FORMATS,
+  formatDate,
+  formatDatePattern,
   EXTRACTED_KEYS,
   EXTRACTED_LABELS,
   propertyLabel,
@@ -115,16 +144,6 @@ interface IndexingProgress {
   error?: string | null;
 }
 
-function fileName(filePath: string): string {
-  return filePath.replace(/\\/g, "/").split("/").pop() ?? filePath;
-}
-
-function fileExtension(filePath: string): string {
-  const name = fileName(filePath);
-  const dot = name.lastIndexOf(".");
-  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
-}
-
 // Standard columns, in display order. Name is always shown.
 const STANDARD_COLUMNS: ColumnDef[] = [
   { id: "name", label: "Name", weight: 3, minWidth: 140, reorderable: false, hideable: false },
@@ -150,27 +169,6 @@ const ADD_COLUMN: ColumnDef = {
   hideable: false,
   resizable: false,
 };
-const PROP_PREFIX = "prop:";
-const propName = (columnId: string) => columnId.slice(PROP_PREFIX.length);
-
-const NATIVE_KINDS: Record<string, ColumnKind> = {
-  name: "text",
-  ext: "list",
-  path: "text",
-  type: "list",
-  size: "number",
-  created: "date",
-  modified: "date",
-  tags: "list",
-};
-const KIND_BY_TYPE: Record<ValueType, ColumnKind> = {
-  free_text: "text",
-  number: "number",
-  date: "date",
-  enum: "list",
-  array: "list",
-};
-
 function propertyColumn(name: string, type: ValueType): ColumnDef {
   return { id: PROP_PREFIX + name, label: propertyLabel(name), weight: 1.4, minWidth: 90, align: type === "number" ? "right" : undefined };
 }
@@ -186,34 +184,6 @@ function defaultGroupDirection(columnId: string): "asc" | "desc" {
   return columnId === "created" || columnId === "modified" || columnId === "size" ? "desc" : "asc";
 }
 
-/** A native column's value for filtering. */
-function nativeValue(file: FileRecord, key: string): unknown {
-  switch (key) {
-    case "name":
-      return fileName(file.file_path);
-    case "ext":
-      return fileExtension(file.file_path);
-    case "path":
-      return file.relative_path ?? file.file_path;
-    case "type":
-      return kindCategory(file);
-    case "size":
-      return file.file_size;
-    case "created":
-      return file.timestamp;
-    case "modified":
-      return file.modified_at;
-    case "tags":
-      return Array.isArray(file.tags) ? file.tags : [];
-    default:
-      return null;
-  }
-}
-
-function metaValue(file: FileRecord | undefined, key: string): unknown {
-  return (file?.metadata as Record<string, unknown> | null | undefined)?.[key] ?? null;
-}
-
 const isEmptyValue = (v: unknown) =>
   v == null || (typeof v === "string" && v.trim() === "") || (Array.isArray(v) && v.length === 0);
 
@@ -222,6 +192,20 @@ const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON
 const CELL = "shrink-0 px-3 truncate whitespace-nowrap";
 // Finder list metrics: 20pt rows, rounded stripes inset 10px.
 const ROW_HEIGHT = 20;
+const NO_IMPLIED: Record<string, string[]> = {};
+/** A dragged tag's target over a header: promote it to a property ("header:<column id>"). */
+const HEADER_TARGET = "header:";
+/** A dragged tag's target between two headers: a new property there ("insert:<index among the columns>"). */
+const INSERT_TARGET = "insert:";
+/** How near a header's edge counts as between two columns. */
+const INSERT_EDGE = 10;
+/** Whether `list` holds `value`, ignoring case (as scope conditions match). */
+const hasText = (list: string[], value: string) =>
+  list.some((v) => v.localeCompare(value, undefined, { sensitivity: "base" }) === 0);
+/** "Housing", "Housing and Cover", "Housing, Cover and Type". */
+function listNames(names: string[]): string {
+  return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
 /** A group's heading row, with room above it to set it off from the rows before. */
 const GROUP_HEIGHT = 30;
 /** Each nested grouping level's heading steps in by this much. */
@@ -271,6 +255,8 @@ function saveJson(key: string, value: unknown) {
 export default function LocationDatabaseView({ files, locationId, onChanged }: Props) {
   const [search, setSearch] = useState("");
   const [sorts, setSorts] = useState<SortState[]>([DEFAULT_SORT]);
+  /** The rule being looked at in the Rules panel: the table shows only its files. */
+  const [ruleFocus, setRuleFocus] = useState<{ name: string; definition: RuleDefinition } | null>(null);
   /** Grouping levels (outermost first) and the groups folded shut; both kept per location. */
   const [groupLevels, setGroupLevelsState] = useState<GroupLevel[]>([]);
   const [collapsed, setCollapsedState] = useState<ReadonlySet<string>>(() => new Set());
@@ -323,6 +309,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   // Property registry for this location's library
   const [library, setLibrary] = useState<string | null>(null);
   const [registry, setRegistry] = useState<Property[]>([]);
+  /** Conditions on scoped properties ("Housing applies when Tags has housing"), as the registry stores them. */
+  const [scopeRows, setScopeRows] = useState<PropertyScope[]>([]);
   /** Registered values of Select and Multi-select properties, by property id. */
   const [registryValues, setRegistryValues] = useState<Record<string, PropertyValue[]>>({});
 
@@ -411,9 +399,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   const loadRegistry = useCallback(async () => {
     if (!library) {
       setRegistry([]);
+      setScopeRows([]);
       return;
     }
-    setRegistry(await getProperties(library));
+    const [props, scopeList] = await Promise.all([getProperties(library), getPropertyScopes(library)]);
+    setRegistry(props);
+    setScopeRows(scopeList);
   }, [library]);
   useEffect(() => {
     loadRegistry().catch(() => {});
@@ -471,6 +462,14 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   );
   const configOf = useCallback((name: string): PropertyConfig => parseConfig(propByName.get(name)), [propByName]);
 
+  /** Scoped properties by name: where each applies (see lib/scopes). */
+  const scopes = useMemo(() => {
+    const nameById = new Map(registry.map((p) => [p.property_id, p.name]));
+    return scopesByName(scopeRows, (id) => nameById.get(id));
+  }, [registry, scopeRows]);
+  const scopeOf = useCallback((name: string) => scopes.find((s) => s.property === name), [scopes]);
+  const isListProperty = useCallback((name: string) => typeOf(name) === "array", [typeOf]);
+
   /** Every property this location can show: registered ones and keys found on its files. */
   const availableProperties = useMemo(
     () =>
@@ -518,10 +517,38 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     if (pendingWrites.current === 0) setPatches((p) => (p.size === 0 ? p : new Map()));
   }, [files]);
 
+  /**
+   * Values files hold only by implication (Housing = Rent implies Tags has
+   * `housing`): shown faded, and counted by filters, sorting and grouping, but
+   * never written back as stored values.
+   */
+  const impliedByFile = useMemo(() => {
+    const map = new Map<string, Record<string, string[]>>();
+    if (scopes.length === 0) return map;
+    for (const f of rows) {
+      const implied = impliedValues(f.metadata as Record<string, unknown> | null, scopes, isListProperty);
+      if (Object.keys(implied).length > 0) map.set(f.file_id, implied);
+    }
+    return map;
+  }, [rows, scopes, isListProperty]);
+  const impliedFor = useCallback((fileId: string) => impliedByFile.get(fileId) ?? NO_IMPLIED, [impliedByFile]);
+
+  /** A property's value with any implied values added. */
+  const effectiveValue = useCallback(
+    (file: FileRecord | undefined, name: string): unknown => {
+      const value = metaValue(file, name);
+      const implied = file ? impliedByFile.get(file.file_id)?.[name] : undefined;
+      if (!implied) return value;
+      const stored = listValues(value);
+      return typeOf(name) === "array" || stored.length + implied.length > 1 ? [...stored, ...implied] : implied[0];
+    },
+    [impliedByFile, typeOf]
+  );
+
   const columnValue = useCallback(
     (file: FileRecord, columnId: string): unknown =>
-      columnId.startsWith(PROP_PREFIX) ? metaValue(file, propName(columnId)) : nativeValue(file, columnId),
-    []
+      columnId.startsWith(PROP_PREFIX) ? effectiveValue(file, propName(columnId)) : nativeValue(file, columnId),
+    [effectiveValue]
   );
 
   const sortValue = useCallback(
@@ -531,14 +558,14 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         return Array.isArray(v) ? v.join(", ") : (v as string | number | null);
       }
       const name = propName(columnId);
-      const v = metaValue(file, name);
+      const v = effectiveValue(file, name);
       if (v == null) return null;
       const type = typeOf(name);
       if (type === "number" && typeof v === "number") return v;
       if (type === "date") return dateKey(v) ?? valueToText(v);
       return valueToText(v);
     },
-    [typeOf]
+    [typeOf, effectiveValue]
   );
 
   // Only re-filter and re-sort when the inputs change, not on every render
@@ -552,8 +579,13 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
             (f.relative_path ?? "").toLowerCase().includes(q)
         )
       : rows;
-    return multiSort(applyFilters(searched, rules, match, columnValue, kindOf), sorts, sortValue);
-  }, [rows, search, rules, match, sorts, columnValue, kindOf, sortValue]);
+    const filtered = applyFilters(searched, rules, match, columnValue, kindOf);
+    // While a rule is looked at in the Rules panel, just the files it applies to
+    const focused = ruleFocus
+      ? applyFilters(filtered, ruleFocus.definition.conditions, ruleFocus.definition.match, columnValue, kindOf)
+      : filtered;
+    return multiSort(focused, sorts, sortValue);
+  }, [rows, search, rules, match, sorts, columnValue, kindOf, sortValue, ruleFocus]);
 
   /** Which group a file falls in for a column: Finder's buckets for its own columns, the value for properties. */
   const groupKey = useCallback(
@@ -594,8 +626,15 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         }
       }
       const name = propName(columnId);
-      const v = metaValue(file, name);
-      if (isEmptyValue(v)) return null;
+      const v = effectiveValue(file, name);
+      if (isEmptyValue(v)) {
+        // A scoped property's files it doesn't apply to group apart from those still missing a value
+        const scope = scopeOf(name);
+        if (scope && !applies(scope, file.metadata as Record<string, unknown> | null, impliedFor(file.file_id))) {
+          return { label: "Doesn't Apply", rank: "\uffff" };
+        }
+        return null;
+      }
       const type = typeOf(name);
       if (type === "number" && typeof v === "number") return { label: valueToText(v), rank: v };
       if (type === "date") {
@@ -611,7 +650,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       }
       return { label: valueToText(v), rank: valueToText(v) };
     },
-    [typeOf]
+    [typeOf, effectiveValue, scopeOf, impliedFor]
   );
 
   // Grouped: headings and rows in display order; `sorted` is the rows left showing
@@ -965,6 +1004,99 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     );
   }
 
+  // ── Rules ─────────────────────────────────────────────────────────────────
+
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [ruleList, setRuleList] = useState<StoredRule[]>([]);
+  const [ruleWrites, setRuleWrites] = useState<RuleWrite[]>([]);
+  /** A new rule to start from (Make Rule from Filter…), and a key so the panel starts afresh with it. */
+  const [ruleDraft, setRuleDraft] = useState<RuleDefinition | null>(null);
+  const [ruleDraftKey, setRuleDraftKey] = useState(0);
+  const setRuleFocusStable = useCallback((f: { name: string; definition: RuleDefinition } | null) => setRuleFocus(f), []);
+
+  const loadRules = useCallback(async () => {
+    if (!library) return;
+    const [list, writes] = await Promise.all([getRules(library), getRuleWrites(library)]);
+    setRuleList(list);
+    setRuleWrites(writes);
+  }, [library]);
+  useEffect(() => {
+    loadRules().catch(() => {});
+  }, [loadRules, files]);
+
+  function openRules(draft: RuleDefinition | null) {
+    setRuleDraft(draft);
+    setRuleDraftKey((k) => k + 1);
+    setRulesOpen(true);
+  }
+
+  /** How rules read this table: its own columns (implied values included), kinds and properties. */
+  const ruleEnvHere: RuleEnv = useMemo(
+    () => ({
+      valueOf: columnValue,
+      kindOf,
+      typeOf: (name) => propByName.get(name)?.value_type ?? (metadataKeys.includes(name) ? "free_text" : null),
+      configOf,
+      written: writeKeys(ruleWrites),
+    }),
+    [columnValue, kindOf, propByName, metadataKeys, configOf, ruleWrites]
+  );
+
+  async function saveRuleHere(rule: StoredRule): Promise<StoredRule | null> {
+    try {
+      const saved = await saveRule(rule);
+      await loadRules();
+      return saved;
+    } catch (e) {
+      setError(String(e));
+      return null;
+    }
+  }
+
+  /** Rules ▸ Then set ▸ New Property…: a new property of that type, shown in the table; undoable. */
+  async function createPropertyForRule(name: string, type: ValueType): Promise<boolean> {
+    if (availableProperties.some((p) => p.toLowerCase() === name.toLowerCase())) {
+      setError(`“${name}” already exists`);
+      return false;
+    }
+    try {
+      await history.queue(() => coreCreate(name, type, null));
+    } catch (e) {
+      setError(String(e));
+      return false;
+    }
+    history.push({ label: "Add Property", undo: () => coreDelete(name), redo: () => coreCreate(name, type, null) });
+    return true;
+  }
+
+  /** Apply Now: the rule's planned values written and recorded as its own; one undo puts them back. */
+  async function applyRuleNow(rule: StoredRule, plan: RulePlan) {
+    if (plan.edits.length === 0) return;
+    const previous = plan.edits.map((e) => ({ ...e, value: storedMeta(e.file_id)[e.key] ?? null }));
+    const apply = async () => {
+      await applyRuleWrites(plan.edits, plan.writes);
+      await loadRules();
+      setRegistryValues({});
+      onChanged?.();
+    };
+    try {
+      await history.queue(apply);
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    history.push({
+      label: `Apply “${rule.name}”`,
+      undo: async () => {
+        await setMetadataCells(previous);
+        await forgetRuleWrites(plan.writes);
+        await loadRules();
+        onChanged?.();
+      },
+      redo: apply,
+    });
+  }
+
   const panelButton = (p: "filter" | "sort" | "group") =>
     p === "filter" ? filterButtonRef : p === "sort" ? sortButtonRef : groupButtonRef;
 
@@ -1247,6 +1379,45 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         if (typeOf(name) === "array") {
           entries.push({ type: "check", text: "Wrap Values", checked: wraps(name), action: () => toggleWrap(name) });
         }
+        if (typeOf(name) === "date") {
+          // Each format shown with today's date in it
+          const current = configOf(name).dateFormat ?? "medium";
+          const today = new Date().toISOString().slice(0, 10);
+          entries.push({
+            type: "submenu",
+            text: "Date Format",
+            items: [
+              ...DATE_DISPLAY_FORMATS.map(
+                (f): MenuEntry => ({
+                  type: "check",
+                  text: `${f.label}  ${formatDate(today, f.id)}`,
+                  checked: current === f.id,
+                  action: () => void changeType(name, "date", f.id === "medium" ? null : { dateFormat: f.id }),
+                })
+              ),
+              { type: "separator" },
+              {
+                type: "check",
+                text: current.startsWith("custom:") ? `Custom…  ${formatDate(today, current)}` : "Custom…",
+                checked: current.startsWith("custom:"),
+                action: () =>
+                  setDateFormatEditing({ name, pattern: current.startsWith("custom:") ? current.slice(7) : "DD/MM/YYYY" }),
+              },
+            ],
+          });
+        }
+        const scope = scopeOf(name);
+        // Tags stay flat labels: they're what other properties are scoped to
+        if (name !== tagsProperty) {
+          entries.push({ type: "item", text: "Apply Only Where…", action: () => setScopeEditing(name) });
+        }
+        if (scope) {
+          entries.push({
+            type: "item",
+            text: `Apply to All Files (not just ${scope.conditions.map((c) => c.value).join(", ")})`,
+            action: () => void changeScope(name, [], "Apply to All Files"),
+          });
+        }
         // The built-in Tags property is always a Multi-select and can't be deleted
         if (name !== tagsProperty) {
           entries.push(
@@ -1276,12 +1447,17 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       wrapSourceTags && columns.some((c) => c.id === TAGS_COLUMN.id) ? (layout.widths[TAGS_COLUMN.id] ?? 0) - CELL_PADDING : null;
     if (wrapping.length === 0 && tagsWidth == null) return null;
     return sorted.map((f) => {
-      // Only the tags shown count: hiding recorded ones shrinks the row
-      let lines = tagsWidth == null ? 1 : pillLines(shownSourceTags(f), tagsWidth);
-      for (const { name, width } of wrapping) lines = Math.max(lines, pillLines(listValues(metaValue(f, name)), width));
+      // Only the tags shown count: hiding recorded ones shrinks the row. Implied values
+      // and the "›" on values that open into a property take room too
+      let lines = tagsWidth == null ? 1 : pillLines(shownSourceTags(f), tagsWidth, (t) => opensInto(scopes, null, t).length > 0);
+      const implied = impliedByFile.get(f.file_id);
+      for (const { name, width } of wrapping) {
+        const items = [...listValues(metaValue(f, name)), ...(implied?.[name] ?? [])];
+        lines = Math.max(lines, pillLines(items, width, (v) => opensInto(scopes, name, v).length > 0));
+      }
       return rowHeightFor(lines);
     });
-  }, [columns, isEditable, wraps, wrapSourceTags, shownSourceTags, layout.widths, sorted]);
+  }, [columns, isEditable, wraps, wrapSourceTags, shownSourceTags, layout.widths, sorted, impliedByFile, scopes]);
   const itemSize = useCallback(
     (i: number) => {
       const item = items[i];
@@ -1397,6 +1573,80 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     }
   }
 
+  /** The scoped properties whose values imply `value` in `name` on a file ("from House"). */
+  function impliedSourcesOf(fileId: string, name: string, value: string): string[] {
+    const file = rows.find((f) => f.file_id === fileId);
+    if (!file) return [];
+    return scopes
+      .filter(
+        (sc) =>
+          sc.conditions.length === 1 &&
+          sc.conditions[0].property === name &&
+          hasText([sc.conditions[0].value], value) &&
+          listValues(effectiveValue(file, sc.property)).length > 0
+      )
+      .map((sc) => sc.property);
+  }
+
+  /** A file's stored metadata: from disk plus edits in flight, without an open picker's preview. */
+  function storedMeta(fileId: string): Record<string, unknown> {
+    const file = files.find((f) => f.file_id === fileId);
+    return { ...((file?.metadata as Record<string, unknown> | null) ?? {}), ...(patches.get(fileId) ?? {}) };
+  }
+
+  /**
+   * A Select / Multi-select cell's new values from its picker. Values that are
+   * only implied stay unstored; removing a value (stored or implied) that a
+   * scoped property's value depends on asks first, then clears that property
+   * (and any scoped beneath it) in the same undoable edit.
+   */
+  async function commitListCell(ref: CellRef, picked: unknown, dropped: string[] = []) {
+    const name = propName(ref.col);
+    const type = typeOf(name);
+    const meta = storedMeta(ref.row);
+    const before = meta[name] ?? null;
+    // `picked` is what's set directly; implied values not dropped stay implied as they were
+    const next = listValues(coerceValue(picked, type, configOf(name)));
+    const storedBefore = listValues(before);
+    const sourced = (v: string) => impliedSourcesOf(ref.row, name, v).length > 0;
+    // Gone for good: dropped implied values, and stored values unticked that nothing implies.
+    // A stored value unticked back to implied just stops being stored.
+    const removed = [
+      ...dropped,
+      ...storedBefore.filter((v) => !hasText(next, v) && !sourced(v) && !hasText(dropped, v)),
+    ];
+    const cleared = removed.length > 0 ? propertiesToClear(meta, scopes, name, removed) : [];
+    if (cleared.length > 0) {
+      // Only the removed values something depended on are named
+      const named = removed.filter((v) =>
+        scopes.some((sc) => cleared.includes(sc.property) && sc.conditions.some((c) => c.property === name && hasText([c.value], v)))
+      );
+      if (!(await confirmRemoval(named.length > 0 ? named : removed, cleared))) return;
+    }
+    const value = type === "array" ? (next.length > 0 ? next : null) : (next[0] ?? null);
+    const edits: CellEdit[] = [];
+    if (!sameValue(value, before)) edits.push({ file_id: ref.row, key: name, value });
+    for (const p of cleared) edits.push({ file_id: ref.row, key: p, value: null });
+    if (edits.length === 0) return;
+    const previous = edits.map((e) => ({ ...e, value: meta[e.key] ?? null }));
+    history.push({
+      label: cleared.length > 0 ? `Remove “${removed[0]}”` : "Edit",
+      undo: () => applyEdits(previous, { select: true, queued: false }),
+      redo: () => applyEdits(edits, { select: true, queued: false }),
+    });
+    await applyEdits(edits);
+  }
+
+  /** "Remove “housing”? Housing depends on it…": resolves true to go ahead. */
+  const [removalPrompt, setRemovalPrompt] = useState<{
+    values: string[];
+    cleared: string[];
+    resolve: (ok: boolean) => void;
+  } | null>(null);
+  function confirmRemoval(values: string[], cleared: string[]): Promise<boolean> {
+    return new Promise((resolve) => setRemovalPrompt({ values, cleared, resolve }));
+  }
+
   /** A user's edit, fill, paste or clear: written, and recorded so it can be undone. */
   async function writeCells(writes: CellWrite[], label = "Edit") {
     const edits = writes.flatMap((w) => {
@@ -1426,6 +1676,108 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     selection.clear();
     setCellSel((s) => clickCell(s, ref, { toggle: isToggleSelect(e), range: e.shiftKey }, grid));
     focusSink();
+  }
+
+  /**
+   * Press on a cell and drag: selects the block of cells from it to the one
+   * under the pointer, as in a spreadsheet, scrolling at the table's edges.
+   * Shift extends from the selection's anchor; ⌘ (Ctrl) adds the block to it.
+   * A press without a drag is left to the click.
+   */
+  function startCellDrag(e: React.MouseEvent, ref: CellRef) {
+    // Not from a pill (that drags the value) or with a button other than the first
+    if (e.button !== 0 || e.defaultPrevented || editing) return;
+    const container = layout.container;
+    const body = rowsRef.current;
+    if (!container || !body) return;
+    const dragGrid = grid;
+    const base = cellSel;
+    const toggle = isToggleSelect(e);
+    const anchor = e.shiftKey && base.anchor ? base.anchor : ref;
+    const start = { x: e.clientX, y: e.clientY };
+    let last = start;
+    let dragging = false;
+    let frame = 0;
+    let current = ref;
+
+    const rowAt = (clientY: number): string => {
+      const y = clientY - body.getBoundingClientRect().top;
+      // Over a group heading, the row just after it (or the last row, past the end)
+      let item = rowAtOffset(itemTops, Math.max(0, y));
+      while (item < items.length && items[item].type === "group") item++;
+      const at = items[item];
+      const index = at?.type === "row" ? at.index : dragGrid.rows.length - 1;
+      return dragGrid.rows[Math.max(0, Math.min(dragGrid.rows.length - 1, index))];
+    };
+    // The editable column under the pointer, or the nearest one beside it
+    const colAt = (clientX: number, clientY: number): string => {
+      const under = columnAtPoint(clientX, Math.min(Math.max(clientY, container.getBoundingClientRect().top + 30), container.getBoundingClientRect().bottom - 1));
+      if (under && dragGrid.cols.includes(under)) return under;
+      const r = container.getBoundingClientRect();
+      const offset = clientX - r.left - INSET + container.scrollLeft;
+      const boxes = columnBoxes();
+      let best = dragGrid.cols[0];
+      let bestDistance = Infinity;
+      let left = 0;
+      for (const b of boxes) {
+        if (dragGrid.cols.includes(b.id)) {
+          const distance = offset < left ? left - offset : offset > left + b.width ? offset - left - b.width : 0;
+          if (distance < bestDistance) {
+            bestDistance = distance;
+            best = b.id;
+          }
+        }
+        left += b.width;
+      }
+      return best;
+    };
+    const update = () => {
+      const next = { row: rowAt(last.y), col: colAt(last.x, last.y) };
+      if (next.row === current.row && next.col === current.col && dragging) return;
+      current = next;
+      const block = rectCells(anchor, next, dragGrid).map(cellKey);
+      setCellSel({ cells: toggle ? new Set([...base.cells, ...block]) : new Set(block), anchor, active: next });
+    };
+    // Holding near an edge scrolls, faster the further out
+    const tick = () => {
+      const r = container.getBoundingClientRect();
+      const top = r.top + 28;
+      const edge = 24;
+      const dy = last.y < top + edge ? -(top + edge - last.y) / 3 : last.y > r.bottom - edge ? (last.y - r.bottom + edge) / 3 : 0;
+      const dx = last.x < r.left + edge ? -(r.left + edge - last.x) / 3 : last.x > r.right - edge ? (last.x - r.right + edge) / 3 : 0;
+      if (dy || dx) {
+        container.scrollTop += dy;
+        container.scrollLeft += dx;
+        update();
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    const onMove = (ev: MouseEvent) => {
+      last = { x: ev.clientX, y: ev.clientY };
+      if (!dragging) {
+        if (Math.hypot(last.x - start.x, last.y - start.y) < DRAG_THRESHOLD) return;
+        dragging = true;
+        selection.clear();
+        frame = requestAnimationFrame(tick);
+      }
+      ev.preventDefault();
+      update();
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      cancelAnimationFrame(frame);
+      if (!dragging) return;
+      // The click that ends the drag would make the selection one cell again
+      const swallow = (ev: MouseEvent) => ev.stopPropagation();
+      window.addEventListener("click", swallow, true);
+      window.setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+      focusSink();
+    };
+    // No text selection while dragging across cells
+    e.preventDefault();
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   }
 
   function startEdit(ref: CellRef, seed?: string) {
@@ -1632,6 +1984,45 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     return source === "source" || name !== source.property;
   }
 
+  /**
+   * What a drop at a point would do: on a header, promote the tag to a property
+   * of its own ("header:<column>"); on a list column, become one of its values;
+   * on "+" or right of the columns, become a value of a new Multi-select.
+   */
+  function dropTargetAt(x: number, y: number, source: TagSource): string | null {
+    const container = layout.container;
+    if (!container) return null;
+    const r = container.getBoundingClientRect();
+    if (x < r.left || x > r.right || y < r.top || y > r.bottom) return null;
+    if (x - r.left - INSET + container.scrollLeft < 0) return null;
+    const col = columnAtPoint(x, y);
+    const headerBottom = container.querySelector("[data-table-header]")?.getBoundingClientRect().bottom ?? r.top + 28;
+    if (y <= headerBottom) return headerTarget(x - r.left - INSET + container.scrollLeft, col, source);
+    if (!col) return ADD_COLUMN.id;
+    return canDropTag(col, source) ? col : null;
+  }
+
+  /**
+   * Over the header row: near the edge between two columns, a new property
+   * there; over a property's own header, that property (to link to); over "+"
+   * or right of the columns, a new property at the end; over a header that
+   * can't take it (Name, Size… or the tag's own column), a new property after it.
+   */
+  function headerTarget(offset: number, col: string | null, source: TagSource): string {
+    const boxes = columnBoxes();
+    const last = boxes.length - 1; // "+"
+    // Edges between columns, from after Name (nothing goes before it) to before "+"
+    let left = 0;
+    for (let i = 0; i < last; i++) {
+      left += boxes[i].width;
+      if (Math.abs(offset - left) <= INSERT_EDGE) return INSERT_TARGET + (i + 1);
+    }
+    if (!col || col === ADD_COLUMN.id) return INSERT_TARGET + last;
+    const own = source !== "source" && col === PROP_PREFIX + source.property;
+    if (isEditable(col) && !own && col !== PROP_PREFIX + tagsProperty) return HEADER_TARGET + col;
+    return INSERT_TARGET + (boxes.findIndex((b) => b.id === col) + 1);
+  }
+
   function startTagDrag(e: React.MouseEvent, value: string, source: TagSource) {
     if (e.button !== 0) return;
     e.preventDefault(); // no text selection while dragging
@@ -1649,8 +2040,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
     const show = () => setTagDrag({ value, source, x: last.x, y: last.y, target, armed });
     const retarget = () => {
-      const col = columnAtPoint(last.x, last.y);
-      const next = canDropTag(col, source) ? col : null;
+      const next = dropTargetAt(last.x, last.y, source);
       if (next !== target) {
         window.clearTimeout(timer);
         target = next;
@@ -1715,6 +2105,14 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   }
 
   async function dropTag(value: string, source: TagSource, columnId: string) {
+    if (columnId.startsWith(HEADER_TARGET)) {
+      openPromote(value, source, { linkTo: propName(columnId.slice(HEADER_TARGET.length)) });
+      return;
+    }
+    if (columnId.startsWith(INSERT_TARGET)) {
+      openPromote(value, source, { at: Number(columnId.slice(INSERT_TARGET.length)) });
+      return;
+    }
     let name: string;
     let type: ValueType;
     if (columnId === ADD_COLUMN.id) {
@@ -1811,6 +2209,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   /** "Move “Acme” to Client · 14 files, 2 folders", shown once a hovered column will take the drop. */
   function dropHint(d: TagDrag): string {
     if (!d.target) return "";
+    if (d.target.startsWith(HEADER_TARGET)) return `Link “${d.value}” to ${propName(d.target.slice(HEADER_TARGET.length))}…`;
+    if (d.target.startsWith(INSERT_TARGET)) return `New property from “${d.value}” here…`;
     const into = d.target === ADD_COLUMN.id ? "a new Multi-select" : propName(d.target);
     const count = (n: number, noun: string) => `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
     if (d.source === "source") {
@@ -1824,14 +2224,238 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   }
 
   /** The hovered column's box in the window, for the drop highlight. */
-  function dropBox(columnId: string): { left: number; top: number; width: number; height: number } | null {
+  function dropBox(target: string): { left: number; top: number; width: number; height: number; line?: boolean } | null {
     const container = layout.container;
     if (!container) return null;
     const r = container.getBoundingClientRect();
+    // Between columns: an insertion line down the table at that edge
+    if (target.startsWith(INSERT_TARGET)) {
+      const index = Number(target.slice(INSERT_TARGET.length));
+      const offset = columnBoxes().slice(0, index).reduce((sum, b) => sum + b.width, 0);
+      const x = r.left + INSET + offset - container.scrollLeft;
+      if (x < r.left || x > r.right) return null;
+      return { left: x - 1, top: r.top, width: 2, height: r.height, line: true };
+    }
+    // A header target highlights just that header
+    const header = target.startsWith(HEADER_TARGET);
+    const columnId = header ? target.slice(HEADER_TARGET.length) : target;
+    const headerBottom = container.querySelector("[data-table-header]")?.getBoundingClientRect().bottom ?? r.top + 28;
     const left = r.left + INSET + columnOffset(columnId, columnBoxes()) - container.scrollLeft;
     const right = Math.min(r.right, left + (layout.widths[columnId] ?? 0));
     const clipped = Math.max(r.left, left);
-    return { left: clipped, top: r.top, width: Math.max(0, right - clipped), height: r.height };
+    return { left: clipped, top: r.top, width: Math.max(0, right - clipped), height: header ? headerBottom - r.top : r.height };
+  }
+
+  // ── Promoting a tag to a property ─────────────────────────────────────────
+
+  /** The Make Property dialog: a tag or value becoming a property scoped to it. */
+  const [promoting, setPromoting] = useState<{
+    value: string;
+    source: TagSource;
+    name: string;
+    type: "enum" | "array";
+    /** Where a new property's column goes (index among the columns); null: just after the tag's own column. */
+    at: number | null;
+  } | null>(null);
+
+  /**
+   * Opens Make a property. Dropped on a property's header, the name is that
+   * property's, so Return links to it; otherwise it's the tag, capitalised.
+   * Either way the name can be changed: a name that exists links, a new one creates.
+   */
+  function openPromote(value: string, source: TagSource, where: { linkTo?: string; at?: number } = {}) {
+    const name = where.linkTo ?? value.charAt(0).toUpperCase() + value.slice(1);
+    setPromoting({ value, source, name, type: "enum", at: where.at ?? null });
+  }
+
+  /**
+   * Right-click on a pill: Make Property from it, and for a value that opens
+   * into a scoped property, Unlink it (that property stops depending on it).
+   */
+  function showPillMenu(e: React.MouseEvent, value: string, source: TagSource) {
+    e.preventDefault();
+    e.stopPropagation();
+    // A source tag's link runs through Tags (or the property its folders map to)
+    const linked = scopes.filter((sc) =>
+      sc.conditions.some((c) => (source === "source" || c.property === source.property) && hasText([c.value], value))
+    );
+    const entries: MenuEntry[] = [{ type: "item", text: `Make Property from “${value}”…`, action: () => openPromote(value, source) }];
+    if (linked.length > 0) entries.push({ type: "separator" });
+    for (const sc of linked) {
+      const rest = sc.conditions.filter(
+        (c) => !((source === "source" || c.property === source.property) && hasText([c.value], value))
+      );
+      entries.push({
+        type: "item",
+        text: `Unlink “${value}” from ${sc.property}`,
+        action: () => void changeScope(sc.property, rest, "Unlink"),
+      });
+    }
+    showContextMenu(entries, { event: e });
+  }
+
+  /** Puts a property's column just after another (the one its tag came from). */
+  function placeBeside(name: string, besideId: string) {
+    const newId = PROP_PREFIX + name;
+    const ids = columns.filter((c) => c.id !== ADD_COLUMN.id && c.id !== newId).map((c) => c.id);
+    const at = ids.indexOf(besideId);
+    const visible = at === -1 ? [...ids, newId] : [...ids.slice(0, at + 1), newId, ...ids.slice(at + 1)];
+    const next = [...visible, ...columnOrder.filter((id) => !visible.includes(id))];
+    setColumnOrder(next);
+    saveJson(`col-order-${locationId}`, next);
+  }
+
+  /**
+   * Makes `name` a property scoped to the tag: it applies where the tag is held.
+   * A hand-added tag or value is the condition as it stands; a source tag's
+   * folders are mapped into Tags first (so the condition holds on every
+   * refresh), unless they're already mapped to a property, which is then the
+   * condition. An existing property of that name is linked rather than duplicated.
+   */
+  async function promoteTag(value: string, source: TagSource, name: string, type: "enum" | "array", at: number | null) {
+    if (!library) return;
+    const existing = await findProperty(name);
+    const conditionNames: string[] = [];
+    let mapFolders: string[] = [];
+    if (source === "source") {
+      const folders = await foldersNamed(locationId, value);
+      const nodes = (await getMappingNodes(locationId)).filter((n) => folders.includes(n.folder_path));
+      mapFolders = folders.filter((f) => !nodes.some((n) => n.folder_path === f));
+      for (const n of nodes) if (!conditionNames.includes(n.property_name)) conditionNames.push(n.property_name);
+      if (mapFolders.length > 0 || conditionNames.length === 0) {
+        if (!tagsProperty) throw new Error("This library has no Tags property");
+        conditionNames.unshift(tagsProperty);
+      }
+    } else {
+      conditionNames.push(source.property);
+    }
+    if (existing && conditionNames.includes(name)) throw new Error(`“${name}” can't depend on itself`);
+    const beside = source === "source" ? TAGS_COLUMN.id : PROP_PREFIX + source.property;
+    const tagsBefore = tagsProperty ? snapshot(tagsProperty) : [];
+    const scopeBefore = existing
+      ? scopeRows.filter((sc) => sc.property_id === existing.property_id).map((sc) => ({ property_id: sc.condition_property_id, value: sc.value }))
+      : [];
+
+    const apply = async () => {
+      if (mapFolders.length > 0 && tagsProperty) {
+        await setFolderLabels(locationId, mapFolders, tagsProperty, false);
+        setHasMappings(true);
+      }
+      if (existing) updateVisibleProperties((prev) => (prev.includes(name) ? prev : [...prev, name]));
+      else await coreCreate(name, type, null);
+      const prop = await findProperty(name);
+      if (!prop) throw new Error(`“${name}” wasn't created`);
+      const conditions = [...(existing ? scopeBefore : [])];
+      for (const c of conditionNames) {
+        const cond = await findProperty(c);
+        if (cond && !conditions.some((x) => x.property_id === cond.property_id && hasText([x.value], value))) {
+          conditions.push({ property_id: cond.property_id, value });
+        }
+      }
+      await setPropertyScope(prop.property_id, conditions);
+      if (!existing) placeBeside(name, at != null ? columns[at - 1]?.id ?? beside : beside);
+      await afterPropertyChange();
+    };
+    try {
+      await history.queue(apply);
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    history.push({
+      label: "Make Property",
+      undo: async () => {
+        if (existing) {
+          await setPropertyScope(existing.property_id, scopeBefore);
+        } else {
+          await coreDelete(name);
+        }
+        if (mapFolders.length > 0) {
+          await clearFolderLabels(locationId, mapFolders);
+          await restoreValues(tagsBefore);
+          setHasMappings((await getMappingNodes(locationId)).length > 0);
+        }
+        await afterPropertyChange();
+      },
+      redo: apply,
+    });
+  }
+
+  /** Header menu ▸ Date Format ▸ Custom…: the property and pattern being edited. */
+  const [dateFormatEditing, setDateFormatEditing] = useState<{ name: string; pattern: string } | null>(null);
+
+  /** Header menu ▸ Apply Only Where…: the property being scoped, while its dialog is open. */
+  const [scopeEditing, setScopeEditing] = useState<string | null>(null);
+
+  /**
+   * Replaces where a property applies (Apply Only Where…), or with no
+   * conditions makes it apply to every file (Apply to All Files, Unlink).
+   * Values the old conditions implied are kept: they become stored values, so
+   * no file loses a tag it was showing. Undoable as one step.
+   */
+  async function changeScope(name: string, conditions: ScopeCondition[], label: string) {
+    const prop = await findProperty(name);
+    if (!prop) return;
+    const before = scopeRows
+      .filter((sc) => sc.property_id === prop.property_id)
+      .map((sc) => ({ property_id: sc.condition_property_id, value: sc.value }));
+    const nextScopes = [
+      ...scopes.filter((sc) => sc.property !== name),
+      ...(conditions.length > 0 ? [{ property: name, conditions }] : []),
+    ];
+    // Implied now but not after: write them as stored values
+    const keep: CellEdit[] = [];
+    const previous: CellEdit[] = [];
+    for (const f of rows) {
+      const meta = f.metadata as Record<string, unknown> | null;
+      const was = impliedByFile.get(f.file_id);
+      if (!was) continue;
+      const will = impliedValues(meta, nextScopes, isListProperty);
+      for (const [key, values] of Object.entries(was)) {
+        const lost = values.filter((v) => !hasText(will[key] ?? [], v));
+        if (lost.length === 0) continue;
+        const stored = listValues(meta?.[key]);
+        const value = typeOf(key) === "array" ? [...stored, ...lost] : stored[0] ?? lost[0];
+        keep.push({ file_id: f.file_id, key, value });
+        previous.push({ file_id: f.file_id, key, value: meta?.[key] ?? null });
+      }
+    }
+    const apply = async () => {
+      const ids: { property_id: string; value: string }[] = [];
+      for (const c of conditions) {
+        const cond = await findProperty(c.property);
+        if (cond) ids.push({ property_id: cond.property_id, value: c.value });
+      }
+      if (keep.length > 0) await setMetadataCells(keep);
+      await setPropertyScope(prop.property_id, ids);
+      await afterPropertyChange();
+    };
+    try {
+      await history.queue(apply);
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    history.push({
+      label,
+      undo: async () => {
+        await setPropertyScope(prop.property_id, before);
+        if (previous.length > 0) await setMetadataCells(previous);
+        await afterPropertyChange();
+      },
+      redo: apply,
+    });
+  }
+
+  /** "Applies to 3 of 12 files: 1 has a value, 2 to fill in." */
+  function scopeSummary(name: string, conditions: ScopeCondition[]): string {
+    const metas = rows.map((f) => f.metadata as Record<string, unknown> | null);
+    const { withValue, expected, na } = scopeCoverage(metas, scopes, name, conditions, isListProperty);
+    const count = (n: number, noun: string) => `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
+    const total = withValue + expected + na;
+    return `Applies to ${(withValue + expected).toLocaleString()} of ${count(total, "file")}: ${withValue.toLocaleString()} with a value, ${expected.toLocaleString()} to fill in.${
+      conditions.length === 1 ? ` Files given a ${name} value also get “${conditions[0].value}”.` : ""
+    }`;
   }
 
   // ── Rendering ─────────────────────────────────────────────────────────────
@@ -1865,6 +2489,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     const isActive = selected && cellSel.cells.size > 1 && cellSel.active?.row === ref.row && cellSel.active.col === ref.col;
     const showHandle = !editing && solidRect != null && rowIdx === solidRect.r1 && colIdx === solidRect.c1;
     const isList = type === "enum" || type === "array";
+    // Scoped: an empty cell is either expected (the property applies) or doesn't apply
+    const scope = scopeOf(name);
+    const fileImplied = impliedFor(file.file_id);
+    const impliedHere = fileImplied[name] ?? [];
+    const scopeCell =
+      impliedHere.length > 0 ? "value" : scopeState(scope, file.metadata as Record<string, unknown> | null, fileImplied);
     // The selection is outlined as one shape: each cell draws only the edges its
     // neighbours (in the same column, or the columns either side) don't share
     const pos = columns.findIndex((c) => c.id === col.id);
@@ -1891,6 +2521,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         key={col.id}
         ref={isEditing ? setEditAnchor : undefined}
         style={style}
+        onMouseDown={(e) => startCellDrag(e, ref)}
         onClick={(e) => onCellClick(e, ref)}
         // Right-click anywhere in the column: the column's menu (Edit Values…, type, wrap…)
         onContextMenu={(e) => {
@@ -1917,6 +2548,17 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               }}
               onCancel={() => endEdit("none")}
             />
+          ) : scopeCell === "expected" ? (
+            <span
+              title={describeScope(scope) ?? undefined}
+              className="inline-flex items-center h-4 px-1.5 rounded border border-dashed border-neutral-500/60 text-[11px] leading-none text-neutral-500"
+            >
+              Choose…
+            </span>
+          ) : scopeCell === "na" ? (
+            <span title={`Doesn't apply to this file · ${describeScope(scope)}`} className="text-neutral-600">
+              —
+            </span>
           ) : (
             <PropertyValueView
               value={value}
@@ -1924,7 +2566,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               config={config}
               // Any Select / Multi-select value can be dragged onto another list column
               onPillMouseDown={isList ? (e, v) => startTagDrag(e, v, { property: name }) : undefined}
+              onPillContextMenu={isList ? (e, v) => showPillMenu(e, v, { property: name }) : undefined}
               wrap={isList && wraps(name)}
+              implied={isList ? impliedHere : undefined}
+              opens={isList ? (v) => opensInto(scopes, name, v) : undefined}
             />
           )}
         </div>
@@ -1995,7 +2640,9 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               tags={shownSourceTags(file)}
               covered={coveredFor(file)}
               onPillMouseDown={(e, tag) => startTagDrag(e, tag, "source")}
+              onPillContextMenu={(e, tag) => showPillMenu(e, tag, "source")}
               wrap={wrapSourceTags}
+              opens={(tag) => opensInto(scopes, null, tag)}
             />
           </div>
         );
@@ -2151,9 +2798,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         <span className="flex-1 min-w-0 truncate whitespace-nowrap text-neutral-500 text-xs">
           {/* The table's own count line carries the selection, rather than the toolbar */}
           {selectionLabel({ selected: selectedFiles, total: matched.length }) ??
-            (matched.length === rows.length
-              ? `${matched.length.toLocaleString()} files`
-              : `${matched.length.toLocaleString()} of ${rows.length.toLocaleString()} files`)}
+            (ruleFocus
+              ? `${matched.length.toLocaleString()} ${matched.length === 1 ? "file matches" : "files match"} “${ruleFocus.name}”`
+              : matched.length === rows.length
+                ? `${matched.length.toLocaleString()} files`
+                : `${matched.length.toLocaleString()} of ${rows.length.toLocaleString()} files`)}
         </span>
         <div className="flex items-center gap-1.5 shrink-0">
           <button
@@ -2179,6 +2828,14 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           >
             <SymbolIcon name="square.grid.3x2" size={11} fallback="▦" />
             {groupLevels.length > 0 ? `Group (${groupLevels.length})` : "Group"}
+          </button>
+          <button
+            onClick={() => (rulesOpen ? setRulesOpen(false) : openRules(null))}
+            title="Rules: set values on files that meet conditions, such as parts of their names"
+            className={`${TOOLBAR_BUTTON} flex items-center gap-1 ${ruleList.some((x) => x.enabled) ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
+          >
+            <SymbolIcon name="wand.and.stars" size={11} fallback="✦" />
+            Rules
           </button>
         </div>
         <input
@@ -2318,6 +2975,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                   <SymbolIcon name="ellipsis" size={12} fallback="…" />
                 </button>
               </span>
+            ) : col.id.startsWith(PROP_PREFIX) && scopeOrigin(scopeOf(propName(col.id)), tagsProperty) ? (
+              <span className="truncate" title={describeScope(scopeOf(propName(col.id))) ?? undefined}>
+                {col.label}
+                <span className="text-neutral-500"> ‹ {scopeOrigin(scopeOf(propName(col.id)), tagsProperty)}</span>
+              </span>
             ) : undefined
           }
         />
@@ -2453,7 +3115,13 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       {editingList && editAnchor && (
         <ListCellEditor
           anchor={editAnchor}
-          value={cellValue(editingList.ref.row, editingList.ref.col)}
+          stored={listValues(storedMeta(editingList.ref.row)[propName(editingList.ref.col)])}
+          impliedBy={(value) => impliedSourcesOf(editingList.ref.row, propName(editingList.ref.col), value)}
+          // Implied values show ticked; unticking one asks before clearing what implies it
+          value={effectiveValue(
+            rowById.get(editingList.ref.row) ?? rows.find((f) => f.file_id === editingList.ref.row),
+            propName(editingList.ref.col)
+          )}
           multiple={typeOf(propName(editingList.ref.col)) === "array"}
           options={valuesFor(editingList.ref.col)}
           seed={editingList.seed}
@@ -2462,30 +3130,19 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           sourcesOf={(value) => sourcesOf(editingList.ref.col, value)}
           usage={(value) => valueUsage(editingList.ref.col, value)}
           onPreview={(value) => {
+            // The picker's ticks are the values set directly; implied ones keep showing faded
             const name = propName(editingList.ref.col);
-            setListPreview({ file_id: editingList.ref.row, key: name, value: coerceValue(value, typeOf(name), configOf(name)) });
+            const shown = listValues(coerceValue(value, typeOf(name), configOf(name)));
+            setListPreview({
+              file_id: editingList.ref.row,
+              key: name,
+              value: typeOf(name) === "array" ? (shown.length ? shown : null) : (shown[0] ?? null),
+            });
           }}
-          onCommit={(value, move) => {
+          onCommit={(value, move, dropped) => {
             listMove.current = move;
-            // Compared with (and undone to) the value from before the ticks were previewed
-            const previewed = listPreviewRef.current;
             setListPreview(null);
-            if (previewed) {
-              const value_ = coerceValue(value, typeOf(previewed.key), configOf(previewed.key));
-              const original = metaValue(files.find((f) => f.file_id === previewed.file_id), previewed.key);
-              const patched = patches.get(previewed.file_id);
-              const before = patched && previewed.key in patched ? patched[previewed.key] : original;
-              if (sameValue(value_, before)) return;
-              const edit = { file_id: previewed.file_id, key: previewed.key, value: value_ };
-              history.push({
-                label: "Edit",
-                undo: () => applyEdits([{ ...edit, value: before ?? null }], { select: true, queued: false }),
-                redo: () => applyEdits([edit], { select: true, queued: false }),
-              });
-              applyEdits([edit]);
-              return;
-            }
-            writeCells([{ ...editingList.ref, value }]);
+            void commitListCell(editingList.ref, value, dropped);
           }}
           onClose={() => {
             const move = listMove.current;
@@ -2538,9 +3195,76 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           groupLevelState={(depth) => (groups ? levelState(collapsed, groups, depth) : "expanded")}
           onCollapseLevel={(depth, collapse) => groups && setCollapsed(setLevelCollapsed(collapsed, groups, depth, collapse))}
           valuesFor={valuesFor}
+          onMakeRule={() => {
+            setPanel(null);
+            openRules(definitionFromFilter(rules, match, search));
+          }}
         />
       )}
 
+      {rulesOpen && library && (
+        <RulesPanel
+          key={ruleDraftKey}
+          library={library}
+          rules={ruleList}
+          files={rows}
+          env={ruleEnvHere}
+          columns={filterColumns}
+          properties={availableProperties.filter((n) => propByName.has(n)).map((n) => ({ name: n, type: typeOf(n) }))}
+          valuesFor={valuesFor}
+          draft={ruleDraft}
+          onSave={saveRuleHere}
+          onDelete={async (id) => {
+            await deleteRule(id);
+            await loadRules();
+          }}
+          onReorder={async (ids) => {
+            await reorderRules(ids);
+            await loadRules();
+          }}
+          onApplyNow={applyRuleNow}
+          onCreateProperty={createPropertyForRule}
+          onFocus={setRuleFocusStable}
+          onClose={() => {
+            setRulesOpen(false);
+            setRuleFocus(null);
+          }}
+        />
+      )}
+
+
+      {removalPrompt && (
+        <Dialog
+          title={`Remove ${removalPrompt.values.map((v) => `“${v}”`).join(" and ")}?`}
+          message={`${listNames(removalPrompt.cleared)} ${removalPrompt.cleared.length === 1 ? "depends" : "depend"} on it, so ${
+            removalPrompt.cleared.length === 1 ? "its value" : "their values"
+          } on this file will be cleared too.`}
+          onCancel={() => {
+            removalPrompt.resolve(false);
+            setRemovalPrompt(null);
+          }}
+          onSubmit={() => {
+            removalPrompt.resolve(true);
+            setRemovalPrompt(null);
+          }}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton
+                onClick={() => {
+                  removalPrompt.resolve(false);
+                  setRemovalPrompt(null);
+                }}
+              >
+                Cancel
+              </DialogButton>
+              <DialogButton variant="default" autoFocus>
+                Remove
+              </DialogButton>
+            </>
+          }
+        />
+      )}
 
       {deleting && (
         <Dialog
@@ -2561,6 +3285,119 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
       {overwriteDialog}
 
+      {dateFormatEditing && (
+        <Dialog
+          title={`Date format for “${dateFormatEditing.name}”`}
+          message={
+            <>
+              Shown as <span className="font-medium">{formatDatePattern(new Date(), dateFormatEditing.pattern) || "…"}</span>. Use YYYY or YY
+              for the year, MMMM, MMM, MM or M for the month, DD or D for the day, dddd or ddd for the weekday; put other words in
+              [brackets].
+            </>
+          }
+          onCancel={() => setDateFormatEditing(null)}
+          onSubmit={() => {
+            const { name, pattern } = dateFormatEditing;
+            setDateFormatEditing(null);
+            if (pattern.trim()) void changeType(name, "date", { dateFormat: `custom:${pattern}` });
+          }}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton onClick={() => setDateFormatEditing(null)}>Cancel</DialogButton>
+              <DialogButton variant="default" disabled={!dateFormatEditing.pattern.trim()}>
+                OK
+              </DialogButton>
+            </>
+          }
+        >
+          <DialogField label="Format:">
+            <input
+              autoFocus
+              value={dateFormatEditing.pattern}
+              onChange={(e) => setDateFormatEditing({ ...dateFormatEditing, pattern: e.target.value })}
+              spellCheck={false}
+              className={`${dialogTextField} font-mono`}
+            />
+          </DialogField>
+        </Dialog>
+      )}
+
+      {scopeEditing && (
+        <ScopeDialog
+          property={scopeEditing}
+          initial={scopeOf(scopeEditing)?.conditions ?? []}
+          // Select / Multi-select properties, except this one and any that depend on it (that would loop)
+          properties={availableProperties.filter(
+            (p) =>
+              p !== scopeEditing && (typeOf(p) === "enum" || typeOf(p) === "array") && !dependsOn(scopes, p, scopeEditing)
+          )}
+          valuesFor={(p) => valuesFor(PROP_PREFIX + p)}
+          summary={(conditions) => scopeSummary(scopeEditing, conditions)}
+          onApply={(conditions) => {
+            const name = scopeEditing;
+            setScopeEditing(null);
+            void changeScope(name, conditions, "Apply Only Where");
+          }}
+          onCancel={() => setScopeEditing(null)}
+        />
+      )}
+
+      {promoting && (
+        <Dialog
+          title={
+            availableProperties.includes(promoting.name.trim())
+              ? `Link “${promoting.value}” to ${promoting.name.trim()}`
+              : `Make a property from “${promoting.value}”`
+          }
+          message={
+            availableProperties.includes(promoting.name.trim())
+              ? `“${promoting.name.trim()}” already exists. It will apply where “${promoting.value}” is set, as well as anywhere it applies now.`
+              : `The new property applies to files with “${promoting.value}”. Giving a file a value in it also gives it “${promoting.value}”.`
+          }
+          onCancel={() => setPromoting(null)}
+          onSubmit={() => {
+            const name = promoting.name.trim();
+            if (!name) return;
+            setPromoting(null);
+            void promoteTag(promoting.value, promoting.source, name, promoting.type, promoting.at);
+          }}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton onClick={() => setPromoting(null)}>Cancel</DialogButton>
+              <DialogButton variant="default" disabled={!promoting.name.trim()}>
+                {availableProperties.includes(promoting.name.trim()) ? "Link" : "Make Property"}
+              </DialogButton>
+            </>
+          }
+        >
+          <div className="flex flex-col gap-2.5">
+            <DialogField label="Name:">
+              <input
+                autoFocus
+                value={promoting.name}
+                onChange={(e) => setPromoting({ ...promoting, name: e.target.value })}
+                onFocus={(e) => e.currentTarget.select()}
+                className={dialogTextField}
+              />
+            </DialogField>
+            {!availableProperties.includes(promoting.name.trim()) && (
+              <DialogField label="Type:">
+                <select
+                  value={promoting.type}
+                  onChange={(e) => setPromoting({ ...promoting, type: e.target.value as "enum" | "array" })}
+                  className={dialogTextField}
+                >
+                  <option value="enum">Select</option>
+                  <option value="array">Multi-select</option>
+                </select>
+              </DialogField>
+            )}
+          </div>
+        </Dialog>
+      )}
+
       {tagDrag && <TagDragOverlay drag={tagDrag} box={tagDrag.target && tagDrag.armed ? dropBox(tagDrag.target) : null} hint={tagDrag.armed ? dropHint(tagDrag) : ""} />}
 
     </div>
@@ -2579,8 +3416,11 @@ function rowHeightFor(lines: number): number {
 }
 
 const pillWidths = new Map<string, number>();
-/** How many lines `items` take as wrapping pills in `width`. */
-function pillLines(items: string[], width: number): number {
+/**
+ * How many lines `items` take as wrapping pills in `width`. `marked` pills
+ * carry a trailing "›" (they open into a scoped property), which widens them.
+ */
+function pillLines(items: string[], width: number, marked?: (item: string) => boolean): number {
   if (items.length === 0 || width <= 0) return 1;
   const font = uiFont(11);
   let lines = 1;
@@ -2591,6 +3431,7 @@ function pillLines(items: string[], width: number): number {
       w = measureText(item, font) + 12; // px-1.5 either side
       pillWidths.set(item, w);
     }
+    if (marked?.(item)) w += measureText("›", font) + 2; // gap-0.5 before it
     if (x > 0 && x + 4 + w > width) {
       lines++;
       x = w;
@@ -2630,32 +3471,46 @@ function TagPills({
   tags,
   covered,
   onPillMouseDown,
+  onPillContextMenu,
   wrap,
+  opens,
 }: {
   tags: string[];
   covered: Set<string>;
   onPillMouseDown: (e: React.MouseEvent, tag: string) => void;
+  onPillContextMenu: (e: React.MouseEvent, tag: string) => void;
   /** Shows every tag, wrapping onto more lines (the row grows to fit). */
   wrap: boolean;
+  /** The scoped properties a tag opens into (once promoted), marked "›". */
+  opens: (tag: string) => string[];
 }) {
   if (tags.length === 0) return null;
   const shown = wrap ? tags : tags.slice(0, MAX_TAGS_SHOWN);
   const overflow = tags.length - shown.length;
   return (
     <div className={`flex items-center gap-x-1 ${wrap ? "flex-wrap gap-y-0.5" : "flex-nowrap overflow-hidden"}`}>
-      {shown.map((tag, i) => (
-        <span
-          // A path can repeat a folder name ("2024/Q1/2024")
-          key={`${i}:${tag}`}
-          onMouseDown={(e) => onPillMouseDown(e, tag)}
-          title={covered.has(tag) ? `“${tag}” is recorded in a property` : undefined}
-          className={`inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 text-neutral-300 data-[pressed]:bg-blue-500 data-[pressed]:text-white data-[pressed]:opacity-100 ${
-            covered.has(tag) ? "opacity-40" : ""
-          }`}
-        >
-          {tag}
-        </span>
-      ))}
+      {shown.map((tag, i) => {
+        const into = opens(tag);
+        const notes = [
+          covered.has(tag) ? `“${tag}” is recorded in a property` : null,
+          into.length > 0 ? `Opens into ${into.join(", ")}` : null,
+        ].filter(Boolean);
+        return (
+          <span
+            // A path can repeat a folder name ("2024/Q1/2024")
+            key={`${i}:${tag}`}
+            onMouseDown={(e) => onPillMouseDown(e, tag)}
+            onContextMenu={(e) => onPillContextMenu(e, tag)}
+            title={notes.length > 0 ? notes.join(" · ") : undefined}
+            className={`inline-flex items-center gap-0.5 h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 text-neutral-300 data-[pressed]:bg-blue-500 data-[pressed]:text-white data-[pressed]:opacity-100 ${
+              covered.has(tag) ? "opacity-40" : ""
+            }`}
+          >
+            {tag}
+            {into.length > 0 && <span className="opacity-60">›</span>}
+          </span>
+        );
+      })}
       {overflow > 0 && (
         <span className="inline-flex items-center h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 text-neutral-500">
           +{overflow}
@@ -2685,14 +3540,14 @@ function TagDragOverlay({
   hint,
 }: {
   drag: TagDrag;
-  box: { left: number; top: number; width: number; height: number } | null;
+  box: { left: number; top: number; width: number; height: number; line?: boolean } | null;
   hint: string;
 }) {
   return (
     <div aria-hidden className="pointer-events-none fixed inset-0 z-[60]">
       {box && (
         <div
-          className="absolute rounded-md border-2 border-blue-500 bg-blue-500/10"
+          className={box.line ? "absolute rounded-full bg-blue-500" : "absolute rounded-md border-2 border-blue-500 bg-blue-500/10"}
           style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
         />
       )}

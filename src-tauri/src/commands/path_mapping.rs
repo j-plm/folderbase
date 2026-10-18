@@ -547,6 +547,8 @@ pub async fn move_property_value_impl(
                 .await
                 .map_err(|e| e.to_string())?;
         }
+        // Properties scoped to the value follow it into its new property
+        crate::commands::scopes::move_condition_value(&mut tx, &p.property_id, value, &to_prop.property_id, value).await?;
     }
     tx.commit().await.map_err(|e| e.to_string())
 }

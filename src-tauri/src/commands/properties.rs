@@ -260,6 +260,11 @@ pub async fn delete_property_value(
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    // Properties scoped to it no longer have that condition
+    {
+        let mut conn = db.inner().acquire().await.map_err(|e| e.to_string())?;
+        crate::commands::scopes::drop_condition_value(&mut conn, &property_id, &value_str).await?;
+    }
 
     scrub_value_from_files(db.inner(), &prop.name, &value_str, prop.library.as_deref()).await
 }
@@ -289,6 +294,10 @@ pub async fn delete_property(
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    {
+        let mut conn = db.inner().acquire().await.map_err(|e| e.to_string())?;
+        crate::commands::scopes::drop_property_scopes(&mut conn, &property_id).await?;
+    }
 
     // Folder mappings to it go too, or the next refresh would bring its values back
     match &prop.library {

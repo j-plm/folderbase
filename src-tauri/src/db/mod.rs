@@ -173,6 +173,47 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // Scoped properties: a property applies only where another holds one of
+    // these values (see commands::scopes). No rows: it applies to every file.
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS property_scopes (
+            property_id            TEXT NOT NULL REFERENCES properties(property_id),
+            condition_property_id  TEXT NOT NULL REFERENCES properties(property_id),
+            value                  TEXT NOT NULL,
+            PRIMARY KEY (property_id, condition_property_id, value)
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
+    // Rules (see commands::rules), and every value a rule has written, so it
+    // never writes a file's value twice and hand edits stick
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS rules (
+            rule_id     TEXT PRIMARY KEY,
+            library     TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            enabled     INTEGER NOT NULL DEFAULT 1,
+            position    INTEGER NOT NULL DEFAULT 0,
+            definition  TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS rule_writes (
+            rule_id  TEXT NOT NULL REFERENCES rules(rule_id),
+            file_id  TEXT NOT NULL,
+            key      TEXT NOT NULL,
+            value    TEXT NOT NULL,
+            PRIMARY KEY (rule_id, file_id, key, value)
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+
     // Type options for a property (number format, currency), as JSON.
     let _ = sqlx::query("ALTER TABLE properties ADD COLUMN config TEXT")
         .execute(pool)
