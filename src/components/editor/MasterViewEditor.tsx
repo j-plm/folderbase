@@ -9,6 +9,7 @@ import {
 } from "../../lib/commands";
 import { useNavigation } from "../../contexts/NavigationContext";
 import ViewTree from "./ViewTree";
+import { showContextMenu } from "../../lib/nativeMenu";
 
 export default function MasterViewEditor() {
   const { views, currentLibrary, closeMasterEditor, refreshViews, setActiveView } =
@@ -18,7 +19,6 @@ export default function MasterViewEditor() {
     views[0]?.view_id ?? null
   );
   const [localNodes, setLocalNodes] = useState<ViewNode[]>([]);
-  const [menuViewId, setMenuViewId] = useState<string | null>(null);
   const [renamingViewId, setRenamingViewId] = useState<string | null>(null);
   const [renameName, setRenameName] = useState("");
   const [addingView, setAddingView] = useState(false);
@@ -80,7 +80,6 @@ export default function MasterViewEditor() {
   }
 
   async function handleDuplicate(viewId: string) {
-    setMenuViewId(null);
     const source = views.find((v) => v.view_id === viewId);
     if (!source) return;
     const copy = await createView(`${source.name} (copy)`, source.library);
@@ -110,7 +109,6 @@ export default function MasterViewEditor() {
   async function handleDelete(viewId: string) {
     await deleteView(viewId);
     setDeleteConfirmId(null);
-    setMenuViewId(null);
     await refreshViews();
     if (selectedViewId === viewId) {
       const remaining = views.filter((v) => v.view_id !== viewId);
@@ -172,42 +170,23 @@ export default function MasterViewEditor() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        setMenuViewId(menuViewId === view.view_id ? null : view.view_id);
+                        showContextMenu([
+                          {
+                            type: "item",
+                            text: "Rename",
+                            action: () => {
+                              setRenameName(view.name);
+                              setRenamingViewId(view.view_id);
+                            },
+                          },
+                          { type: "item", text: "Duplicate", action: () => handleDuplicate(view.view_id) },
+                          { type: "separator" },
+                          { type: "item", text: "Delete…", action: () => setDeleteConfirmId(view.view_id) },
+                        ]);
                       }}
                       className="w-5 h-5 flex items-center justify-center text-neutral-500 hover:text-neutral-300 text-xs rounded"
                     >
                       ···
-                    </button>
-                  </div>
-                )}
-
-                {/* View context menu */}
-                {menuViewId === view.view_id && (
-                  <div className="absolute right-0 top-full z-10 w-36 bg-neutral-800 border border-neutral-600 rounded shadow-lg py-1">
-                    <button
-                      onClick={() => {
-                        setMenuViewId(null);
-                        setRenameName(view.name);
-                        setRenamingViewId(view.view_id);
-                      }}
-                      className="w-full text-left px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-700"
-                    >
-                      Rename
-                    </button>
-                    <button
-                      onClick={() => handleDuplicate(view.view_id)}
-                      className="w-full text-left px-3 py-1 text-xs text-neutral-200 hover:bg-neutral-700"
-                    >
-                      Duplicate
-                    </button>
-                    <button
-                      onClick={() => {
-                        setMenuViewId(null);
-                        setDeleteConfirmId(view.view_id);
-                      }}
-                      className="w-full text-left px-3 py-1 text-xs text-red-400 hover:bg-neutral-700"
-                    >
-                      Delete…
                     </button>
                   </div>
                 )}

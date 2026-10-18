@@ -192,7 +192,7 @@ export default function DatabaseView(_props: ViewProps) {
       {/* Body — scrolls both axes; drives header sync via native scroll listener */}
       <div
         ref={bodyRef}
-        className="flex-1 overflow-auto"
+        className="flex-1 overflow-auto isolate"
       >
         {loading && files.length === 0 ? (
           <div className="flex items-center justify-center h-full text-neutral-500 text-sm">

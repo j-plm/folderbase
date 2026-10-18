@@ -125,7 +125,7 @@ export default function FileTable({ files, storageKey }: Props) {
       onClick={(e) => {
         if (!(e.target as HTMLElement).closest("[data-table-header]")) selection.clear();
       }}
-      className="flex-1 overflow-auto pb-2 outline-none"
+      className="flex-1 overflow-auto isolate pb-2 outline-none"
     >
       <TableHeader
         columns={COLUMNS}

@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { MenuEntry } from "../../lib/nativeMenu";
 import { SymbolIcon } from "../../lib/fileIcons";
+import { fitToWindow } from "./Popover";
 
 /** A button to drop down from, or a point (a right-click) to open at. */
 export type MenuAnchor = HTMLElement | { x: number; y: number };
@@ -36,18 +37,10 @@ export default function MenuPopover({ anchor, entries, onClose }: Props) {
   const panels = useRef(new Set<HTMLElement>());
   const [pos, setPos] = useState<React.CSSProperties | null>(null);
 
-  // Drop down from a button, right edges aligned; or open at a point, as a
-  // context menu does. Never past the window bottom.
+  // Placed hidden first, then moved once its real size is known (below)
   useLayoutEffect(() => {
     function place() {
-      if (anchor instanceof HTMLElement) {
-        const r = anchor.getBoundingClientRect();
-        const top = r.bottom + MARGIN;
-        setPos({ top, right: Math.max(MARGIN, window.innerWidth - r.right), maxHeight: window.innerHeight - top - MARGIN });
-      } else {
-        // Placed hidden at the point first, then moved once its real size is known (below)
-        setPos({ top: anchor.y, left: anchor.x, visibility: "hidden" });
-      }
+      setPos(anchor instanceof HTMLElement ? { top: 0, left: 0, visibility: "hidden" } : { top: anchor.y, left: anchor.x, visibility: "hidden" });
     }
     place();
     window.addEventListener("resize", place);
@@ -90,13 +83,19 @@ export default function MenuPopover({ anchor, entries, onClose }: Props) {
     };
   }, [anchor, onClose]);
 
-  // A menu opened at a point: like a native context menu, it opens to the left of
-  // the pointer when there's no room to the right, and moves up to stay in the window
+  // Like a native menu, it moves to stay whole in the window rather than shrinking:
+  // dropping down from a button (right edges aligned) it flips above or slides up;
+  // opened at a point, it opens to the left of the pointer when there's no room to
+  // the right, and moves up
   useLayoutEffect(() => {
-    if (anchor instanceof HTMLElement || pos?.visibility !== "hidden") return;
+    if (pos?.visibility !== "hidden") return;
     const panel = [...panels.current][0];
     if (!panel) return;
     const { width, height } = panel.getBoundingClientRect();
+    if (anchor instanceof HTMLElement) {
+      setPos(fitToWindow(anchor.getBoundingClientRect(), width, height, "end"));
+      return;
+    }
     const fitsRight = anchor.x + width <= window.innerWidth - MARGIN;
     const left = fitsRight ? anchor.x : Math.max(MARGIN, anchor.x - width);
     const top = Math.max(MARGIN, Math.min(anchor.y, window.innerHeight - MARGIN - height));

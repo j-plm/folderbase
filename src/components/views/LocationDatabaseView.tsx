@@ -3024,7 +3024,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
             setCellSel(EMPTY_CELLS);
           }
         }}
-        className="flex-1 min-h-0 overflow-auto outline-none"
+        className="flex-1 min-h-0 overflow-auto isolate outline-none"
       >
         <TableHeader
           columns={columns}

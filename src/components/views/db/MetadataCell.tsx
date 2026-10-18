@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   useCallback,
@@ -54,13 +55,22 @@ function Dropdown({ anchor, children, onClose }: DropdownProps) {
     return () => document.removeEventListener("mousedown", handleMouseDown);
   }, [onClose]);
 
-  const top = anchor.bottom + window.scrollY + 2;
-  const left = anchor.left + window.scrollX;
+  // Below the cell, or above it when there's no room, and never past a window edge
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const { width, height } = el.getBoundingClientRect();
+    const fitsBelow = anchor.bottom + 2 + height <= window.innerHeight - 6;
+    const top = fitsBelow ? anchor.bottom + 2 : Math.max(6, anchor.top - 2 - height);
+    const left = Math.max(6, Math.min(anchor.left, window.innerWidth - 6 - width));
+    setPos({ top, left });
+  }, [anchor]);
 
   return createPortal(
     <div
       ref={ref}
-      style={{ top, left, minWidth: anchor.width }}
+      style={{ ...(pos ?? { top: 0, left: 0, visibility: "hidden" }), minWidth: anchor.width }}
       className="fixed z-50 bg-neutral-800 border border-neutral-600 rounded-md shadow-xl py-0.5 max-h-52 overflow-y-auto text-xs"
     >
       {children}

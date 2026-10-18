@@ -16,6 +16,22 @@ interface Props {
 const MARGIN = 6;
 
 /**
+ * Where a panel of this size goes under `r`, as an NSPopover or pop-down menu
+ * would place it: below, else above, else slid up over the anchor so all of it
+ * stays in the window. Only a panel taller than the window scrolls.
+ */
+export function fitToWindow(r: DOMRect, width: number, height: number, align: "start" | "end"): CSSProperties {
+  const { innerWidth, innerHeight } = window;
+  let top: number;
+  if (r.bottom + MARGIN + height <= innerHeight - MARGIN) top = r.bottom + MARGIN;
+  else if (r.top - MARGIN - height >= MARGIN) top = r.top - MARGIN - height;
+  else top = Math.max(MARGIN, innerHeight - MARGIN - height);
+  const wanted = align === "end" ? r.right - width : r.left;
+  const left = Math.max(MARGIN, Math.min(wanted, innerWidth - MARGIN - width));
+  return { top, left, maxHeight: innerHeight - top - MARGIN };
+}
+
+/**
  * A popover panel (NSPopover-like) for small forms: adding a property, filter
  * and sort rules, picking list values. Closes on a click outside or Escape;
  * unlike MenuPopover it stays open when the window loses focus, so native
@@ -27,20 +43,17 @@ export default function Popover({ anchor, onClose, align = "start", className = 
 
   useLayoutEffect(() => {
     function place() {
+      const el = ref.current;
       const r = anchor.getBoundingClientRect();
-      const height = ref.current?.offsetHeight ?? 0;
-      // Open upward when there isn't room below
-      const below = window.innerHeight - r.bottom - MARGIN * 2;
-      const top = height > below && r.top > below ? Math.max(MARGIN, r.top - MARGIN - height) : r.bottom + MARGIN;
-      const horizontal =
-        align === "end"
-          ? { right: Math.max(MARGIN, window.innerWidth - r.right) }
-          : { left: Math.max(MARGIN, Math.min(r.left, window.innerWidth - MARGIN - (ref.current?.offsetWidth ?? 0))) };
-      setPos({ top, maxHeight: window.innerHeight - top - MARGIN, ...horizontal });
+      // Full content height, not the height a previous maxHeight squeezed it to
+      const height = el ? el.scrollHeight + el.offsetHeight - el.clientHeight : 0;
+      const width = el?.offsetWidth ?? 0;
+      setPos(fitToWindow(r, width, height, align));
     }
     place();
     const observer = new ResizeObserver(place);
-    if (ref.current) observer.observe(ref.current);
+    // The panel itself stops resizing once it hits maxHeight; its contents don't
+    if (ref.current) [ref.current, ...ref.current.children].forEach((el) => observer.observe(el));
     window.addEventListener("resize", place);
     return () => {
       observer.disconnect();

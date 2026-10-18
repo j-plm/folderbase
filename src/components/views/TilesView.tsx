@@ -127,7 +127,7 @@ export default function TilesView({ files }: Props) {
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-auto outline-none"
+      className="flex-1 overflow-auto isolate outline-none"
       tabIndex={0}
       onKeyDown={selection.onKeyDown}
       onClick={selection.clear}
