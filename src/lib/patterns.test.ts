@@ -54,7 +54,7 @@ describe("examplePattern", () => {
         { name: "Date", start: 0, end: 6 },
         { name: "Person", start: 7, end: 12 },
       ])
-    ).toBe("{Date}_{Person}");
+    ).toBe("{Date:digits}_{Person}");
   });
 
   it("produces a pattern that finds the same values in the example", () => {
@@ -82,5 +82,43 @@ describe("parseDateAs", () => {
     expect(parseDateAs("2503", "YYMMDD", now)).toBeNull();
     expect(parseDateAs("250231", "YYMMDD", now)).toBeNull();
     expect(parseDateAs("251301", "YYMMDD", now)).toBeNull();
+  });
+});
+
+describe("kinds of character", () => {
+  it("takes only digits, letters, capitals or small letters", () => {
+    expect(matchPattern(compiled("{Test:digits}-{Rest}"), "0014-250701")).toEqual({ Test: "0014", Rest: "250701" });
+    expect(matchPattern(compiled("{Test:4 digits}-{Date:6 digits}"), "0014-250701")).toEqual({ Test: "0014", Date: "250701" });
+    expect(matchPattern(compiled("{Test:4 digits}-{Date:6 digits}"), "00A4-250701")).toBeNull();
+    expect(matchPattern(compiled("{Code:upper}{Num:digits}"), "AB12.pdf")).toEqual({ Code: "AB", Num: "12" });
+    expect(matchPattern(compiled("{Code:upper}{Num:digits}"), "ab12.pdf")).toBeNull();
+    expect(matchPattern(compiled("{Word:lower}"), "report")).toEqual({ Word: "report" });
+    expect(matchPattern(compiled("{Name:letters}_{*}"), "Ruben_2024")).toEqual({ Name: "Ruben" });
+    expect(matchPattern(compiled("{Id:alnum}"), "AB12")).toEqual({ Id: "AB12" });
+  });
+
+  it("splits runs of different kinds without separators", () => {
+    expect(matchPattern(compiled("{Letters:letters}{Digits:digits}"), "Rig42")).toEqual({ Letters: "Rig", Digits: "42" });
+  });
+
+  it("finds text anywhere with wildcards either side", () => {
+    expect(matchPattern(compiled("{*}invoice{*}"), "2024_Acme_Invoice_v2.pdf")).toEqual({});
+    expect(matchPattern(compiled("{*}invoice{*}"), "2024_Acme_receipt.pdf")).toBeNull();
+    expect(matchPattern(compiled("{*:digits}"), "2024")).toEqual({});
+  });
+
+  it("keeps literals case-insensitive", () => {
+    expect(matchPattern(compiled("RIG_{N:digits}"), "rig_7")).toEqual({ N: "7" });
+  });
+
+  it("explains a kind it doesn't know", () => {
+    expect(compilePattern("{X:vowels}")).toEqual({ error: "{X:vowels}: “vowels” isn't a kind: use digits, letters, upper, lower or alnum" });
+    expect(isPatternError(compilePattern("{X:0}"))).toBe(true);
+    expect(isPatternError(compilePattern("{X:4 digit}"))).toBe(false);
+  });
+
+  it("marks picked digits as digits", () => {
+    expect(examplePattern("0014-250701", [{ name: "Test", start: 0, end: 4 }, { name: "Date", start: 5, end: 11 }])).toBe("{Test:digits}-{Date:digits}");
+    expect(examplePattern("Rig42x", [{ name: "N", start: 3, end: 5 }])).toBe("{*:3}{N:2 digits}{*}");
   });
 });

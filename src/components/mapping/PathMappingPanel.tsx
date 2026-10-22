@@ -36,19 +36,21 @@ export default function PathMappingPanel({ locationId, locationName, onClose }: 
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Drag the left edge to resize; the panel can grow to nearly the full pane.
-  function startResize(e: React.PointerEvent<HTMLDivElement>) {
+  // Mouse events, not pointer events: after a native menu closes WebKit can still
+  // think the button is down and skip the next pointerdown, so the first click did nothing
+  function startResize(e: React.MouseEvent<HTMLDivElement>) {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = width;
     const maxWidth = (panelRef.current?.parentElement?.clientWidth ?? window.innerWidth) - 40;
     let latest = startWidth;
-    const onMove = (ev: PointerEvent) => {
+    const onMove = (ev: MouseEvent) => {
       latest = Math.min(maxWidth, Math.max(MIN_WIDTH, startWidth + startX - ev.clientX));
       setWidth(latest);
     };
     const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
       document.body.style.cursor = "";
       try {
         localStorage.setItem(WIDTH_KEY, String(latest));
@@ -57,8 +59,8 @@ export default function PathMappingPanel({ locationId, locationName, onClose }: 
       }
     };
     document.body.style.cursor = "col-resize";
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   }
 
   useEffect(() => {
@@ -82,7 +84,7 @@ export default function PathMappingPanel({ locationId, locationName, onClose }: 
       }`}
     >
       <div
-        onPointerDown={startResize}
+        onMouseDown={startResize}
         className="absolute left-0 top-0 h-full w-1.5 -translate-x-1/2 cursor-col-resize z-10"
         aria-hidden
       />

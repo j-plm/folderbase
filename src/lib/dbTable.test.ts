@@ -80,3 +80,14 @@ describe("cycleSort", () => {
     expect(cycleSort([{ key: "a", direction: "asc" }, { key: "b", direction: "asc" }], "a")).toEqual([{ key: "a", direction: "asc" }]);
   });
 });
+
+describe("listItems", () => {
+  it("narrows a list to one item, or keeps all", async () => {
+    const { listItems } = await import("./dbTable");
+    expect(listItems(["a", "b", "c"], "last")).toEqual(["c"]);
+    expect(listItems(["a", "b", "c"], "first")).toEqual(["a"]);
+    expect(listItems(["a", "b", "c"], "n:2")).toEqual(["b"]);
+    expect(listItems(["a"], "n:3")).toEqual([]);
+    expect(listItems(["a", "b"], undefined)).toEqual(["a", "b"]);
+  });
+});

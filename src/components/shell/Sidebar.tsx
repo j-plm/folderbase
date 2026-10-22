@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import { useNavigation } from "../../contexts/NavigationContext";
 import { listen } from "@tauri-apps/api/event";
-import { getLocations, clearDatabase, deleteLocation, ingestDirectory } from "../../lib/commands";
+import { getLocations, clearDatabase, deleteLocation, ingestDirectory, renameLocation } from "../../lib/commands";
 import type { Location } from "../../lib/commands";
 import AddLocationModal from "./AddLocationModal";
 import Dialog, { DialogButton } from "../shared/Dialog";
@@ -55,6 +55,8 @@ export default function Sidebar() {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  /** The location whose name is being edited in place. */
+  const [renamingId, setRenamingId] = useState<string | null>(null);
   /** Locations being indexed (a refresh, or a newly added location). */
   const [refreshing, setRefreshing] = useState<Set<string>>(() => new Set());
   const [refreshError, setRefreshError] = useState<{ id: string; message: string } | null>(null);
@@ -104,10 +106,25 @@ export default function Sidebar() {
         { type: "item", text: "Map Structure…", action: () => openStructureMapping(loc.location_id) },
         { type: "item", text: "Refresh", enabled: !refreshing.has(loc.location_id), action: () => refreshLocation(loc.location_id) },
         { type: "separator" },
+        { type: "item", text: "Rename", action: () => setRenamingId(loc.location_id) },
         { type: "item", text: "Remove Location…", action: () => setConfirmDeleteId(loc.location_id) },
       ],
       { event: e }
     );
+  }
+
+  async function commitRename(loc: Location, text: string) {
+    setRenamingId(null);
+    const name = text.trim();
+    if (!name || name === loc.name) return;
+    try {
+      const renamed = await renameLocation(loc.location_id, name);
+      setLocations((locs) =>
+        locs.map((l) => (l.location_id === renamed.location_id ? renamed : l)).sort((a, b) => a.name.localeCompare(b.name))
+      );
+    } catch (e) {
+      setRefreshError({ id: loc.location_id, message: String(e) });
+    }
   }
 
   async function loadLocations() {
@@ -199,16 +216,39 @@ export default function Sidebar() {
             return (
               <div key={loc.location_id} className="flex flex-col">
                 <div className="group relative flex items-center" onContextMenu={(e) => showLocationMenu(e, loc)}>
-                  <button
-                    onClick={() => setActiveLocation(loc.location_id)}
-                    className={`flex items-center gap-2 w-full text-left px-2 h-7 rounded-md pr-7 ${
-                      isActive ? "bg-neutral-700 text-blue-500" : "text-neutral-100"
-                    }`}
-                  >
-                    <SymbolIcon name="folder" size={17} className={isActive ? "text-blue-500" : "text-neutral-400"} />
-                    <span className="truncate text-body">{loc.name}</span>
-                  </button>
-                  <div className="absolute right-1 flex items-center">
+                  {renamingId === loc.location_id ? (
+                    // A plain row while renaming: a text field can't sit inside a button
+                    <div className={`flex items-center gap-2 w-full px-2 h-7 rounded-md ${isActive ? "bg-neutral-700" : ""}`}>
+                      <SymbolIcon name="folder" size={17} className={isActive ? "text-blue-500" : "text-neutral-400"} />
+                      <RenameField
+                        initial={loc.name}
+                        onCommit={(text) => void commitRename(loc, text)}
+                        onCancel={() => setRenamingId(null)}
+                      />
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setActiveLocation(loc.location_id)}
+                      className={`flex items-center gap-2 w-full text-left px-2 h-7 rounded-md pr-7 group-hover:pr-12 ${
+                        isActive ? "bg-neutral-700 text-blue-500" : "text-neutral-100"
+                      }`}
+                    >
+                      <SymbolIcon name="folder" size={17} className={isActive ? "text-blue-500" : "text-neutral-400"} />
+                      <span className="truncate text-body">{loc.name}</span>
+                    </button>
+                  )}
+                  <div className={`absolute right-1 flex items-center ${renamingId === loc.location_id ? "hidden" : ""}`}>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        openStructureMapping(loc.location_id);
+                      }}
+                      title="Map Structure…"
+                      aria-label={`Map structure of ${loc.name}`}
+                      className="w-5 h-5 flex items-center justify-center rounded text-neutral-500 hover:text-neutral-200 opacity-0 group-hover:opacity-100"
+                    >
+                      <SymbolIcon name="map" size={12} fallback="⌖" />
+                    </button>
                     {/* Shown on hover, and kept (spinning) while the location is being indexed */}
                     <button
                       onClick={(e) => {
@@ -250,39 +290,36 @@ export default function Sidebar() {
             <span>Add Location…</span>
           </button>
 
-          {!confirmClear ? (
-            <button
-              onClick={() => setConfirmClear(true)}
-              className="w-full px-2 py-1.5 text-xs text-red-700/80 hover:text-red-500 hover:bg-red-900/20 rounded transition-colors text-left"
-            >
-              Clear All Data
-            </button>
-          ) : (
-            <div className="flex flex-col gap-1.5 px-2 py-2 rounded bg-neutral-900/60 border border-red-900/40">
-              <p className="text-xs text-neutral-400 leading-snug">
-                This will permanently delete all locations and file records. This cannot be undone.
-              </p>
-              <div className="flex gap-1.5">
-                <button
-                  onClick={handleClearDatabase}
-                  disabled={clearing}
-                  className="flex-1 px-2 py-1 text-xs rounded bg-red-800/60 text-red-200 hover:bg-red-700/60 disabled:opacity-50 transition-colors"
-                >
-                  {clearing ? "Clearing…" : "Clear Everything"}
-                </button>
-                <button
-                  onClick={() => setConfirmClear(false)}
-                  className="flex-1 px-2 py-1 text-xs rounded border border-neutral-700 text-neutral-400 hover:text-neutral-200 transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
+          <button
+            onClick={() => setConfirmClear(true)}
+            className="w-full px-2 py-1.5 text-xs text-red-700/80 hover:text-red-500 hover:bg-red-900/20 rounded transition-colors text-left"
+          >
+            Clear All Data…
+          </button>
         </div>
       </div>
 
       {addOpen && <AddLocationModal onClose={() => setAddOpen(false)} />}
+      {confirmClear && (
+        <Dialog
+          title="Clear all data?"
+          message="Every location and file record is removed from Folderbase, with all properties and their values, folder mappings and saved views. Rules are kept. Nothing on disk or in the cloud changes. This can't be undone."
+          onCancel={() => {
+            if (!clearing) setConfirmClear(false);
+          }}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton onClick={() => setConfirmClear(false)} disabled={clearing} autoFocus>
+                Cancel
+              </DialogButton>
+              <DialogButton variant="destructive" onClick={handleClearDatabase} disabled={clearing}>
+                {clearing ? "Clearing…" : "Clear All Data"}
+              </DialogButton>
+            </>
+          }
+        />
+      )}
       {removing && (
         <Dialog
           title={`Remove “${removing.name}” from Folderbase?`}
@@ -309,5 +346,41 @@ export default function Sidebar() {
         />
       )}
     </div>
+  );
+}
+
+/** A location's name edited in place, as in Finder: Return or clicking away renames, Escape cancels. */
+function RenameField({ initial, onCommit, onCancel }: { initial: string; onCommit: (text: string) => void; onCancel: () => void }) {
+  const [text, setText] = useState(initial);
+  const done = useRef(false);
+  function finish(commit: boolean) {
+    if (done.current) return;
+    done.current = true;
+    if (commit) onCommit(text);
+    else onCancel();
+  }
+  return (
+    <input
+      autoFocus
+      value={text}
+      aria-label="Location name"
+      onChange={(e) => setText(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={() => finish(true)}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finish(true);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          finish(false);
+        }
+      }}
+      // Clicks in the field edit it rather than selecting the location
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+      className="flex-1 min-w-0 h-5 px-1 -mx-1 rounded-[3px] bg-neutral-900 text-body text-neutral-100 outline outline-2 outline-blue-500"
+    />
   );
 }

@@ -49,6 +49,34 @@ pub async fn add_location(
         .map_err(|e| e.to_string())
 }
 
+/// Renames a location. Only its display name changes: the library key (which
+/// its properties and rules belong to) and the folder on disk stay as they are.
+#[tauri::command]
+pub async fn rename_location(location_id: String, name: String, db: State<'_, DbPool>) -> Result<Location, String> {
+    rename_location_impl(&location_id, &name, db.inner()).await
+}
+
+pub async fn rename_location_impl(location_id: &str, name: &str, pool: &DbPool) -> Result<Location, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("A location needs a name".into());
+    }
+    let updated = sqlx::query("UPDATE locations SET name = ? WHERE location_id = ?")
+        .bind(name)
+        .bind(location_id)
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    if updated.rows_affected() == 0 {
+        return Err(format!("No location {location_id}"));
+    }
+    sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE location_id = ?")
+        .bind(location_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn delete_location(
     location_id: String,

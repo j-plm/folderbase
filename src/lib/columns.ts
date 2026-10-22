@@ -104,15 +104,15 @@ export const CELL_PADDING = 24;
 /**
  * Dragging a hideable column below its minimum: it follows the pointer down to
  * this width and stops there ("held"). Held there it then flashes ("armed")
- * and closes, unless released first.
+ * and closes, unless released before the flash starts.
  */
 export const COLLAPSE_DETENT = 24;
 /** Time held at the detent before the column flashes. */
-export const COLLAPSE_HOLD_MS = 300;
+export const COLLAPSE_HOLD_MS = 225;
 /** Length of the flash; the column closes when it ends. Matches `column-arm` in index.css. */
-export const COLLAPSE_ARM_MS = 350;
+export const COLLAPSE_ARM_MS = 260;
 /** Duration of the closing animation. */
-export const COLLAPSE_ANIMATION_MS = 180;
+export const COLLAPSE_ANIMATION_MS = 135;
 
 /**
  * "held": stopped at the detent. "armed": flashing, about to close.

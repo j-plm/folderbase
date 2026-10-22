@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useScrollAheadVirtualizer } from "../../hooks/useScrollAheadVirtualizer";
 import { listen } from "@tauri-apps/api/event";
 import {
   clearFolderLabels,
@@ -48,7 +48,7 @@ import {
   type ScopeCondition,
 } from "../../lib/scopes";
 import ScopeDialog from "./db/ScopeDialog";
-import RulesPanel from "./db/RulesPanel";
+import RulesPanel, { RULES_PANEL_MIN_WIDTH } from "./db/RulesPanel";
 import { definitionFromFilter, writeKeys, type RuleDefinition, type RuleEnv, type RulePlan, type RuleWrite, type StoredRule } from "../../lib/rules";
 import { KIND_BY_TYPE, NATIVE_KINDS, PROP_PREFIX, fileExtension, fileName, metaValue, nativeValue, propName } from "../../lib/fileColumns";
 import { FileIcon, SymbolIcon } from "../../lib/fileIcons";
@@ -65,7 +65,7 @@ import {
 } from "../../lib/columns";
 import { showContextMenu, type MenuEntry } from "../../lib/nativeMenu";
 import OverflowBar from "../shell/OverflowBar";
-import { measureText, uiFont } from "../../lib/textMeasure";
+import { measureElements, measureText, uiFont } from "../../lib/textMeasure";
 import { useColumnLayout } from "../../hooks/useColumnLayout";
 import TableHeader from "./shared/TableHeader";
 import { useSelection } from "../../hooks/useSelection";
@@ -128,7 +128,7 @@ import {
   type CellWrite,
 } from "../../lib/cellSelection";
 import FilterSortPopover, { type FilterColumn } from "./db/FilterSortPopover";
-import { HeaderNameEditor, ListCellEditor, ValueListEditor, PropertyValueView, TextCellEditor, type CommitMove } from "./db/CellEditors";
+import { HeaderNameEditor, ListCellEditor, ValueListEditor, PropertyValueView, TextCellEditor, PILL_CLASS, PILL_MARK_CLASS, type CommitMove } from "./db/CellEditors";
 
 interface Props {
   files: FileRecord[];
@@ -287,8 +287,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   const [deleting, setDeleting] = useState<string | null>(null);
   /** A list column whose values are being edited (Edit Values…), and the header it opens from. */
   const [valuesEditor, setValuesEditor] = useState<{ columnId: string; anchor: HTMLElement } | null>(null);
-  const [hasMappings, setHasMappings] = useState(false);
-  const { structureLocationId, openStructureMapping } = useNavigation();
+  const { structureLocationId } = useNavigation();
   const structureOpen = structureLocationId === locationId;
 
   // Column visibility
@@ -481,14 +480,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   }, [locationId]);
   useEffect(loadKeys, [loadKeys]);
 
-  // Re-read mappings and keys whenever Map Structure closes (and on load)
+  // Re-read keys whenever Map Structure closes: mappings can add properties
   useEffect(() => {
-    if (structureOpen) return;
-    getMappingNodes(locationId)
-      .then((nodes) => setHasMappings(nodes.length > 0))
-      .catch(() => {});
-    loadKeys();
-  }, [locationId, structureOpen, loadKeys]);
+    if (!structureOpen) loadKeys();
+  }, [structureOpen, loadKeys]);
 
   const loadRegistry = useCallback(async () => {
     if (!library) {
@@ -1099,6 +1094,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   // ── Rules ─────────────────────────────────────────────────────────────────
 
   const [rulesOpen, setRulesOpen] = useState(false);
+  /** The Rules panel's width, dragged at its left edge; kept between sessions. */
+  const [rulesWidth, setRulesWidthState] = useState(() => Math.max(RULES_PANEL_MIN_WIDTH, loadJson("rules-panel-width", 760)));
+  function setRulesWidth(width: number, save: boolean) {
+    setRulesWidthState(width);
+    if (save) saveJson("rules-panel-width", width);
+  }
   const [ruleList, setRuleList] = useState<StoredRule[]>([]);
   const [ruleWrites, setRuleWrites] = useState<RuleWrite[]>([]);
   /** A new rule to start from (Make Rule from Filter…), and a key so the panel starts afresh with it. */
@@ -1547,15 +1548,26 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     const tagsWidth =
       wrapSourceTags && columns.some((c) => c.id === TAGS_COLUMN.id) ? (layout.widths[TAGS_COLUMN.id] ?? 0) - CELL_PADDING : null;
     if (wrapping.length === 0 && tagsWidth == null) return null;
-    return sorted.map((f) => {
-      // Only the tags shown count: hiding recorded ones shrinks the row. Implied values
-      // and the "›" on values that open into a property take room too
-      let lines = tagsWidth == null ? 1 : pillLines(shownSourceTags(f), tagsWidth, (t) => opensInto(scopes, null, t).length > 0);
+    // Only the tags shown count: hiding recorded ones shrinks the row. Implied values
+    // and the "›" on values that open into a property take room too
+    const rows = sorted.map((f) => {
       const implied = impliedByFile.get(f.file_id);
-      for (const { name, width } of wrapping) {
-        const items = [...listValues(metaValue(f, name)), ...(implied?.[name] ?? [])];
-        lines = Math.max(lines, pillLines(items, width, (v) => opensInto(scopes, name, v).length > 0));
-      }
+      return {
+        tags: tagsWidth == null ? [] : shownSourceTags(f),
+        lists: wrapping.map(({ name }) => [...listValues(metaValue(f, name)), ...(implied?.[name] ?? [])]),
+      };
+    });
+    // Every pill measured in one layout pass, as the page lays it out
+    const widths = measureElements(
+      rows.flatMap((r) => [...r.tags, ...r.lists.flat()]),
+      PILL_CLASS
+    );
+    const mark = (measureElements(["›"], `${PILL_MARK_CLASS} text-[11px] leading-none`).get("›") ?? 0) + 2; // gap-0.5 before it
+    return rows.map(({ tags, lists }) => {
+      let lines = tagsWidth == null ? 1 : pillLines(tags, tagsWidth, widths, (t) => (opensInto(scopes, null, t).length > 0 ? mark : 0));
+      wrapping.forEach(({ name, width }, i) => {
+        lines = Math.max(lines, pillLines(lists[i], width, widths, (v) => (opensInto(scopes, name, v).length > 0 ? mark : 0)));
+      });
       return rowHeightFor(lines);
     });
   }, [columns, isEditable, wraps, wrapSourceTags, shownSourceTags, layout.widths, sorted, impliedByFile, scopes]);
@@ -1577,7 +1589,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     return tops;
   }, [items, itemSize]);
 
-  const rowVirtualizer = useVirtualizer({
+  const rowVirtualizer = useScrollAheadVirtualizer({
     count: items.length,
     getScrollElement: () => layout.container,
     estimateSize: itemSize,
@@ -2252,7 +2264,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     const before = snapshot(name);
     const apply = async () => {
       await setFolderLabels(locationId, folders, name, overwrite);
-      setHasMappings(true);
       await afterPropertyChange();
     };
     await history.queue(apply);
@@ -2264,7 +2275,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         if (unmapped.length > 0) await clearFolderLabels(locationId, unmapped);
         for (const n of previous) await setFolderLabels(locationId, [n.folder_path], n.property_name);
         await restoreValues(before);
-        setHasMappings((await getMappingNodes(locationId)).length > 0);
       },
       redo: apply,
     });
@@ -2301,7 +2311,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       undo: async () => {
         await movePropertyValue(locationId, value, to, from, true);
         await restoreValues(before);
-        setHasMappings((await getMappingNodes(locationId)).length > 0);
       },
       redo: apply,
     });
@@ -2439,7 +2448,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     const apply = async () => {
       if (mapFolders.length > 0 && tagsProperty) {
         await setFolderLabels(locationId, mapFolders, tagsProperty, false);
-        setHasMappings(true);
       }
       if (existing) updateVisibleProperties((prev) => (prev.includes(name) ? prev : [...prev, name]));
       else await coreCreate(name, type, null);
@@ -2473,7 +2481,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         if (mapFolders.length > 0) {
           await clearFolderLabels(locationId, mapFolders);
           await restoreValues(tagsBefore);
-          setHasMappings((await getMappingNodes(locationId)).length > 0);
         }
         await afterPropertyChange();
       },
@@ -2892,7 +2899,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   const activeRules = rules.filter((r) => r.op === "empty" || r.op === "not_empty" || r.value.trim() !== "");
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
+    // With the Rules panel open, the table keeps to the space beside it (so every column can be scrolled into view)
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative" style={rulesOpen ? { paddingRight: `min(${rulesWidth}px, calc(100% - 280px))` } : undefined}>
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-2.5 border-b border-neutral-700/60 shrink-0">
         <span className="flex-1 min-w-0 truncate whitespace-nowrap text-neutral-500 text-xs">
@@ -2959,18 +2967,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         />
         <OverflowBar
           items={[
-            {
-              id: "map",
-              node: (
-                <button
-                  onClick={() => openStructureMapping(locationId)}
-                  className={`${TOOLBAR_BUTTON} ${hasMappings ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
-                >
-                  {hasMappings ? "● Map Structure" : "Map Structure"}
-                </button>
-              ),
-              menu: [{ type: "item", text: "Map Structure…", action: () => openStructureMapping(locationId) }],
-            },
             {
               id: "columns",
               node: (
@@ -3317,6 +3313,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       {rulesOpen && library && (
         <RulesPanel
           key={ruleDraftKey}
+          width={rulesWidth}
+          onResize={setRulesWidth}
           library={library}
           rules={ruleList}
           files={rows}
@@ -3586,24 +3584,19 @@ function rowHeightFor(lines: number): number {
   return Math.max(ROW_HEIGHT, lines * PILL_LINE + 2);
 }
 
-const pillWidths = new Map<string, number>();
 /**
- * How many lines `items` take as wrapping pills in `width`. `marked` pills
- * carry a trailing "›" (they open into a scoped property), which widens them.
+ * How many lines `items` take as wrapping pills in `width`, given each pill's
+ * measured width. `extra` widens a pill (the "›" on values that open into a
+ * scoped property).
  */
-function pillLines(items: string[], width: number, marked?: (item: string) => boolean): number {
+function pillLines(items: string[], width: number, widths: Map<string, number>, extra?: (item: string) => number): number {
   if (items.length === 0 || width <= 0) return 1;
-  const font = uiFont(11);
   let lines = 1;
   let x = 0;
   for (const item of items) {
-    let w = pillWidths.get(item);
-    if (w == null) {
-      w = measureText(item, font) + 12; // px-1.5 either side
-      pillWidths.set(item, w);
-    }
-    if (marked?.(item)) w += measureText("›", font) + 2; // gap-0.5 before it
-    if (x > 0 && x + 4 + w > width) {
+    const w = (widths.get(item) ?? 0) + (extra?.(item) ?? 0);
+    // Slack for floating-point error only: widths are the layout's own
+    if (x > 0 && x + 4 + w > width + 0.01) {
       lines++;
       x = w;
     } else {
@@ -3673,12 +3666,12 @@ function TagPills({
             onMouseDown={(e) => onPillMouseDown(e, tag)}
             onContextMenu={(e) => onPillContextMenu(e, tag)}
             title={notes.length > 0 ? notes.join(" · ") : undefined}
-            className={`inline-flex items-center gap-0.5 h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 text-neutral-300 data-[pressed]:bg-blue-500 data-[pressed]:text-white data-[pressed]:opacity-100 ${
+            className={`${PILL_CLASS} bg-neutral-500/15 text-neutral-300 data-[pressed]:bg-blue-500 data-[pressed]:text-white data-[pressed]:opacity-100 ${
               covered.has(tag) ? "opacity-40" : ""
             }`}
           >
             {tag}
-            {into.length > 0 && <span className="opacity-60">›</span>}
+            {into.length > 0 && <span className={PILL_MARK_CLASS}>›</span>}
           </span>
         );
       })}

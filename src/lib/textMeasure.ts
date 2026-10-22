@@ -30,3 +30,42 @@ export function measureText(text: string, font: string): number {
   cache.set(text, width);
   return width;
 }
+
+/** Widths of elements already measured, per class list. */
+const elementWidths = new Map<string, Map<string, number>>();
+
+/**
+ * Widths of `texts` each laid out as a `<span class={className}>`, as the page
+ * renders them: canvas text widths can come out a fraction wider than the
+ * DOM's, which is enough to mispredict where a row of pills wraps. Unmeasured
+ * texts are measured together in one layout pass; results are cached per class.
+ */
+export function measureElements(texts: Iterable<string>, className: string): Map<string, number> {
+  let cache = elementWidths.get(className);
+  if (!cache) elementWidths.set(className, (cache = new Map()));
+  const unique = [...new Set(texts)];
+  let missing = unique.filter((t) => !cache!.has(t));
+  if (missing.length === 0) return cache;
+  if (cache.size + missing.length > MAX_CACHED) {
+    cache.clear();
+    missing = unique;
+  }
+  if (typeof document === "undefined" || !document.body) {
+    for (const t of missing) cache.set(t, t.length * 7); // no DOM (tests): rough estimate
+    return cache;
+  }
+  const box = document.createElement("div");
+  box.setAttribute("aria-hidden", "true");
+  box.style.cssText = "position:absolute;left:-100000px;top:0;visibility:hidden;pointer-events:none;display:flex;flex-direction:column;align-items:flex-start";
+  const spans = missing.map((t) => {
+    const span = document.createElement("span");
+    span.className = className;
+    span.textContent = t;
+    box.appendChild(span);
+    return span;
+  });
+  document.body.appendChild(box);
+  spans.forEach((span, i) => cache!.set(missing[i], span.getBoundingClientRect().width));
+  box.remove();
+  return cache;
+}

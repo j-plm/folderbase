@@ -2,6 +2,8 @@
 //
 //   {Code}     captures any text          {Code:4}  exactly 4 characters
 //   {*}        any text, not captured     {*:2}     exactly 2 characters
+//   {Code:digits}  {Code:4 digits}  {Code:letters}  {Code:upper}  {Code:lower}  {Code:alnum}
+//              only that kind of character (any number of them, or exactly 4)
 //
 // Everything else matches literally, ignoring case. A pattern without a "."
 // is matched against the name without its extension (then the whole name). Patterns come from
@@ -16,6 +18,51 @@ export interface CompiledPattern {
 
 const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+/** What a slot may hold: `{Code:digits}`, `{Code:4 letters}`… (case matters only for upper and lower). */
+export const SLOT_KINDS: Record<string, { regex: string; label: string }> = {
+  digits: { regex: "[0-9]", label: "digits 0–9" },
+  letters: { regex: "\\p{L}", label: "letters" },
+  upper: { regex: "\\p{Lu}", label: "capital letters" },
+  lower: { regex: "\\p{Ll}", label: "small letters" },
+  alnum: { regex: "[\\p{L}\\p{N}]", label: "letters and digits" },
+  text: { regex: ".", label: "any characters" },
+};
+const KIND_ALIASES: Record<string, string> = {
+  digit: "digits",
+  number: "digits",
+  numbers: "digits",
+  letter: "letters",
+  capitals: "upper",
+  caps: "upper",
+  uppercase: "upper",
+  lowercase: "lower",
+  alphanumeric: "alnum",
+  any: "text",
+};
+
+/** A literal character, matched in either case (patterns ignore case outside upper/lower slots). */
+function literal(ch: string): string {
+  const lo = ch.toLowerCase();
+  const up = ch.toUpperCase();
+  return lo !== up && lo.length === 1 && up.length === 1 ? `[${escapeRegex(lo)}${escapeRegex(up)}]` : escapeRegex(ch);
+}
+
+/** A slot's spec ("4", "digits", "4 digits") as a regex piece, or a message saying what's wrong. */
+function slotRegex(spec: string, wildcard: boolean): string | { error: string } {
+  if (!spec) return wildcard ? ".*?" : ".+?";
+  const m = /^(\d+)?\s*([a-z]+)?$/i.exec(spec);
+  if (!m || (!m[1] && !m[2])) return { error: `“${spec}” isn't understood: use a length (4), a kind (digits, letters, upper, lower, alnum) or both (4 digits)` };
+  const count = m[1] ? Number(m[1]) : null;
+  if (count != null && count <= 0) return { error: "A length must be at least 1" };
+  const word = m[2]?.toLowerCase();
+  const kind = word ? (SLOT_KINDS[word] ? word : KIND_ALIASES[word]) : "text";
+  if (!kind) return { error: `“${word}” isn't a kind: use digits, letters, upper, lower or alnum` };
+  const cls = SLOT_KINDS[kind].regex;
+  if (count != null) return `${cls}{${count}}`;
+  // Any number of a kind takes all of them; plain text takes as little as fits
+  return kind === "text" ? (wildcard ? ".*?" : ".+?") : `${cls}+`;
+}
+
 /** Compiles a pattern, or explains what's wrong with it. */
 export function compilePattern(pattern: string): CompiledPattern | { error: string } {
   let source = "";
@@ -25,21 +72,19 @@ export function compilePattern(pattern: string): CompiledPattern | { error: stri
     const ch = pattern[i];
     if (ch === "}") return { error: "A “}” has no “{” before it" };
     if (ch !== "{") {
-      source += escapeRegex(ch);
+      source += literal(ch);
       i++;
       continue;
     }
     const close = pattern.indexOf("}", i);
     if (close === -1) return { error: "A “{” isn't closed" };
     const inner = pattern.slice(i + 1, close).trim();
-    const [rawName, rawLength] = inner.split(":").map((x) => x.trim());
+    const colon = inner.indexOf(":");
+    const rawName = (colon === -1 ? inner : inner.slice(0, colon)).trim();
+    const spec = colon === -1 ? "" : inner.slice(colon + 1).trim();
     if (!rawName) return { error: "A slot needs a name, like {Code}, or {*} for any text" };
-    let length: number | null = null;
-    if (rawLength != null && rawLength !== "") {
-      length = Number(rawLength);
-      if (!Number.isInteger(length) || length <= 0) return { error: `“${inner}”: the length must be a whole number` };
-    }
-    const any = length == null ? (rawName === "*" ? ".*?" : ".+?") : `.{${length}}`;
+    const any = slotRegex(spec, rawName === "*");
+    if (typeof any !== "string") return { error: `{${inner}}: ${any.error}` };
     if (rawName === "*") {
       source += `(?:${any})`;
     } else {
@@ -49,7 +94,7 @@ export function compilePattern(pattern: string): CompiledPattern | { error: stri
     }
     i = close + 1;
   }
-  return { regex: new RegExp(`^${source}$`, "i"), slots, hasDot: pattern.includes(".") };
+  return { regex: new RegExp(`^${source}$`, "u"), slots, hasDot: pattern.includes(".") };
 }
 
 export const isPatternError = (p: CompiledPattern | { error: string }): p is { error: string } => "error" in p;
@@ -78,7 +123,8 @@ export interface ExampleSlot {
   end: number;
 }
 
-const isSeparator = (ch: string | undefined) => ch == null || /[\s_\-.,()[\]]/.test(ch);
+// Folder separators count too, so a path can be picked from like a name
+const isSeparator = (ch: string | undefined) => ch == null || /[\s_\-.,()[\]/\\]/.test(ch);
 
 /**
  * A pattern from slots picked in an example name (without its extension):
@@ -116,9 +162,16 @@ export function examplePattern(name: string, picked: ExampleSlot[]): string {
   for (const slot of slots) {
     if (slot.start < pos) continue; // overlapping picks: the first wins
     gap(pos, slot.start);
-    // Running straight into more text, a slot needs its length to know where it ends
+    // Running straight into more text, a slot needs its length to know where it ends.
+    // A pick that's all digits only takes digits, so it can't run into the text beside it
     const fixed = !isSeparator(name[slot.end]);
-    out += fixed ? `{${slot.name}:${slot.end - slot.start}}` : `{${slot.name}}`;
+    const digits = /^[0-9]+$/.test(name.slice(slot.start, slot.end));
+    const length = slot.end - slot.start;
+    out += digits
+      ? `{${slot.name}:${fixed ? `${length} ` : ""}digits}`
+      : fixed
+        ? `{${slot.name}:${length}}`
+        : `{${slot.name}}`;
     pos = slot.end;
   }
   gap(pos, name.length);

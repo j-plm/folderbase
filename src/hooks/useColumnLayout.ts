@@ -37,8 +37,8 @@ function saveFixed(storageKey: string, fixed: Record<string, number>) {
  * It stops at a small detent (with a trackpad haptic) and dims; held there it
  * flashes as a warning, then shrinks and fades away (as a Dock item does when
  * removed) and is handed to `onCollapse` to hide. Its saved width is dropped so
- * it comes back at its automatic size. Released before it closes, or dragged
- * back out, it returns to normal resizing.
+ * it comes back at its automatic size. Released before the flash starts, or
+ * dragged back out, it returns to normal resizing; once flashing it closes.
  */
 export function useColumnLayout(
   columns: ColumnDef[],
@@ -115,9 +115,11 @@ export function useColumnLayout(
         document.body.style.cursor = "";
       }
 
+      // Once the flash starts the column is going: releasing or dragging back no longer stops it
       function arm() {
+        endDrag();
         setCollapsing({ id: columnId, width: COLLAPSE_DETENT, phase: "armed" });
-        holdTimer = window.setTimeout(close, COLLAPSE_ARM_MS);
+        window.setTimeout(close, COLLAPSE_ARM_MS);
       }
 
       function close() {

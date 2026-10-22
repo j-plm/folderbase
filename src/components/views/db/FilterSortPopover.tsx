@@ -181,6 +181,24 @@ export default function FilterSortPopover({
   );
 }
 
+/** Which item of a list a pattern is tried on: Source Tags are folders, top first. */
+export function itemChoices(columnId: string): [string, string][] {
+  return columnId === "tags"
+    ? [
+        ["any", "any folder"],
+        ["last", "the folder it's in"],
+        ["first", "the top folder"],
+        ["n:2", "the 2nd folder"],
+        ["n:3", "the 3rd folder"],
+      ]
+    : [
+        ["any", "any item"],
+        ["first", "the first item"],
+        ["n:2", "the 2nd item"],
+        ["last", "the last item"],
+      ];
+}
+
 /**
  * Filter rules as rows (column, condition, value, remove): the Filter panel's,
  * and a rule's When section in the Rules panel.
@@ -238,9 +256,25 @@ export function ConditionRows({
                   </option>
                 ))}
               </select>
+              {/* A pattern on a list can be tried on one item only (a particular folder) */}
+              {rule.op === "matches" && kind === "list" && (
+                <select
+                  value={rule.item ?? "any"}
+                  onChange={(e) => updateRule(rule.id, { item: e.target.value === "any" ? undefined : e.target.value })}
+                  title="Which of them the pattern is tried on"
+                  className={`${popoverSelect} w-[132px]`}
+                >
+                  {itemChoices(rule.column).map(([id, label]) => (
+                    <option key={id} value={id}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              )}
               {opNeedsValue(rule.op) ? (
                 <RuleValue
-                  kind={kind}
+                  // A pattern is always typed, whatever the column (a list's dropdown or a date picker can't hold one)
+                  kind={rule.op === "matches" ? "text" : kind}
                   value={rule.value}
                   values={valuesFor(rule.column)}
                   placeholder={rule.op === "matches" ? "{Date:6}_{Person}" : undefined}
@@ -317,10 +351,12 @@ export function AddButton({ onClick, children }: { onClick: () => void; children
     <button
       type="button"
       onClick={onClick}
-      className="self-start flex items-center gap-1 h-6 px-1.5 -ml-1.5 rounded-[6px] text-blue-400 hover:bg-neutral-700/40"
+      title={children}
+      // One line, cut short with "…" when the space is narrow (a wrapped label overran the fixed height)
+      className="self-start max-w-full min-w-0 flex items-center gap-1 h-6 px-1.5 -ml-1.5 rounded-[6px] text-left whitespace-nowrap text-blue-400 hover:bg-neutral-700/40"
     >
-      <SymbolIcon name="plus" size={11} fallback="+" />
-      {children}
+      <SymbolIcon name="plus" size={11} fallback="+" className="shrink-0" />
+      <span className="truncate">{children}</span>
     </button>
   );
 }
@@ -371,32 +407,28 @@ function LevelList({
     return list ? [...list.children].filter((el) => el instanceof HTMLElement && el.dataset.level).map((el) => (el as HTMLElement).offsetHeight + 8) : [];
   }
 
-  function startDrag(e: React.PointerEvent<HTMLElement>, key: string) {
+  function startDrag(e: React.MouseEvent<HTMLElement>, key: string) {
     if (e.button !== 0 || levels.length < 2) return;
     e.preventDefault();
-    const handle = e.currentTarget;
-    handle.setPointerCapture(e.pointerId);
     const heights = rowHeights();
     const top = listRef.current?.getBoundingClientRect().top ?? 0;
     const targetAt = (clientY: number) => dropIndexAt(heights, clientY - top, 0);
     setDrag({ key, target: levels.findIndex((l) => l.key === key) });
     let target = levels.findIndex((l) => l.key === key);
-    const onMove = (ev: PointerEvent) => {
+    const onMove = (ev: MouseEvent) => {
       target = targetAt(ev.clientY);
       setDrag({ key, target });
     };
     const onUp = () => {
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
       setDrag(null);
       const ids = levels.map((l) => l.key);
       const order = moveColumnId(ids, key, target);
       if (order.some((id, i) => id !== ids[i])) onChange(order.map((id) => levels.find((l) => l.key === id)!));
     };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onUp);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   }
 
   // The insertion line: above the row at the target slot, or below the last row
@@ -414,7 +446,7 @@ function LevelList({
           {showLine && drag!.target === i && <DropLine edge="top" />}
           {showLine && i === levels.length - 1 && drag!.target === levels.length && <DropLine edge="bottom" />}
           <span
-            onPointerDown={(e) => startDrag(e, level.key)}
+            onMouseDown={(e) => startDrag(e, level.key)}
             title={levels.length > 1 ? "Drag to reorder" : undefined}
             aria-label="Drag to reorder"
             className={`w-4 h-5 shrink-0 flex items-center justify-center text-neutral-500 ${

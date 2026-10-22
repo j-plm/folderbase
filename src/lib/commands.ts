@@ -82,6 +82,10 @@ export async function listSubfolders(path: string): Promise<Subfolder[]> {
   return invoke<Subfolder[]>("list_subfolders", { path });
 }
 
+export async function renameLocation(locationId: string, name: string): Promise<Location> {
+  return invoke<Location>("rename_location", { locationId, name });
+}
+
 export async function deleteLocation(locationId: string): Promise<void> {
   return invoke<void>("delete_location", { locationId });
 }

@@ -55,6 +55,7 @@ pub fn run() {
             commands::locations::get_locations,
             commands::locations::add_location,
             commands::locations::delete_location,
+            commands::locations::rename_location,
             commands::location_views::get_location_views,
             commands::location_views::save_location_view,
             commands::location_views::delete_location_view,

@@ -220,6 +220,12 @@ pub fn rename_in_definition(def: &mut Value, from: &str, to: &str) -> bool {
                 a["property"] = Value::String(to.to_string());
                 changed = true;
             }
+            // A "from property" action reading it
+            if a.get("value").and_then(Value::as_str) == Some(old_column.as_str()) {
+                a["value"] = Value::String(format!("prop:{to}"));
+                changed = true;
+                continue;
+            }
             // prop("From") inside a formula
             if let Some(text) = a.get("value").and_then(Value::as_str) {
                 let renamed = text
@@ -230,6 +236,13 @@ pub fn rename_in_definition(def: &mut Value, from: &str, to: &str) -> bool {
                     changed = true;
                 }
             }
+        }
+    }
+    // The column an example was picked from
+    if let Some(example) = def.get_mut("example") {
+        if example.get("column").and_then(Value::as_str) == Some(old_column.as_str()) {
+            example["column"] = Value::String(format!("prop:{to}"));
+            changed = true;
         }
     }
     changed
@@ -255,6 +268,17 @@ mod tests {
         assert_eq!(def["conditions"][1]["column"], "name");
         assert_eq!(def["actions"][0]["property"], "Customer");
         assert_eq!(def["actions"][1]["value"], "upper(prop(\"Customer\"))");
+    }
+
+    #[test]
+    fn renames_columns_read_from_and_example_sources() {
+        let mut def = json!({
+            "actions": [{ "property": "Year", "mode": "column", "value": "prop:Client" }],
+            "example": { "name": "Acme", "slots": [], "column": "prop:Client" }
+        });
+        assert!(rename_in_definition(&mut def, "Client", "Customer"));
+        assert_eq!(def["actions"][0]["value"], "prop:Customer");
+        assert_eq!(def["example"]["column"], "prop:Customer");
     }
 
     #[test]

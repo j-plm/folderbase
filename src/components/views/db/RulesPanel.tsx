@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { popoverField, popoverSelect } from "../../shared/Popover";
 import { SymbolIcon } from "../../../lib/fileIcons";
-import { matchesRule, newRule, type FilterMatch } from "../../../lib/dbTable";
+import { listItems, matchesRule, newRule, type FilterMatch } from "../../../lib/dbTable";
 import { dropIndexAt, moveColumnId } from "../../../lib/columns";
 import { baseName, fileName } from "../../../lib/fileColumns";
 import { formulaProblem, FORMULA_FUNCTIONS } from "../../../lib/formula";
@@ -10,6 +10,7 @@ import { DATE_FORMATS, examplePattern, type ExampleSlot } from "../../../lib/pat
 import { valueToText } from "../../../lib/propertyTypes";
 import {
   emptyDefinition,
+  formatForSlot,
   newAction,
   parseDefinition,
   planRule,
@@ -18,13 +19,57 @@ import {
   type RuleAction,
   type RuleDefinition,
   type RuleEnv,
+  type PreviewStatus,
   type RulePlan,
   type StoredRule,
 } from "../../../lib/rules";
-import { AddButton, ConditionRows, RemoveButton, type FilterColumn } from "./FilterSortPopover";
+import { AddButton, ConditionRows, RemoveButton, itemChoices, type FilterColumn } from "./FilterSortPopover";
+import RulesHelp from "./RulesHelp";
+import Dialog, { DialogButton } from "../../shared/Dialog";
+
+/** A remembered size (panel widths, preview columns); the fallback if storage is unavailable. */
+function loadSize<T>(key: string, fallback: T): T {
+  try {
+    const v = JSON.parse(localStorage.getItem(key) ?? "null");
+    return v ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function saveSize(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // ignore
+  }
+}
+
+/** Drags a width from a press: `apply` on every move, then once more with `done`. */
+function dragWidth(e: React.MouseEvent, start: number, min: number, max: number, sign: 1 | -1, apply: (w: number, done: boolean) => void) {
+  e.preventDefault();
+  e.stopPropagation();
+  const x0 = e.clientX;
+  let latest = start;
+  const onMove = (ev: MouseEvent) => {
+    latest = Math.round(Math.min(max, Math.max(min, start + sign * (ev.clientX - x0))));
+    apply(latest, false);
+  };
+  const onUp = () => {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    document.body.style.cursor = "";
+    apply(latest, true);
+  };
+  document.body.style.cursor = "col-resize";
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
 import type { FileRecord, ValueType } from "../../../types";
 
 interface Props {
+  /** Width in px, dragged at the left edge (`save` once the drag ends). */
+  width: number;
+  onResize: (width: number, save: boolean) => void;
   library: string;
   rules: StoredRule[];
   /** The location's files (as the table has them). */
@@ -49,6 +94,10 @@ interface Props {
 }
 
 const NEW = "__new";
+
+/** The narrowest the panel can be dragged; the table beside it always keeps at least TABLE_MIN_WIDTH. */
+export const RULES_PANEL_MIN_WIDTH = 520;
+const TABLE_MIN_WIDTH = 280;
 
 interface Editing {
   rule_id: string;
@@ -78,6 +127,32 @@ export default function RulesPanel(props: Props) {
         : null
   );
   const [overHandEdits, setOverHandEdits] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [listWidth, setListWidth] = useState(() => loadSize("rules-list-width", 230));
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Mouse events, not pointer events: after a native menu closes WebKit can still
+  // think the button is down and skip the next pointerdown, so the first click did nothing
+  function startResize(e: React.MouseEvent<HTMLDivElement>) {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = panelRef.current?.offsetWidth ?? props.width;
+    const max = (panelRef.current?.parentElement?.clientWidth ?? window.innerWidth) - TABLE_MIN_WIDTH;
+    let latest = startWidth;
+    const onMove = (ev: MouseEvent) => {
+      latest = Math.round(Math.min(max, Math.max(RULES_PANEL_MIN_WIDTH, startWidth + startX - ev.clientX)));
+      props.onResize(latest, false);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      props.onResize(latest, true);
+    };
+    document.body.style.cursor = "col-resize";
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -156,7 +231,9 @@ export default function RulesPanel(props: Props) {
     }
   }
 
+  const [confirmDelete, setConfirmDelete] = useState(false);
   async function remove() {
+    setConfirmDelete(false);
     if (!editing) return;
     if (editing.rule_id) await props.onDelete(editing.rule_id);
     const next = rules.find((r) => r.rule_id !== editing.rule_id);
@@ -170,9 +247,28 @@ export default function RulesPanel(props: Props) {
   }
 
   return (
-    <div className="absolute right-0 top-0 h-full w-[min(860px,100%)] flex flex-col bg-neutral-900 border-l border-neutral-700/60 shadow-2xl z-50 text-body">
+    <div
+      ref={panelRef}
+      style={{ width: props.width, maxWidth: `calc(100% - ${TABLE_MIN_WIDTH}px)` }}
+      className="absolute right-0 top-0 h-full flex flex-col bg-neutral-900 border-l border-neutral-700/60 shadow-2xl z-50 text-body"
+    >
+      {/* Drag the left edge to resize */}
+      <div
+        onMouseDown={startResize}
+        className="absolute left-0 top-0 h-full w-1.5 -translate-x-1/2 cursor-col-resize z-10"
+        aria-hidden
+      />
       <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-700/60 shrink-0">
         <h2 className="text-sm font-medium text-neutral-100">Rules</h2>
+        <span className="flex-1" />
+        <button
+          onClick={() => setHelpOpen((o) => !o)}
+          title="Patterns and formulas: everything they can say, and a place to try one"
+          className={`flex items-center gap-1 h-6 px-2 mr-1 rounded-[6px] text-xs ${helpOpen ? "bg-neutral-700 text-neutral-100" : "text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"}`}
+        >
+          <SymbolIcon name="questionmark.circle" size={12} fallback="?" />
+          Pattern Help
+        </button>
         <button
           onClick={() => void close()}
           className="p-1.5 rounded hover:bg-neutral-800 text-neutral-400 hover:text-neutral-200"
@@ -182,8 +278,9 @@ export default function RulesPanel(props: Props) {
         </button>
       </div>
 
-      <div className="flex flex-1 min-h-0">
+      <div className="relative flex flex-1 min-h-0">
         <RuleList
+          width={listWidth}
           rules={rules}
           counts={counts}
           selected={selected}
@@ -193,6 +290,17 @@ export default function RulesPanel(props: Props) {
           onNewFromFilter={props.viewFilter ? () => startNew(props.viewFilter!) : undefined}
           onToggle={(rule) => void props.onSave({ ...rule, enabled: !rule.enabled })}
           onReorder={props.onReorder}
+        />
+        {/* Drag to make the list of rules wider or narrower */}
+        <div
+          onMouseDown={(e) =>
+            dragWidth(e, listWidth, 140, 480, 1, (w, done) => {
+              setListWidth(w);
+              if (done) saveSize("rules-list-width", w);
+            })
+          }
+          className="w-1.5 -mx-[3px] shrink-0 cursor-col-resize z-10"
+          aria-hidden
         />
 
         <div className="flex-1 min-w-0 overflow-y-auto">
@@ -216,13 +324,15 @@ export default function RulesPanel(props: Props) {
             />
           )}
         </div>
+        {helpOpen && <RulesHelp onClose={() => setHelpOpen(false)} />}
       </div>
 
       {editing && (
         <div className="flex items-center gap-2 px-5 py-3 border-t border-neutral-700/60 shrink-0">
           <button
             type="button"
-            onClick={() => void remove()}
+            // A saved rule asks first; an unsaved new one just goes
+            onClick={() => (editing.rule_id ? setConfirmDelete(true) : void remove())}
             className="h-6 px-3 rounded-[6px] text-sm bg-red-900 text-red-500"
           >
             {editing.rule_id ? "Delete Rule" : "Discard"}
@@ -251,6 +361,25 @@ export default function RulesPanel(props: Props) {
           </button>
         </div>
       )}
+
+      {confirmDelete && editing && (
+        <Dialog
+          title={`Delete “${editing.name}”?`}
+          message="The rule stops running. Values it has already set on files stay as they are."
+          onCancel={() => setConfirmDelete(false)}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton onClick={() => setConfirmDelete(false)} autoFocus>
+                Cancel
+              </DialogButton>
+              <DialogButton variant="destructive" onClick={() => void remove()}>
+                Delete
+              </DialogButton>
+            </>
+          }
+        />
+      )}
     </div>
   );
 }
@@ -258,6 +387,7 @@ export default function RulesPanel(props: Props) {
 // ── The list ─────────────────────────────────────────────────────────────────
 
 function RuleList({
+  width,
   rules,
   counts,
   selected,
@@ -268,6 +398,7 @@ function RuleList({
   onToggle,
   onReorder,
 }: {
+  width: number;
   rules: StoredRule[];
   counts: Map<string, number>;
   selected: string | null;
@@ -282,38 +413,36 @@ function RuleList({
   const listRef = useRef<HTMLDivElement>(null);
   const [drag, setDrag] = useState<{ id: string; target: number } | null>(null);
 
-  function startDrag(e: React.PointerEvent<HTMLElement>, id: string) {
+  function startDrag(e: React.MouseEvent<HTMLElement>, id: string) {
     if (e.button !== 0 || rules.length < 2) return;
     e.preventDefault();
     e.stopPropagation();
-    const handle = e.currentTarget;
-    handle.setPointerCapture(e.pointerId);
     const rows = [...(listRef.current?.querySelectorAll<HTMLElement>("[data-rule]") ?? [])];
     const heights = rows.map((r) => r.offsetHeight);
     const top = rows[0]?.getBoundingClientRect().top ?? 0;
     let target = rules.findIndex((r) => r.rule_id === id);
     setDrag({ id, target });
-    const onMove = (ev: PointerEvent) => {
+    const onMove = (ev: MouseEvent) => {
       target = dropIndexAt(heights, ev.clientY - top, 0);
       setDrag({ id, target });
     };
     const onUp = () => {
-      handle.removeEventListener("pointermove", onMove);
-      handle.removeEventListener("pointerup", onUp);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
       setDrag(null);
       const ids = rules.map((r) => r.rule_id);
       const order = moveColumnId(ids, id, target);
       if (order.some((x, i) => x !== ids[i])) void onReorder(order);
     };
-    handle.addEventListener("pointermove", onMove);
-    handle.addEventListener("pointerup", onUp);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
   }
 
   const from = drag ? rules.findIndex((r) => r.rule_id === drag.id) : -1;
   const line = drag && drag.target !== from && drag.target !== from + 1 ? drag.target : null;
 
   return (
-    <div ref={listRef} className="w-[230px] shrink-0 border-r border-neutral-700/60 overflow-y-auto py-2 px-2 flex flex-col gap-px">
+    <div ref={listRef} style={{ width }} className="shrink-0 border-r border-neutral-700/60 overflow-y-auto py-2 px-2 flex flex-col gap-px">
       {rules.length === 0 && !newSelected && <p className="px-2 py-1 text-neutral-500">No rules yet.</p>}
       {rules.map((rule, i) => (
         <div
@@ -329,7 +458,7 @@ function RuleList({
             <span className="absolute left-0 right-0 -bottom-px h-[2px] rounded-full bg-blue-500" />
           )}
           <span
-            onPointerDown={(e) => startDrag(e, rule.rule_id)}
+            onMouseDown={(e) => startDrag(e, rule.rule_id)}
             onClick={(e) => e.stopPropagation()}
             title="Drag to reorder (earlier rules win)"
             className="w-3 text-neutral-500 cursor-grab"
@@ -441,7 +570,7 @@ function RuleEditor({
         )}
       </section>
 
-      <ExamplePicker def={def} files={files} env={env} onChangeDef={onChangeDef} />
+      <ExamplePicker def={def} files={files} env={env} columns={columns} onChangeDef={onChangeDef} />
 
       {/* Then */}
       <section className="flex flex-col gap-2">
@@ -451,6 +580,7 @@ function RuleEditor({
             key={action.id}
             action={action}
             slots={slots}
+            columns={columns}
             properties={properties}
             valuesFor={valuesFor}
             onCreateProperty={onCreateProperty}
@@ -461,7 +591,7 @@ function RuleEditor({
         <AddButton onClick={() => onChangeDef({ actions: [...def.actions, newAction()] })}>Add Value to Set</AddButton>
       </section>
 
-      {plan && (def.actions.some((a) => a.property) ? <Preview plan={plan} /> : <PreviewHint />)}
+      {plan && (def.actions.some((a) => a.property) ? <Preview plan={plan} columns={columns} /> : <PreviewHint />)}
     </div>
   );
 }
@@ -476,16 +606,71 @@ const TYPE_CHOICES: { type: ValueType; label: string }[] = [
   { type: "array", label: "Multi-select" },
 ];
 
-/** A new property's likely type: from how its value is read (a date format, a number), else Select for typed-in values, Text otherwise. */
-function guessType(action: RuleAction): ValueType {
+/**
+ * A new property's likely type: from how its value is read (a date format, a
+ * number), from the part of a column it takes (a date → Date, every folder →
+ * Multi-select, one folder or a month's name → Select), Select for typed-in
+ * values, Text otherwise.
+ */
+function guessType(action: RuleAction, columns: FilterColumn[]): ValueType {
   if (action.format === "number") return "number";
   if (action.format) return "date";
+  if (action.mode === "column") {
+    const kind = columns.find((c) => c.id === action.value)?.kind;
+    if (kind === "date") return action.part === "date" || !action.part ? "date" : action.part === "year" || action.part === "month" ? "free_text" : "enum";
+    if (kind === "list") return action.part === "all" ? "array" : "enum";
+    if (kind === "number") return "number";
+    return "free_text";
+  }
   return action.mode === "fixed" ? "enum" : "free_text";
+}
+
+/** A new property's name from a "from property" action: the part taken (Year, Folder), or the column's own name. */
+function suggestedName(action: RuleAction, columns: FilterColumn[]): string {
+  const column = columns.find((c) => c.id === action.value);
+  if (!column) return "";
+  const byPart: Record<string, string> = { year: "Year", month: "Month", monthName: "Month", yearMonth: "Month", quarter: "Quarter", weekday: "Weekday" };
+  if (action.part && byPart[action.part]) return byPart[action.part];
+  if (action.value === "tags") return action.part === "all" ? "Folders" : "Folder";
+  return column.label;
+}
+
+const LIST_PARTS: [string, string][] = [
+  ["all", "all of them"],
+  ["first", "the first"],
+  ["n:2", "the 2nd"],
+  ["n:3", "the 3rd"],
+  ["last", "the last"],
+];
+// Source Tags are folders, top first
+const FOLDER_PARTS: [string, string][] = [
+  ["last", "the folder it's in"],
+  ["first", "the top folder"],
+  ["n:2", "the 2nd folder"],
+  ["n:3", "the 3rd folder"],
+  ["all", "every folder"],
+];
+const DATE_PARTS: [string, string][] = [
+  ["date", "the date"],
+  ["year", "the year"],
+  ["month", "the month (01–12)"],
+  ["monthName", "the month's name"],
+  ["yearMonth", "year and month"],
+  ["quarter", "the quarter"],
+  ["weekday", "the weekday"],
+];
+
+function partsFor(columnId: string, kind: string | undefined): [string, string][] {
+  if (columnId === "tags") return FOLDER_PARTS;
+  if (kind === "list") return LIST_PARTS;
+  if (kind === "date") return DATE_PARTS;
+  return [];
 }
 
 function ActionRow({
   action,
   slots,
+  columns,
   properties,
   valuesFor,
   onCreateProperty,
@@ -494,12 +679,14 @@ function ActionRow({
 }: {
   action: RuleAction;
   slots: string[];
+  columns: FilterColumn[];
   properties: { name: string; type: ValueType }[];
   valuesFor: (columnId: string) => string[];
   onCreateProperty: (name: string, type: ValueType) => Promise<boolean>;
   onChange: (patch: Partial<RuleAction>) => void;
   onRemove: () => void;
 }) {
+  const sourceKind = action.mode === "column" ? columns.find((c) => c.id === action.value)?.kind : undefined;
   /** Then set ▸ New Property…, while its name and type are being chosen. */
   const [creating, setCreating] = useState<{ name: string; type: ValueType; error?: string } | null>(null);
   async function create() {
@@ -525,8 +712,9 @@ function ActionRow({
           value={creating ? NEW_PROPERTY : action.property}
           onChange={(e) => {
             if (e.target.value === NEW_PROPERTY) {
-              // Named after the slot it takes, if any ({Date} → Date)
-              setCreating({ name: action.mode === "slot" ? action.value : "", type: guessType(action) });
+              // Named after what it takes: the slot ({Date} → Date), or the column's part (Year)
+              const partLabel = action.mode === "column" ? suggestedName(action, columns) : "";
+              setCreating({ name: action.mode === "slot" ? action.value : partLabel, type: guessType(action, columns) });
             } else {
               setCreating(null);
               onChange({ property: e.target.value });
@@ -550,10 +738,47 @@ function ActionRow({
         >
           <option value="fixed">to</option>
           <option value="slot">from pattern</option>
+          <option value="column">from property</option>
           <option value="formula">from formula</option>
         </select>
-        {action.mode === "slot" ? (
-          <select value={action.value} onChange={(e) => onChange({ value: e.target.value })} className={`${popoverSelect} flex-1 min-w-0`}>
+        {action.mode === "column" ? (
+          <>
+            <select
+              value={action.value}
+              onChange={(e) => {
+                const kind = columns.find((c) => c.id === e.target.value)?.kind;
+                onChange({ value: e.target.value, part: partsFor(e.target.value, kind)[0]?.[0] });
+              }}
+              className={`${popoverSelect} flex-1 min-w-0`}
+            >
+              <option value="">Choose a column…</option>
+              {columns.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+            {partsFor(action.value, sourceKind).length > 0 && (
+              <select
+                value={action.part ?? ""}
+                onChange={(e) => onChange({ part: e.target.value })}
+                className={`${popoverSelect} w-[140px]`}
+              >
+                {partsFor(action.value, sourceKind).map(([id, label]) => (
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            )}
+          </>
+        ) : action.mode === "slot" ? (
+          <select
+            value={action.value}
+            // A slot named after a date format ({YYMMDD}) is read as one
+            onChange={(e) => onChange({ value: e.target.value, ...(formatForSlot(e.target.value) ? { format: formatForSlot(e.target.value) } : {}) })}
+            className={`${popoverSelect} flex-1 min-w-0`}
+          >
             <option value="">{slots.length ? "Choose a slot…" : "Add a pattern first"}</option>
             {slots.map((s) => (
               <option key={s} value={s}>
@@ -580,7 +805,7 @@ function ActionRow({
             )}
           </>
         )}
-        {action.mode !== "fixed" && (
+        {(action.mode === "slot" || action.mode === "formula" || (action.mode === "column" && sourceKind === "text")) && (
           <select
             value={action.format ?? ""}
             onChange={(e) => onChange({ format: e.target.value })}
@@ -653,7 +878,8 @@ function ActionRow({
       {problem && <p className="pl-[254px] text-[11px] text-red-500">{problem}</p>}
       {action.mode === "formula" && !problem && (
         <p className="pl-[254px] text-[11px] text-neutral-500" title={Object.values(FORMULA_FUNCTIONS).map((f) => f.help).join("\n")}>
-          Names: name, filename, ext, path, folder, {"{Slot}"}, prop("Name"). Join with &. Hover for functions.
+          Names: name, filename, ext, path, folder, created, modified, kind, size, {"{Slot}"}, prop("Any Column"); folder(1) is the top
+          folder. Join with &. Hover for functions.
         </p>
       )}
     </div>
@@ -686,43 +912,79 @@ function ExamplePicker({
   def,
   files,
   env,
+  columns,
   onChangeDef,
 }: {
   def: RuleDefinition;
   files: FileRecord[];
   env: RuleEnv;
+  columns: FilterColumn[];
   onChangeDef: (patch: Partial<RuleDefinition>) => void;
 }) {
-  // Examples: files meeting the conditions other than the pattern
-  const candidates = useMemo(() => {
-    const others = def.conditions.filter((c) => !(c.column === "name" && c.op === "matches"));
-    return files
-      .filter((f) => {
-        const results = others.map((c) => matchesRule(env.valueOf(f, c.column), env.kindOf(c.column), c));
-        return others.length === 0 || (def.match === "any" ? results.some(Boolean) : results.every(Boolean));
-      })
-      .slice(0, 200);
-  }, [def.conditions, def.match, files, env]);
+  // Which column the example comes from: the name, a folder (Source Tags), the path, a property…
+  const source = def.example?.column ?? "name";
+  const sourceLabel = columns.find((c) => c.id === source)?.label ?? "Name";
+  const isList = columns.find((c) => c.id === source)?.kind === "list";
+  // On a list (Source Tags…): which of its items, such as the folder the file is in
+  const item = isList ? (def.example?.item ?? "any") : undefined;
+  const isPattern = (c: { column: string; op: string }) => c.column === source && c.op === "matches";
+
+  /** A file's texts to pick from in the source column: its name (without extension), the chosen folder(s), or the value. */
+  const textsOf = (f: FileRecord): string[] => {
+    if (source === "name") return [baseName(f.file_path)];
+    const v = env.valueOf(f, source);
+    if (Array.isArray(v)) return listItems(v.map(valueToText).filter(Boolean), item);
+    return [valueToText(v)].filter(Boolean);
+  };
+
+  // Examples: every distinct text from the files meeting the conditions other than this column's pattern
+  const { allExamples, fromFiles } = useMemo(() => {
+    const others = def.conditions.filter((c) => !isPattern(c));
+    const out: { text: string; label: string }[] = [];
+    const seen = new Set<string>();
+    let fromFiles = 0;
+    for (const f of files) {
+      const results = others.map((c) => matchesRule(env.valueOf(f, c.column), env.kindOf(c.column), c));
+      if (others.length > 0 && !(def.match === "any" ? results.some(Boolean) : results.every(Boolean))) continue;
+      fromFiles++;
+      for (const text of textsOf(f)) {
+        if (seen.has(text)) continue;
+        seen.add(text);
+        out.push({ text, label: source === "name" ? fileName(f.file_path) : `${text}  ·  ${fileName(f.file_path)}` });
+      }
+    }
+    out.sort((a, b) => a.text.localeCompare(b.text, undefined, { numeric: true }));
+    return { allExamples: out, fromFiles };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [def.conditions, def.match, files, env, source, item]);
+  // Typed into the search box: narrows the examples offered
+  const [find, setFind] = useState("");
+  const examples = useMemo(() => {
+    const q = find.trim().toLowerCase();
+    return (q ? allExamples.filter((x) => x.label.toLowerCase().includes(q)) : allExamples).slice(0, 500);
+  }, [allExamples, find]);
 
   const [open, setOpen] = useState(!!def.example);
-  const exampleName = def.example?.name ?? (candidates[0] ? baseName(candidates[0].file_path) : "");
+  const exampleName = def.example?.name || examples[0]?.text || "";
   const slots = def.example?.name === exampleName ? (def.example?.slots ?? []) : [];
   const [pending, setPending] = useState<{ start: number; end: number; name: string } | null>(null);
   const textRef = useRef<HTMLDivElement>(null);
 
   /** Rewrites the Name pattern from the picks; with none left, the pattern they made goes too. */
   function apply(name: string, next: ExampleSlot[]) {
-    const existing = def.conditions.find((c) => c.column === "name" && c.op === "matches");
+    const existing = def.conditions.find(isPattern);
     let conditions = def.conditions;
     if (next.length > 0) {
       const pattern = examplePattern(name, next);
+      // The pattern goes on the same folder the example came from
+      const onItem = item && item !== "any" ? { item } : { item: undefined };
       conditions = existing
-        ? def.conditions.map((c) => (c === existing ? { ...c, value: pattern } : c))
-        : [...def.conditions, { ...newRule("name", "text"), op: "matches" as const, value: pattern }];
+        ? def.conditions.map((c) => (c === existing ? { ...c, value: pattern, ...onItem } : c))
+        : [...def.conditions, { ...newRule(source, env.kindOf(source)), op: "matches" as const, value: pattern, ...onItem }];
     } else if (existing && existing.value === examplePattern(name, slots)) {
       conditions = def.conditions.filter((c) => c !== existing);
     }
-    onChangeDef({ conditions, example: { name, slots: next } });
+    onChangeDef({ conditions, example: { name, slots: next, column: source, item } });
   }
 
   /** The selection in the name, as character offsets (null if there's none there). */
@@ -774,11 +1036,11 @@ function ExamplePicker({
       <div>
         <button
           type="button"
-          disabled={candidates.length === 0}
+          disabled={files.length === 0}
           onClick={() => setOpen(true)}
           className="h-6 px-1.5 -ml-1.5 rounded-[6px] text-blue-400 hover:bg-neutral-700/40 disabled:text-neutral-500"
         >
-          Take a value from the name: pick it in an example…
+          Take a value from the name, a folder or another column: pick it in an example…
         </button>
       </div>
     );
@@ -799,23 +1061,70 @@ function ExamplePicker({
   if (pos < exampleName.length) segments.push({ text: exampleName.slice(pos) });
 
   return (
-    <section className="flex flex-col gap-2 rounded-lg border border-neutral-700/60 p-3">
-      <div className="flex items-center gap-2">
-        <p className={sectionTitle}>Pick from an example</p>
+    <section className="flex flex-col gap-2 rounded-lg border border-neutral-700/60 p-3 min-w-0">
+      <p className={sectionTitle}>Pick from an example</p>
+      <div className="flex flex-wrap items-center gap-2 min-w-0">
+        <select
+          value={source}
+          onChange={(e) => onChangeDef({ example: { name: "", slots: [], column: e.target.value } })}
+          title="The column to take the value from"
+          className={`${popoverSelect} w-[130px] shrink-0`}
+        >
+          {columns.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+        {isList && (
+          <select
+            value={item}
+            onChange={(e) => onChangeDef({ example: { name: "", slots: [], column: source, item: e.target.value } })}
+            title="Which of them to pick from"
+            className={`${popoverSelect} w-[150px] shrink-0`}
+          >
+            {itemChoices(source).map(([id, label]) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
+        )}
+        <input
+          value={find}
+          onChange={(e) => setFind(e.target.value)}
+          placeholder="Find an example…"
+          title="Narrow the examples to ones containing this text"
+          className={`${popoverField} w-[140px] shrink-0`}
+        />
         <select
           value={exampleName}
-          onChange={(e) => onChangeDef({ example: { name: e.target.value, slots: [] } })}
-          className={`${popoverSelect} ml-auto max-w-[280px]`}
+          onChange={(e) => onChangeDef({ example: { name: e.target.value, slots: [], column: source, item } })}
+          title="The example to pick from"
+          className={`${popoverSelect} flex-1 min-w-[160px]`}
         >
-          {!candidates.some((f) => baseName(f.file_path) === exampleName) && exampleName && <option value={exampleName}>{exampleName}</option>}
-          {candidates.map((f) => (
-            <option key={f.file_id} value={baseName(f.file_path)}>
-              {fileName(f.file_path)}
+          {!examples.some((x) => x.text === exampleName) && exampleName && <option value={exampleName}>{exampleName}</option>}
+          {examples.map((x) => (
+            <option key={x.text} value={x.text}>
+              {x.label}
             </option>
           ))}
         </select>
       </div>
-      <p className="text-neutral-500">Select the part of the name you want, then name it.</p>
+      <p className="text-neutral-500 text-xs">
+        {`${allExamples.length.toLocaleString()} different ${source === "tags" ? "folder names" : `${sourceLabel} values`} from the ${fromFiles.toLocaleString()} files meeting the other conditions${
+          find.trim() ? ` · ${examples.length.toLocaleString()} containing “${find.trim()}”` : ""
+        }${examples.length >= 500 ? " (first 500: type to narrow)" : ""}. Add a condition above to narrow them.`}
+      </p>
+      <p className="text-neutral-500">
+        {examples.length === 0
+          ? find.trim()
+            ? `No example contains “${find.trim()}”.`
+            : `No file has a ${sourceLabel} to pick from.`
+          : `Select the part of the ${source === "tags" ? "folder name" : sourceLabel} you want, then name it.${
+              isList && item === "any" ? " Any one that fits counts; choose a particular one to narrow it." : ""
+            }`}
+      </p>
       <div
         ref={textRef}
         onMouseDown={onMouseDown}
@@ -894,7 +1203,10 @@ function ExamplePicker({
 
 // ── Preview ──────────────────────────────────────────────────────────────────
 
+/** Preview rows shown at first, and added each time it's scrolled to the bottom. */
 const PREVIEW_ROWS = 100;
+const PREVIEW_COLUMNS = ["File", "Read from", "Picked out", "Result"];
+const PREVIEW_WIDTHS = [220, 240, 200, 300];
 
 function show(v: unknown): string {
   if (v == null || v === "" || (Array.isArray(v) && v.length === 0)) return "empty";
@@ -911,12 +1223,50 @@ function PreviewHint() {
   );
 }
 
-function Preview({ plan }: { plan: RulePlan }) {
+type PreviewFilter = "all" | PreviewStatus;
+
+/**
+ * What the rule would do, file by file: what it read (the folder or name a
+ * pattern fitted, a column it copies), what its patterns picked out, and the
+ * result. Narrow it to one outcome to check those files.
+ */
+function Preview({ plan, columns }: { plan: RulePlan; columns: FilterColumn[] }) {
   const { counts } = plan;
+  const [only, setOnly] = useState<PreviewFilter>("all");
+  const [limit, setLimit] = useState(PREVIEW_ROWS);
+  const [widths, setWidths] = useState<number[]>(() => {
+    const saved = loadSize<number[]>("rules-preview-columns", PREVIEW_WIDTHS);
+    return Array.isArray(saved) && saved.length === PREVIEW_WIDTHS.length ? saved : PREVIEW_WIDTHS;
+  });
   const order = { change: 0, nomatch: 1, edited: 2, set: 3 } as const;
-  const rows = [...plan.rows].sort((a, b) => order[a.status] - order[b.status]).slice(0, PREVIEW_ROWS);
+  const shown = plan.rows.filter((r) => only === "all" || r.status === only);
+  const rows = [...shown].sort((a, b) => order[a.status] - order[b.status]).slice(0, limit);
+  // Scrolling to the bottom brings in the next rows
+  const endRef = useRef<HTMLDivElement>(null);
+  const more = shown.length > limit;
+  useEffect(() => {
+    const el = endRef.current;
+    if (!el || !more) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) setLimit((l) => l + PREVIEW_ROWS);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [more, rows.length]);
+  const labelOf = (id: string) => columns.find((c) => c.id === id)?.label ?? id;
+  const tabs: [PreviewFilter, string, number][] = [
+    ["all", "All", plan.rows.length],
+    ["change", "Will change", counts.change],
+    ["nomatch", "No match", counts.nomatch],
+    ["set", "Already set", counts.set],
+    ["edited", "Changed by hand", counts.edited],
+  ];
+  // Columns are as wide as dragged; the table scrolls sideways when they don't fit
+  const gridStyle = { gridTemplateColumns: widths.map((w) => `${w}px`).join(" ") };
+  const grid = "grid gap-x-3";
+  const total = widths.reduce((a, b) => a + b, 0) + 12 * (widths.length - 1) + 24;
   return (
-    <section className="flex flex-col gap-2">
+    <section className="flex flex-col gap-2 min-w-0">
       <p className={sectionTitle}>Preview</p>
       <p className="text-neutral-300">
         {counts.match.toLocaleString()} {counts.match === 1 ? "file matches" : "files match"} · {counts.change.toLocaleString()} will change ·{" "}
@@ -924,29 +1274,104 @@ function Preview({ plan }: { plan: RulePlan }) {
         {counts.edited > 0 && ` · ${counts.edited.toLocaleString()} changed by hand`}
         {counts.nomatch > 0 && ` · ${counts.nomatch.toLocaleString()} no match`}
       </p>
+      <div className="flex flex-wrap gap-1">
+        {tabs
+          .filter(([id, , n]) => id === "all" || n > 0)
+          .map(([id, label, n]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => {
+                setOnly(id);
+                setLimit(PREVIEW_ROWS);
+              }}
+              className={`h-6 px-2 rounded-[6px] text-xs ${only === id ? "bg-neutral-700 text-neutral-100" : "text-neutral-400 hover:bg-neutral-800"}`}
+            >
+              {label} <span className="tabular-nums opacity-70">{n.toLocaleString()}</span>
+            </button>
+          ))}
+      </div>
       {rows.length > 0 && (
-        <div className="rounded-lg border border-neutral-700/60 overflow-hidden">
-          {rows.map((row, i) => (
-            <div key={row.file.file_id} className={`flex items-baseline gap-3 px-3 py-1 ${i % 2 ? "bg-neutral-850" : ""}`}>
-              <span className="w-[240px] shrink-0 truncate" title={fileName(row.file.file_path)}>
-                {fileName(row.file.file_path)}
+        <div className="rounded-lg border border-neutral-700/60 overflow-x-auto min-w-0">
+          <div style={{ minWidth: total }}>
+          <div style={gridStyle} className={`${grid} px-3 py-1 text-xs text-neutral-500 border-b border-neutral-700/60 sticky top-0 bg-neutral-900`}>
+            {PREVIEW_COLUMNS.map((label, i) => (
+              // Only the label is clipped: the grip sits on the boundary, just outside the cell
+              <span key={label} className="relative min-w-0">
+                <span className="block truncate">{label}</span>
+                {/* Drag a header's right edge to resize its column */}
+                <span
+                  onMouseDown={(e) =>
+                    dragWidth(e, widths[i], 80, 900, 1, (w, done) => {
+                      setWidths((ws) => {
+                        const next = ws.map((x, j) => (j === i ? w : x));
+                        if (done) saveSize("rules-preview-columns", next);
+                        return next;
+                      });
+                    })
+                  }
+                  onDoubleClick={() =>
+                    setWidths((ws) => {
+                      const next = ws.map((x, j) => (j === i ? PREVIEW_WIDTHS[i] : x));
+                      saveSize("rules-preview-columns", next);
+                      return next;
+                    })
+                  }
+                  title="Drag to resize; double-click to reset"
+                  className="group/grip absolute -right-[11px] -top-1 -bottom-1 w-[10px] flex justify-center cursor-col-resize z-10"
+                >
+                  <span className="w-px h-full bg-neutral-700/60 group-hover/grip:bg-blue-500 group-hover/grip:w-[2px]" />
+                </span>
               </span>
-              <span className="flex-1 min-w-0 truncate text-neutral-400">
-                {row.status === "change" &&
-                  row.changes.map((c, j) => (
-                    <span key={j} className="mr-3">
-                      <span className="text-neutral-300">{c.property}</span> {show(c.from)} → <span className="text-blue-400">{show(c.to)}</span>
+            ))}
+          </div>
+          {rows.map((row, i) => {
+            const read = row.sources.map((x) => `${labelOf(x.column)}: ${x.text || "empty"}`).join("  ·  ");
+            const picked = Object.entries(row.slots)
+              .map(([k, v]) => `${k} ${v}`)
+              .join("  ·  ");
+            const result =
+              row.status === "change"
+                ? row.changes.map((c) => `${c.property}${show(c.from) === "empty" ? "" : ` ${show(c.from)}`} → ${show(c.to)}`).join("  ·  ")
+                : row.status === "set"
+                  ? "already set"
+                  : row.status === "edited"
+                    ? "changed by hand: left as it is"
+                    : `no match: ${row.problems.join("; ")}`;
+            return (
+              <div key={row.file.file_id} style={gridStyle} className={`${grid} items-baseline px-3 py-1 ${i % 2 ? "bg-neutral-850" : ""}`}>
+                <span className="truncate" title={row.file.relative_path ?? fileName(row.file.file_path)}>
+                  {fileName(row.file.file_path)}
+                </span>
+                <span className="truncate text-neutral-400" title={read}>
+                  {row.sources.map((x, j) => (
+                    <span key={j} className="mr-2">
+                      <span className="text-neutral-500">{labelOf(x.column)}</span> {x.text || "empty"}
                     </span>
                   ))}
-                {row.status === "set" && "already set"}
-                {row.status === "edited" && "changed by hand: left as it is"}
-                {row.status === "nomatch" && <span className="text-amber-500">no match: {row.problems.join("; ")}</span>}
-              </span>
+                </span>
+                <span className="truncate text-neutral-300 font-mono text-[12px]" title={picked}>
+                  {Object.entries(row.slots).map(([k, v]) => (
+                    <span key={k} className="mr-2">
+                      <span className="text-neutral-500">{k}</span> {v}
+                    </span>
+                  ))}
+                </span>
+                <span
+                  className={`truncate ${row.status === "change" ? "text-blue-400" : row.status === "nomatch" ? "text-amber-500" : "text-neutral-400"}`}
+                  title={result}
+                >
+                  {result}
+                </span>
+              </div>
+            );
+          })}
+          {more && (
+            <div ref={endRef} className="px-3 py-1 text-neutral-500">
+              Showing {rows.length.toLocaleString()} of {shown.length.toLocaleString()}: scroll for more
             </div>
-          ))}
-          {plan.rows.length > PREVIEW_ROWS && (
-            <p className="px-3 py-1 text-neutral-500">and {(plan.rows.length - PREVIEW_ROWS).toLocaleString()} more</p>
           )}
+          </div>
         </div>
       )}
     </section>

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { definitionFromFilter, parseDefinition, planRule, planRules, ruleSlots, writeKeys, type RuleDefinition, type RuleEnv } from "./rules";
+import { formatForSlot, columnByName, columnPart, definitionFromFilter, parseDefinition, planRule, planRules, ruleSlots, writeKeys, type RuleDefinition, type RuleEnv } from "./rules";
 import { PROP_PREFIX, nativeValue, NATIVE_KINDS, KIND_BY_TYPE, metaValue } from "./fileColumns";
 import type { FileRecord, ValueType } from "../types";
 
@@ -140,5 +140,149 @@ describe("definitions", () => {
     expect(ruleSlots(statements)).toEqual(["Date", "Person"]);
     expect(parseDefinition("{oops").conditions).toEqual([]);
     expect(parseDefinition(JSON.stringify({ actions: [{ property: "X" }] })).actions[0]).toMatchObject({ property: "X", mode: "fixed" });
+  });
+});
+
+describe("values from other columns", () => {
+  const f = (id: string, path: string, extra: Partial<FileRecord> = {}, metadata: Record<string, unknown> = {}) =>
+    ({ ...file(id, path, metadata), ...extra }) as FileRecord;
+  const withTags = (id: string, path: string, created: string, metadata: Record<string, unknown> = {}) =>
+    f(id, path, { tags: path.split("/").slice(0, -1), timestamp: created } as Partial<FileRecord>, metadata);
+
+  it("matches a pattern against any one of a list's items", () => {
+    const def: RuleDefinition = {
+      match: "all",
+      conditions: [{ id: "c", column: "tags", op: "matches", value: "{Year:4} {Client}" }],
+      actions: [{ id: "a", property: "Person", mode: "slot", value: "Client" }],
+    };
+    const plan = planRule("r", def, [withTags("1", "Work/2024 Acme/brief.pdf", "2024-05-01"), withTags("2", "Home/x.pdf", "2024-05-01")], env());
+    expect(plan.edits).toEqual([{ file_id: "1", key: "Person", value: "Acme" }]);
+  });
+
+  it("copies another column's value, or a part of it", () => {
+    const files = [withTags("1", "Clients/Acme/2024/brief.pdf", "2025-03-01T09:30:00Z")];
+    const year: RuleDefinition = {
+      match: "all",
+      conditions: [],
+      actions: [
+        { id: "a", property: "Code", mode: "column", value: "created", part: "year" },
+        { id: "b", property: "Person", mode: "column", value: "tags", part: "n:2" },
+        { id: "c", property: "Tags", mode: "column", value: "tags", part: "all" },
+        { id: "d", property: "Date", mode: "column", value: "created", part: "date" },
+      ],
+    };
+    expect(planRule("r", year, files, env()).edits).toEqual([
+      { file_id: "1", key: "Code", value: "2025" },
+      { file_id: "1", key: "Person", value: "Acme" },
+      { file_id: "1", key: "Tags", value: ["Clients", "Acme", "2024"] },
+      { file_id: "1", key: "Date", value: "2025-03-01" },
+    ]);
+  });
+
+  it("picks parts of lists and dates", () => {
+    expect(columnPart(["a", "b", "c"], "last")).toBe("c");
+    expect(columnPart(["a", "b", "c"], "first")).toBe("a");
+    expect(columnPart(["a"], "n:3")).toBeNull();
+    expect(columnPart("2025-03-01", "yearMonth")).toBe("2025-03");
+    expect(columnPart("2025-03-01", "quarter")).toBe("Q1");
+    expect(columnPart("2025-03-01", "monthName")).toBe("March");
+    expect(columnPart("Acme", "year")).toBe("Acme");
+    expect(columnPart(null, "year")).toBeNull();
+  });
+
+  it("finds columns by their header names", () => {
+    expect(columnByName("Created")).toBe("created");
+    expect(columnByName("source tags")).toBe("tags");
+    expect(columnByName("Client")).toBe("prop:Client");
+  });
+
+  it("lets conditions on type and date pick the files", () => {
+    const def: RuleDefinition = {
+      match: "all",
+      conditions: [
+        { id: "k", column: "type", op: "has", value: "PDF Documents" },
+        { id: "d1", column: "created", op: "after", value: "2024-12-31" },
+        { id: "d2", column: "created", op: "before", value: "2026-01-01" },
+      ],
+      actions: [{ id: "a", property: "Code", mode: "formula", value: 'kind & "-" & year(created)' }],
+    };
+    const files = [
+      withTags("1", "a.pdf", "2025-06-01"),
+      withTags("2", "b.pdf", "2023-06-01"),
+      withTags("3", "c.jpg", "2025-06-01"),
+    ];
+    expect(planRule("r", def, files, env()).edits).toEqual([{ file_id: "1", key: "Code", value: "PDF Documents-2025" }]);
+  });
+});
+
+describe("patterns on one folder", () => {
+  const withTags = (id: string, path: string) =>
+    ({ ...file(id, path), tags: path.split("/").slice(0, -1) }) as unknown as FileRecord;
+  const def = (item: string): RuleDefinition => ({
+    match: "all",
+    conditions: [{ id: "c", column: "tags", op: "matches", value: "{Year:4} {Client}", item }],
+    actions: [{ id: "a", property: "Person", mode: "slot", value: "Client" }],
+  });
+  // The top folder fits the pattern; the folder the file is in doesn't
+  const files = [withTags("1", "2024 Acme/Invoices/x.pdf"), withTags("2", "Work/2023 Globex/y.pdf")];
+
+  it("tries only the chosen folder", () => {
+    expect(planRule("r", def("first"), files, env()).edits).toEqual([{ file_id: "1", key: "Person", value: "Acme" }]);
+    expect(planRule("r", def("last"), files, env()).edits).toEqual([{ file_id: "2", key: "Person", value: "Globex" }]);
+    expect(planRule("r", def("n:2"), files, env()).edits).toEqual([{ file_id: "2", key: "Person", value: "Globex" }]);
+    expect(planRule("r", def("any"), files, env()).edits).toHaveLength(2);
+  });
+});
+
+describe("dates from slots", () => {
+  const def = (format?: string): RuleDefinition => ({
+    match: "all",
+    conditions: [{ id: "c", column: "name", op: "matches", value: "{Test:4}-{YYMMDD:6}" }],
+    actions: [{ id: "a", property: "Date", mode: "slot", value: "YYMMDD", format }],
+  });
+
+  it("won't write text that isn't a date into a Date property", () => {
+    const plan = planRule("r", def(), [file("1", "0014-250701.jpg")], env());
+    expect(plan.edits).toEqual([]);
+    expect(plan.rows[0].problems[0]).toMatch(/isn't a date/);
+  });
+
+  it("reads it once told how", () => {
+    expect(planRule("r", def("YYMMDD"), [file("1", "0014-250701.jpg")], env()).edits).toEqual([
+      { file_id: "1", key: "Date", value: "2025-07-01" },
+    ]);
+  });
+
+  it("takes the format from a slot named after one", () => {
+    expect(formatForSlot("YYMMDD")).toBe("YYMMDD");
+    expect(formatForSlot("yyyymmdd")).toBe("YYYYMMDD");
+    expect(formatForSlot("Test")).toBe("");
+  });
+});
+
+describe("what the preview shows", () => {
+  it("records the folder a pattern fitted and the values it picked", () => {
+    const f = { ...file("1", "06 Photos/0014-250701/20250701_161305.jpg"), tags: ["06 Photos", "0014-250701"] } as unknown as FileRecord;
+    const def: RuleDefinition = {
+      match: "all",
+      conditions: [{ id: "c", column: "tags", op: "matches", value: "{Test:4}-{YYMMDD:6}" }],
+      actions: [{ id: "a", property: "Date", mode: "slot", value: "YYMMDD", format: "YYMMDD" }],
+    };
+    const row = planRule("r", def, [f], env()).rows[0];
+    expect(row.sources).toEqual([{ column: "tags", text: "0014-250701" }]);
+    expect(row.slots).toEqual({ Test: "0014", YYMMDD: "250701" });
+    expect(row.changes).toEqual([{ property: "Date", from: null, to: "2025-07-01" }]);
+  });
+
+  it("shows what was there when a pattern doesn't fit", () => {
+    const f = { ...file("2", "06 Photos/misc/x.jpg"), tags: ["06 Photos", "misc"] } as unknown as FileRecord;
+    const def: RuleDefinition = {
+      match: "all",
+      conditions: [{ id: "c", column: "tags", op: "matches", value: "{Test:4}-{YYMMDD:6}", item: "last" }],
+      actions: [{ id: "a", property: "Date", mode: "slot", value: "YYMMDD", format: "YYMMDD" }],
+    };
+    const row = planRule("r", def, [f], env()).rows[0];
+    expect(row.status).toBe("nomatch");
+    expect(row.sources).toEqual([{ column: "tags", text: "misc" }]);
   });
 });

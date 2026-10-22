@@ -26,6 +26,24 @@ export function baseName(filePath: string): string {
   return dot > 0 ? name.slice(0, dot) : name;
 }
 
+/** Native columns by the names their headers show (for prop("Created") and column pickers). */
+export const NATIVE_LABELS: Record<string, string> = {
+  name: "Name",
+  ext: "Ext",
+  path: "Path",
+  type: "Kind",
+  size: "Size",
+  created: "Created",
+  modified: "Modified",
+  tags: "Source Tags",
+};
+
+/** A file's folders, top first ("Clients/Acme/2024/x.pdf" → Clients, Acme, 2024). */
+export function folderNames(file: FileRecord): string[] {
+  const parts = (file.relative_path ?? "").replace(/\\/g, "/").split("/").filter(Boolean);
+  return parts.slice(0, -1);
+}
+
 export const NATIVE_KINDS: Record<string, ColumnKind> = {
   name: "text",
   ext: "list",

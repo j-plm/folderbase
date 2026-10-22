@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import type React from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useScrollAheadVirtualizer } from "../../../hooks/useScrollAheadVirtualizer";
 import { FileIcon } from "../../../lib/fileIcons";
 import CloudBadge from "./CloudBadge";
 import { useSelection } from "../../../hooks/useSelection";
@@ -96,7 +96,7 @@ export default function FileTable({ files, storageKey }: Props) {
     [items]
   );
   // Only the rows on screen are rendered, so thousands of files stay quick
-  const virtualizer = useVirtualizer({
+  const virtualizer = useScrollAheadVirtualizer({
     count: items.length,
     getScrollElement: () => layout.container,
     estimateSize: (i) => (items[i].kind === "heading" ? GROUP_HEADING_HEIGHT : ROW_HEIGHT),

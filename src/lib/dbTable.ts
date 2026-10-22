@@ -33,6 +33,19 @@ export interface FilterRule {
   column: string;
   op: FilterOp;
   value: string;
+  /**
+   * For "matches pattern" on a list (Source Tags, a Multi-select): which item
+   * is tried. "first", "last" or "n:2" (the 2nd); missing or "any": any item.
+   * For Source Tags, top folder first, so "last" is the folder the file is in.
+   */
+  item?: string;
+}
+
+/** The items of a list a rule looks at: one of them ("first", "last", "n:2"), or all ("any"). */
+export function listItems(items: string[], item: string | undefined): string[] {
+  if (!item || item === "any" || item === "all") return items;
+  const at = item === "first" ? 0 : item === "last" ? items.length - 1 : Number(item.slice(2)) - 1;
+  return at >= 0 && at < items.length ? [items[at]] : [];
 }
 
 export type FilterMatch = "all" | "any";
@@ -56,6 +69,7 @@ export const FILTER_OPS: Record<ColumnKind, { op: FilterOp; label: string }[]> =
     { op: "lt", label: "<" },
     { op: "gte", label: "≥" },
     { op: "lte", label: "≤" },
+    { op: "matches", label: "matches pattern" },
     { op: "empty", label: "is empty" },
     { op: "not_empty", label: "is not empty" },
   ],
@@ -63,12 +77,14 @@ export const FILTER_OPS: Record<ColumnKind, { op: FilterOp; label: string }[]> =
     { op: "is", label: "is" },
     { op: "before", label: "is before" },
     { op: "after", label: "is after" },
+    { op: "matches", label: "matches pattern" },
     { op: "empty", label: "is empty" },
     { op: "not_empty", label: "is not empty" },
   ],
   list: [
     { op: "has", label: "has" },
     { op: "has_not", label: "does not have" },
+    { op: "matches", label: "matches pattern" },
     { op: "empty", label: "is empty" },
     { op: "not_empty", label: "is not empty" },
   ],
@@ -95,6 +111,11 @@ export function matchesRule(value: unknown, kind: ColumnKind, rule: FilterRule):
   if (rule.op === "not_empty") return !isEmpty(value);
   const target = rule.value.trim();
   if (target === "") return true;
+  // A pattern can be tried on any column: on a list, any one of its items fitting is enough
+  if (rule.op === "matches") {
+    const pattern = patternFor(target);
+    return pattern != null && patternSlots(pattern, value, rule.item) != null;
+  }
 
   switch (kind) {
     case "number": {
@@ -135,11 +156,6 @@ export function matchesRule(value: unknown, kind: ColumnKind, rule: FilterRule):
         case "contains": return a.includes(b);
         case "starts_with": return a.startsWith(b);
         case "ends_with": return a.endsWith(b);
-        case "matches": {
-          const pattern = patternFor(target);
-          // A pattern with a mistake in it matches nothing (the editor shows the mistake)
-          return pattern != null && matchPattern(pattern, Array.isArray(value) ? value.join(", ") : String(value ?? "")) != null;
-        }
         case "not_contains": return !a.includes(b);
         case "is": return a === b;
         case "is_not": return a !== b;
@@ -147,6 +163,31 @@ export function matchesRule(value: unknown, kind: ColumnKind, rule: FilterRule):
       }
     }
   }
+}
+
+/**
+ * The slots a column's value fills: its text, or for a list (Source Tags, a
+ * Multi-select) the first item that fits. Null if nothing fits.
+ */
+export function patternSlots(pattern: CompiledPattern, value: unknown, item?: string): Record<string, string> | null {
+  return patternMatch(pattern, value, item)?.slots ?? null;
+}
+
+/** As patternSlots, with the text that fitted (which folder, for a list). */
+export function patternMatch(
+  pattern: CompiledPattern,
+  value: unknown,
+  item?: string
+): { text: string; slots: Record<string, string> } | null {
+  const all = (Array.isArray(value) ? value : value == null || value === "" ? [] : [value]).map((v) =>
+    typeof v === "string" ? v : String(v)
+  );
+  // A list can be narrowed to one item (the folder the file is in, the top folder…)
+  for (const text of Array.isArray(value) ? listItems(all, item) : all) {
+    const found = matchPattern(pattern, text);
+    if (found) return { text, slots: found };
+  }
+  return null;
 }
 
 const patternCache = new Map<string, CompiledPattern | null>();

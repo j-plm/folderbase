@@ -13,6 +13,11 @@ export type CommitMove = "down" | "up" | "right" | "left" | "none";
 const MAX_PILLS = 4;
 
 /** A custom property value as shown in its cell: list values as pills, the rest formatted. */
+/** Layout of a value pill; row heights measure pills with it, so they wrap where the page does. */
+export const PILL_CLASS = "inline-flex items-center gap-0.5 h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0";
+/** The "›" a pill carries when its value opens into a scoped property. */
+export const PILL_MARK_CLASS = "opacity-60";
+
 export function PropertyValueView({
   value,
   type,
@@ -56,12 +61,12 @@ export function PropertyValueView({
               onMouseDown={onPillMouseDown && !isImplied ? (e) => onPillMouseDown(e, item) : undefined}
               onContextMenu={onPillContextMenu && ((e) => onPillContextMenu(e, item))}
               title={notes.length > 0 ? notes.join(" · ") : undefined}
-              className={`inline-flex items-center gap-0.5 h-4 px-1.5 rounded text-[11px] leading-none whitespace-nowrap shrink-0 bg-neutral-500/15 data-[pressed]:bg-blue-500 data-[pressed]:text-white data-[pressed]:opacity-100 ${
+              className={`${PILL_CLASS} bg-neutral-500/15 data-[pressed]:bg-blue-500 data-[pressed]:text-white data-[pressed]:opacity-100 ${
                 isImplied ? "opacity-40" : ""
               }`}
             >
               {item}
-              {into.length > 0 && <span className="opacity-60">›</span>}
+              {into.length > 0 && <span className={PILL_MARK_CLASS}>›</span>}
             </span>
           );
         })}

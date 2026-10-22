@@ -7,8 +7,13 @@ const ctx: FormulaContext = {
   ext: "docx",
   path: "Clients/Acme/Q3_AB12_final.docx",
   folder: "Acme",
+  folders: ["Clients", "Acme"],
+  created: "2025-03-01T09:30:00Z",
+  modified: "2026-10-18",
+  kind: "Documents",
+  size: "48211",
   slots: { Code: "ab12", Date: "250301" },
-  prop: (n) => ({ Client: "Acme" })[n] ?? "",
+  prop: (n) => ({ Client: "Acme", "Source Tags": "Clients, Acme" })[n] ?? "",
 };
 const run = (f: string) => runFormula(f, ctx);
 
@@ -50,5 +55,27 @@ describe("runFormula", () => {
     expect(formulaProblem('upper("x"')).toMatch(/Expected/);
     expect(formulaProblem('"open')).toMatch(/isn't closed/);
     expect(formulaProblem("upper(name)")).toBeNull();
+  });
+});
+
+describe("dates, folders and other columns", () => {
+  it("reads parts of dates, including timestamps", () => {
+    expect(run("year(created)")).toBe("2025");
+    expect(run("month(created)")).toBe("03");
+    expect(run("day(created)")).toBe("01");
+    expect(run("quarter(modified)")).toBe("Q4");
+    expect(run('formatDate(created, "MMM YYYY")')).toBe(new Date(2025, 2, 1).toLocaleDateString(undefined, { month: "short" }) + " 2025");
+    expect(() => run("year(kind)")).toThrow(/isn't a date/);
+  });
+
+  it("picks folders from the top or the bottom", () => {
+    expect(run("folder(1)")).toBe("Clients");
+    expect(run("folder(-1)")).toBe("Acme");
+    expect(run("folder(5)")).toBe("");
+  });
+
+  it("reads native columns by name", () => {
+    expect(run('kind & " · " & prop("Source Tags")')).toBe("Documents · Clients, Acme");
+    expect(run("size")).toBe("48211");
   });
 });

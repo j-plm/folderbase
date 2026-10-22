@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useScrollAheadVirtualizer } from "../../hooks/useScrollAheadVirtualizer";
 import Thumbnail from "./shared/Thumbnail";
 import CloudBadge from "./shared/CloudBadge";
 import { useSelection } from "../../hooks/useSelection";
@@ -87,7 +87,7 @@ export default function TilesView({ files }: Props) {
     return map;
   }, [items]);
 
-  const virtualizer = useVirtualizer({
+  const virtualizer = useScrollAheadVirtualizer({
     count: items.length,
     getScrollElement: () => containerRef.current,
     estimateSize: (i) => {

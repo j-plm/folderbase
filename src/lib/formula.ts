@@ -1,4 +1,5 @@
 import { parseDateAs } from "./patterns";
+import { dateKey, formatDatePattern } from "./propertyTypes";
 
 // Rule formulas: Notion-style functions for values a pattern can't describe.
 // A formula only decides what a rule writes; nothing stays formula-driven.
@@ -7,7 +8,8 @@ import { parseDateAs } from "./patterns";
 //   match(name, "(\d{4})")   date({Date}, "YYMMDD")   prop("Client") & "-" & {Code}
 //
 // Text is joined with &. Names: name (without extension), filename, ext, path,
-// folder. {Slot} is a value captured by the rule's pattern.
+// folder (the one the file is in), created, modified, kind, size. {Slot} is a
+// value captured by the rule's pattern; prop("…") reads any column by its name.
 
 export interface FormulaContext {
   name: string;
@@ -15,7 +17,14 @@ export interface FormulaContext {
   ext: string;
   path: string;
   folder: string;
+  /** The file's folders, top first (for folder(n)). */
+  folders: string[];
+  created: string;
+  modified: string;
+  kind: string;
+  size: string;
   slots: Record<string, string>;
+  /** Any column's value by its header name: a property, or Created, Kind, Source Tags… */
   prop: (name: string) => string;
 }
 
@@ -145,10 +154,24 @@ export const FORMULA_FUNCTIONS: Record<string, { args: [number, number]; help: s
   lower: { args: [1, 1], help: "lower(text)" },
   trim: { args: [1, 1], help: "trim(text): without spaces at either end" },
   date: { args: [2, 2], help: "date(text, \"YYMMDD\"): the text read as a date" },
-  prop: { args: [1, 1], help: "prop(\"Client\"): a property's value on the file" },
+  prop: { args: [1, 1], help: "prop(\"Client\"): any column's value on the file (a property, or Created, Kind, Source Tags…)" },
+  folder: { args: [1, 1], help: "folder(1): the top folder; folder(-1): the folder the file is in" },
+  year: { args: [1, 1], help: "year(created): the year of a date" },
+  month: { args: [1, 1], help: "month(created): the month of a date, 01–12" },
+  day: { args: [1, 1], help: "day(created): the day of a date, 01–31" },
+  quarter: { args: [1, 1], help: "quarter(created): Q1–Q4" },
+  formatdate: { args: [2, 2], help: "formatDate(created, \"MMM YYYY\"): a date written out (YYYY YY MMMM MMM MM M DD D dddd ddd)" },
 };
 
-const NAMES = ["name", "filename", "ext", "path", "folder"] as const;
+const NAMES = ["name", "filename", "ext", "path", "folder", "created", "modified", "kind", "size"] as const;
+
+/** A date in text (ISO, or with a time) as [year, month, day], or a FormulaError. */
+function dateParts(text: string): [number, number, number] {
+  const key = dateKey(text);
+  if (!key) throw new FormulaError(`“${text}” isn't a date`);
+  const [y, m, d] = key.split("-").map(Number);
+  return [y, m, d];
+}
 
 function regexOf(pattern: string): RegExp {
   try {
@@ -227,6 +250,23 @@ function evaluate(node: Node, ctx: FormulaContext): string {
           return parseDateAs(a[0], a[1]) ?? "";
         case "prop":
           return ctx.prop(a[0]);
+        case "folder": {
+          const n = toInt(a[0], "The folder's position");
+          const list = ctx.folders;
+          return (n > 0 ? list[n - 1] : n < 0 ? list[list.length + n] : undefined) ?? "";
+        }
+        case "year":
+          return String(dateParts(a[0])[0]);
+        case "month":
+          return String(dateParts(a[0])[1]).padStart(2, "0");
+        case "day":
+          return String(dateParts(a[0])[2]).padStart(2, "0");
+        case "quarter":
+          return `Q${Math.ceil(dateParts(a[0])[1] / 3)}`;
+        case "formatdate": {
+          const [y, m, d] = dateParts(a[0]);
+          return formatDatePattern(new Date(y, m - 1, d), a[1]);
+        }
       }
       return "";
     }

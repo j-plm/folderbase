@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useVirtualizer } from "@tanstack/react-virtual";
+import { useScrollAheadVirtualizer } from "../../../hooks/useScrollAheadVirtualizer";
 import { openPaths } from "../../../lib/commands";
 import { hasPrimaryModifier, isOpenShortcut, isToggleSelect } from "../../../lib/platform";
 import {
@@ -328,7 +328,7 @@ function ColumnList({
     [groups]
   );
   const sizeOf = (item: ColumnItem) => (item.kind === "heading" ? HEADING_HEIGHT + (item.first ? 0 : GROUP_GAP) : ROW_HEIGHT);
-  const virtualizer = useVirtualizer({
+  const virtualizer = useScrollAheadVirtualizer({
     count: items.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: (i) => sizeOf(items[i]),
