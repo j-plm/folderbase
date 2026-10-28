@@ -73,6 +73,25 @@ describe("parseDateAs", () => {
     expect(parseDateAs("20250301", "YYYYMMDD", now)).toBe("2025-03-01");
   });
 
+  it("reads a time, mm after the hour being the minutes", () => {
+    expect(parseDateAs("20240301_101522", "YYYYMMDD_HHmmss", now)).toBe("2024-03-01T10:15:22");
+    expect(parseDateAs("2024-03-01 10.15.22", "YYYY-MM-DD HH.mm.ss", now)).toBe("2024-03-01T10:15:22");
+    expect(parseDateAs("202403011015", "YYYYMMDDHHmm", now)).toBe("2024-03-01T10:15:00");
+    expect(parseDateAs("20240301", "yyyymmdd", now)).toBe("2024-03-01");
+    expect(parseDateAs("20240301_251522", "YYYYMMDD_HHmmss", now)).toBeNull();
+    expect(parseDateAs("20240301_106022", "YYYYMMDD_HHmmss", now)).toBeNull();
+  });
+
+  it("reads past milliseconds, and reads a UTC time as local time", () => {
+    expect(parseDateAs("20250610_094446600", "YYYYMMDD_HHmmssSSS", now)).toBe("2025-06-10T09:44:46");
+    const local = new Date(Date.UTC(2025, 5, 10, 9, 44, 46));
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const expected = `${local.getFullYear()}-${pad(local.getMonth() + 1)}-${pad(local.getDate())}T${pad(local.getHours())}:${pad(local.getMinutes())}:${pad(local.getSeconds())}`;
+    expect(parseDateAs("20250610_094446600", "YYYYMMDD_HHmmssSSS (UTC)", now)).toBe(expected);
+    expect(parseDateAs("20250610_094446600", "YYYYMMDD_HHmmssSSS UTC", now)).toBe(expected);
+    expect(parseDateAs("20250610_09444660", "YYYYMMDD_HHmmssSSS (UTC)", now)).toBeNull();
+  });
+
   it("puts two-digit years in the right century", () => {
     expect(parseDateAs("990101", "YYMMDD", now)).toBe("1999-01-01");
     expect(parseDateAs("360101", "YYMMDD", now)).toBe("2036-01-01");

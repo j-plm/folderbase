@@ -19,8 +19,8 @@ import { useReportSelection } from "../lib/selectionStatus";
 interface Options {
   /** Up/Down move the selection (lists); off for grids. */
   arrowKeys?: boolean;
-  /** Called with a display index when the keyboard moves the selection, to scroll it into view. */
-  onReveal?: (index: number) => void;
+  /** Called with a display index (and the item's id) when the keyboard moves the selection, to scroll it into view. */
+  onReveal?: (index: number, id: string) => void;
   /**
    * Grids: all four arrows move, to the item this returns for the key (null:
    * nothing that way). Shift extends the selection in display order.
@@ -28,7 +28,13 @@ interface Options {
   gridNavigate?: (fromId: string, key: ArrowKey) => string | null;
   /** Off when the view reports a combined count itself (the database view's rows + cells). */
   reportStatus?: boolean;
+  /** Virtual folders shown before the files (their ids), selected like them. */
+  folders?: string[];
+  /** Opening a selection with a folder in it opens that folder instead. */
+  onOpenFolder?: (id: string) => void;
 }
+
+const NO_FOLDERS: string[] = [];
 
 /**
  * Finder-style selection over `files` (in display order): click selects,
@@ -37,11 +43,11 @@ interface Options {
  */
 export function useSelection(
   files: FileRecord[],
-  { arrowKeys = false, onReveal, gridNavigate, reportStatus = true }: Options = {}
+  { arrowKeys = false, onReveal, gridNavigate, reportStatus = true, folders = NO_FOLDERS, onOpenFolder }: Options = {}
 ) {
   const [state, setState] = useState<SelectionState>(EMPTY_SELECTION);
   const cursor = useRef<string | null>(null);
-  const order = useMemo(() => files.map((f) => f.file_id), [files]);
+  const order = useMemo(() => [...folders, ...files.map((f) => f.file_id)], [folders, files]);
 
   // Drop selected ids that are no longer shown (filtered out, location changed)
   useEffect(() => {
@@ -54,9 +60,14 @@ export function useSelection(
   }, [order]);
 
   const selected = useMemo(() => new Set(state.selected), [state.selected]);
-  useReportSelection(reportStatus ? state.selected.length : 0, reportStatus ? files.length : 0);
+  useReportSelection(reportStatus ? state.selected.length : 0, reportStatus ? order.length : 0);
 
   function open(ids: string[]) {
+    const folder = onOpenFolder && ids.find((id) => folders.includes(id));
+    if (folder) {
+      onOpenFolder(folder);
+      return;
+    }
     const byId = new Map(files.map((f) => [f.file_id, f.file_path]));
     const paths = ids.map((id) => byId.get(id)).filter((p): p is string => !!p);
     openPaths(paths).catch(() => {});
@@ -124,7 +135,7 @@ export function useSelection(
       const moved = moveSelectionTo(state, order, next, e.shiftKey);
       setState(moved.state);
       cursor.current = moved.cursor;
-      onReveal?.(order.indexOf(moved.cursor));
+      onReveal?.(order.indexOf(moved.cursor), moved.cursor);
       return;
     }
     if (arrowKeys && (e.key === "ArrowDown" || e.key === "ArrowUp") && !e.metaKey && !e.ctrlKey) {
@@ -133,7 +144,7 @@ export function useSelection(
       if (!moved) return;
       setState(moved.state);
       cursor.current = moved.cursor;
-      onReveal?.(order.indexOf(moved.cursor));
+      onReveal?.(order.indexOf(moved.cursor), moved.cursor);
     }
   }
 

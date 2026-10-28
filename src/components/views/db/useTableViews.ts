@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { deleteLocationView, getLocationViews, saveLocationView } from "../../../lib/commands";
+import {
+  deleteLocationView,
+  getLocationViews,
+  reorderLocationViews,
+  saveLocationView,
+  setDefaultLocationView,
+} from "../../../lib/commands";
 import {
   DEFAULT_VIEW_NAME,
   parseViewDefinition,
@@ -12,7 +18,7 @@ import {
 
 /**
  * Each location's views and the one showing, kept across mounts: switching to
- * Tiles and back (which remounts the table) picks up where it left off at once.
+ * Icons and back (which remounts the table) picks up where it left off at once.
  */
 const cache = new Map<string, { views: StoredView[]; activeId: string }>();
 
@@ -44,13 +50,21 @@ export interface TableViews {
   edited: boolean;
   /** The table's current state: saved into the default view, or kept as a named view's edits. */
   record: (def: ViewDefinition) => void;
+  /** What the active view shows right now, edits recorded a moment ago included (null while loading). */
+  current: () => ViewDefinition | null;
   select: (viewId: string) => Promise<void>;
   saveChanges: () => Promise<void>;
   revert: () => Promise<void>;
-  /** A new view of what's showing, which then shows; the view it came from goes back to as saved. */
-  saveAs: (name: string) => Promise<void>;
+  /** A new view of what's showing, which then shows (its id); the view it came from goes back to as saved. */
+  saveAs: (name: string) => Promise<string | null>;
+  /** A new view with this definition, which then shows; the view showing before is left as it is. */
+  create: (name: string, def: ViewDefinition) => Promise<void>;
   rename: (viewId: string, name: string) => Promise<void>;
   remove: (viewId: string) => Promise<void>;
+  /** Puts the views in this order, the default among them. */
+  reorder: (viewIds: string[]) => Promise<void>;
+  /** Makes a view the one the location opens with; it then saves as it changes (its edits saved into it). */
+  setDefault: (viewId: string) => Promise<void>;
   /** Writes any edits waiting to be saved. */
   flush: () => Promise<void>;
   /** Re-reads the views (after the database changed them, as a property rename does), keeping what's showing. */
@@ -58,9 +72,9 @@ export interface TableViews {
 }
 
 /**
- * A location's saved views (spec ▸ Views). The default view saves as it
- * changes; a named view keeps edits as a draft, marked Edited, until saved or
- * reverted. `apply` puts a definition into the table; `initial` gives the
+ * A location's saved views (spec ▸ Views). The default view (the one the
+ * location opens with, any of them) saves as it changes; the others keep edits
+ * as a draft, marked Edited, until saved or reverted. `apply` puts a definition into the table; `initial` gives the
  * default view's first definition.
  */
 export function useTableViews(
@@ -190,6 +204,11 @@ export function useTableViews(
     [stage]
   );
 
+  const current = useCallback(() => {
+    const view = viewsRef.current.find((v) => v.view_id === activeIdRef.current);
+    return view ? workingDefinition(view) : null;
+  }, []);
+
   const select = useCallback(
     async (viewId: string) => {
       const view = viewsRef.current.find((v) => v.view_id === viewId);
@@ -220,7 +239,7 @@ export function useTableViews(
   const saveAs = useCallback(
     async (name: string) => {
       const from = viewsRef.current.find((v) => v.view_id === activeIdRef.current);
-      if (!from) return;
+      if (!from) return null;
       await flush();
       const created = await write({
         view_id: "",
@@ -240,6 +259,26 @@ export function useTableViews(
         setViews([...viewsRef.current, created]);
       }
       setActive(created.view_id);
+      return created.view_id;
+    },
+    [locationId, flush, write, setViews, setActive]
+  );
+
+  const create = useCallback(
+    async (name: string, def: ViewDefinition) => {
+      await flush();
+      const created = await write({
+        view_id: "",
+        location_id: locationId,
+        name,
+        is_default: false,
+        position: 0,
+        definition: serializeViewDefinition(def),
+        draft: null,
+      });
+      setViews([...viewsRef.current, created]);
+      setActive(created.view_id);
+      applyRef.current(def);
     },
     [locationId, flush, write, setViews, setActive]
   );
@@ -272,6 +311,31 @@ export function useTableViews(
     [flush, setViews, setActive]
   );
 
+  const reorder = useCallback(
+    async (viewIds: string[]) => {
+      const byId = new Map(viewsRef.current.map((v) => [v.view_id, v]));
+      const ordered = viewIds.flatMap((id, position) => {
+        const view = byId.get(id);
+        return view ? [{ ...view, position }] : [];
+      });
+      // Any left out (none, normally) keep their place after the rest
+      const rest = viewsRef.current.filter((v) => !viewIds.includes(v.view_id));
+      setViews([...ordered, ...rest]);
+      await reorderLocationViews(locationId, ordered.map((v) => v.view_id));
+    },
+    [locationId, setViews]
+  );
+
+  const setDefault = useCallback(
+    async (viewId: string) => {
+      const view = viewsRef.current.find((v) => v.view_id === viewId);
+      if (!view || view.is_default) return;
+      await flush();
+      setViews(await setDefaultLocationView(viewId));
+    },
+    [flush, setViews]
+  );
+
   const reload = useCallback(async () => {
     await flush();
     const list = await getLocationViews(locationId);
@@ -283,12 +347,16 @@ export function useTableViews(
     active,
     edited: !!active && !active.is_default && active.draft != null,
     record,
+    current,
     select,
     saveChanges,
     revert,
     saveAs,
+    create,
     rename,
     remove,
+    reorder,
+    setDefault,
     flush,
     reload,
   };

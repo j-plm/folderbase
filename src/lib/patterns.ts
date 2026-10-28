@@ -180,14 +180,46 @@ export function examplePattern(name: string, picked: ExampleSlot[]): string {
 
 // ── Reading captured text ───────────────────────────────────────────────────
 
-/** Date formats offered for a captured value (any other made of YYYY, YY, MM, DD and separators works too). */
-export const DATE_FORMATS = ["YYMMDD", "YYYYMMDD", "DDMMYY", "DDMMYYYY", "YYYY-MM-DD", "DD-MM-YYYY", "DD.MM.YYYY", "MMDDYY"];
+/**
+ * Date formats offered for a captured value (any other made of YYYY, YY, MM, DD,
+ * and for a time HH, mm, ss, SSS, with separators, works too). The last few are the
+ * names cameras, phones and screenshots give: IMG_20240301_101522, 2024-03-01 10.15.22,
+ * and OneDrive's camera uploads, 20250610_094446600_iOS, whose time is UTC.
+ */
+export const DATE_FORMATS = [
+  "YYMMDD",
+  "YYYYMMDD",
+  "DDMMYY",
+  "DDMMYYYY",
+  "YYYY-MM-DD",
+  "DD-MM-YYYY",
+  "DD.MM.YYYY",
+  "MMDDYY",
+  "YYYYMMDD_HHmmss",
+  "YYYYMMDDHHmmss",
+  "YYYY-MM-DD HH.mm.ss",
+  "YYYYMMDD_HHmmssSSS (UTC)",
+];
 
-/** Reads `text` as a date in `format` ("YYMMDD"), as an ISO date, or null if it doesn't fit or isn't a real date. */
+/** A format's trailing " (UTC)" or " UTC": its time is UTC, not the clock time where it was taken. */
+const UTC_SUFFIX = /\s*\(?UTC\)?\s*$/i;
+
+/**
+ * Reads `text` as a date in `format` ("YYMMDD", "YYYYMMDD_HHmmss"), as an ISO
+ * date, or null if it doesn't fit or isn't a real date. A format with a time
+ * gives "YYYY-MM-DDTHH:MM:SS". Letters are read in either case, except that mm
+ * after an hour (HH) is the minutes, as in HHmm and HH.mm.ss; elsewhere MM or mm
+ * is the month, so "yyyymmdd" still reads as a date. SSS is milliseconds, read
+ * past (times are kept to the second). A format ending in "(UTC)" reads its time
+ * as UTC and gives the local time of that moment, as Created and Modified show.
+ */
 export function parseDateAs(text: string, format: string, now: Date = new Date()): string | null {
-  const order: ("Y" | "YY" | "M" | "D")[] = [];
+  const utc = UTC_SUFFIX.test(format);
+  if (utc) format = format.replace(UTC_SUFFIX, "");
+  const order: ("Y" | "YY" | "M" | "D" | "h" | "m" | "s")[] = [];
   let source = "";
   let i = 0;
+  let hour = false;
   while (i < format.length) {
     const rest = format.slice(i).toUpperCase();
     if (rest.startsWith("YYYY")) {
@@ -198,12 +230,25 @@ export function parseDateAs(text: string, format: string, now: Date = new Date()
       order.push("YY");
       source += "(\\d{2})";
       i += 2;
+    } else if (rest.startsWith("HH")) {
+      order.push("h");
+      source += "(\\d{2})";
+      hour = true;
+      i += 2;
     } else if (rest.startsWith("MM")) {
-      order.push("M");
+      order.push(hour ? "m" : "M");
       source += "(\\d{2})";
       i += 2;
     } else if (rest.startsWith("DD")) {
       order.push("D");
+      source += "(\\d{2})";
+      i += 2;
+    } else if (rest.startsWith("SSS") && order.includes("s")) {
+      // Milliseconds come after the seconds: in HHmmssSSS, "ss" is read first
+      source += "\\d{3}";
+      i += 3;
+    } else if (rest.startsWith("SS")) {
+      order.push("s");
       source += "(\\d{2})";
       i += 2;
     } else {
@@ -216,6 +261,7 @@ export function parseDateAs(text: string, format: string, now: Date = new Date()
   let year = 0;
   let month = 0;
   let day = 0;
+  const time = [0, 0, 0];
   order.forEach((part, k) => {
     const n = Number(m[k + 1]);
     if (part === "Y") year = n;
@@ -224,10 +270,19 @@ export function parseDateAs(text: string, format: string, now: Date = new Date()
       const century = Math.floor(now.getFullYear() / 100) * 100;
       year = century + n > now.getFullYear() + 10 ? century - 100 + n : century + n;
     } else if (part === "M") month = n;
-    else day = n;
+    else if (part === "D") day = n;
+    else time["hms".indexOf(part)] = n;
   });
   if (!year || month < 1 || month > 12 || day < 1) return null;
   const date = new Date(Date.UTC(year, month - 1, day));
   if (date.getUTCMonth() !== month - 1) return null; // 31 February
-  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const key = `${String(year).padStart(4, "0")}-${pad(month)}-${pad(day)}`;
+  if (!hour) return key;
+  if (time[0] > 23 || time[1] > 59 || time[2] > 59) return null;
+  if (utc) {
+    const d = new Date(Date.UTC(year, month - 1, day, time[0], time[1], time[2]));
+    return `${String(d.getFullYear()).padStart(4, "0")}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${[d.getHours(), d.getMinutes(), d.getSeconds()].map(pad).join(":")}`;
+  }
+  return `${key}T${time.map(pad).join(":")}`;
 }

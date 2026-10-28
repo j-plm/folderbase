@@ -17,6 +17,8 @@ export type MenuEntry =
   | { type: "check"; text: string; checked: boolean; enabled?: boolean; action: () => void; key?: string; onDelete?: MenuDelete }
   | { type: "item"; text: string; enabled?: boolean; action: () => void; key?: string; onDelete?: MenuDelete }
   | { type: "submenu"; text: string; items: MenuEntry[] }
+  /** A section's title (Custom, Native, Media), as macOS menus head a section: greyed, not chosen. */
+  | { type: "header"; text: string }
   | { type: "separator" };
 
 function buildItems(entries: MenuEntry[]): Promise<Array<CheckMenuItem | MenuItem | PredefinedMenuItem | Submenu>> {
@@ -36,6 +38,8 @@ function buildItems(entries: MenuEntry[]): Promise<Array<CheckMenuItem | MenuIte
           return Submenu.new({ text: entry.text, items: await buildItems(entry.items) });
         case "separator":
           return PredefinedMenuItem.new({ item: "Separator" });
+        case "header":
+          return MenuItem.new({ text: entry.text, enabled: false });
       }
     })
   );
@@ -77,4 +81,23 @@ export async function showContextMenu(entries: MenuEntry[], options: PopupOption
     return;
   }
   await menu.popup();
+}
+
+/** A menu with `lead` entries first, set apart by a separator (none when there are none). */
+export function withLead(lead: MenuEntry[], rest: MenuEntry[]): MenuEntry[] {
+  return lead.length > 0 ? [...lead, { type: "separator" }, ...rest] : rest;
+}
+
+/**
+ * Turns off the web view's own right-click menu (Reload, Inspect Element),
+ * which no native app has: a right-click shows the app's native menu where
+ * there is one, and nothing elsewhere. Text fields keep their Cut, Copy and
+ * Paste menu. In development, Option-right-click still opens it, for Inspect Element.
+ */
+export function suppressWebContextMenu(): void {
+  window.addEventListener("contextmenu", (e) => {
+    if (import.meta.env.DEV && e.altKey) return;
+    if ((e.target as Element | null)?.closest?.("input, textarea, [contenteditable=true]")) return;
+    e.preventDefault();
+  });
 }

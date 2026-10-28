@@ -1,5 +1,5 @@
 import { compareSortValues, type SortState } from "./columns";
-import { dateKey, listValues, parseNumber } from "./propertyTypes";
+import { dateTimeKey, listValues, parseNumber } from "./propertyTypes";
 import { compilePattern, isPatternError, matchPattern, type CompiledPattern } from "./patterns";
 
 // Filter rules and multi-key sorting for the database view. Pure: the view
@@ -34,9 +34,9 @@ export interface FilterRule {
   op: FilterOp;
   value: string;
   /**
-   * For "matches pattern" on a list (Source Tags, a Multi-select): which item
+   * For "matches pattern" on a list (Path Tags, a Multi-select): which item
    * is tried. "first", "last" or "n:2" (the 2nd); missing or "any": any item.
-   * For Source Tags, top folder first, so "last" is the folder the file is in.
+   * For Path Tags, top folder first, so "last" is the folder the file is in.
    */
   item?: string;
 }
@@ -134,10 +134,15 @@ export function matchesRule(value: unknown, kind: ColumnKind, rule: FilterRule):
       }
     }
     case "date": {
-      const a = dateKey(value);
-      const b = dateKey(target);
+      let a = dateTimeKey(value);
+      let b = dateTimeKey(target);
       if (b == null) return true;
       if (a == null) return false;
+      // Times count only when both have one: "is 1 March" is the whole day
+      if (a.length !== b.length) {
+        a = a.slice(0, 10);
+        b = b.slice(0, 10);
+      }
       switch (rule.op) {
         case "is": return a === b;
         case "before": return a < b;
@@ -166,7 +171,7 @@ export function matchesRule(value: unknown, kind: ColumnKind, rule: FilterRule):
 }
 
 /**
- * The slots a column's value fills: its text, or for a list (Source Tags, a
+ * The slots a column's value fills: its text, or for a list (Path Tags, a
  * Multi-select) the first item that fits. Null if nothing fits.
  */
 export function patternSlots(pattern: CompiledPattern, value: unknown, item?: string): Record<string, string> | null {

@@ -16,3 +16,11 @@ pub async fn set_edit_menu_labels(
     menu.redo.set_text(redo_title).map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// Enables File ▸ Save View: on while the showing view has unsaved edits.
+#[tauri::command]
+pub async fn set_save_view_enabled(enabled: bool, app: AppHandle) -> Result<(), String> {
+    let Some(menu) = app.try_state::<EditMenu>() else { return Ok(()) };
+    let Some(item) = &menu.save_view else { return Ok(()) };
+    item.set_enabled(enabled).map_err(|e| e.to_string())
+}

@@ -1,4 +1,4 @@
-use chrono::{DateTime, NaiveDate};
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 
 const CORE_COLS: &[&str] = &["library", "file_type", "timestamp"];
 
@@ -48,9 +48,12 @@ pub fn infer_value_type(values: &[String]) -> String {
         return "enum".to_string();
     }
 
+    // A date, or a date with a time (with a zone, or a camera's clock time without one)
     let all_dates = values.iter().all(|v| {
         DateTime::parse_from_rfc3339(v).is_ok()
             || NaiveDate::parse_from_str(v, "%Y-%m-%d").is_ok()
+            || NaiveDateTime::parse_from_str(v, "%Y-%m-%dT%H:%M:%S").is_ok()
+            || NaiveDateTime::parse_from_str(v, "%Y-%m-%d %H:%M:%S").is_ok()
     });
 
     if all_dates {
@@ -85,6 +88,12 @@ mod tests {
             "2024-01-15T10:23:45+00:00".to_string(),
             "2024-02-20T08:00:00Z".to_string(),
         ];
+        assert_eq!(infer_value_type(&values), "date");
+    }
+
+    #[test]
+    fn date_time_values_are_date() {
+        let values = vec!["2024-01-15T10:23:45".to_string(), "2024-06-01 08:00:00".to_string()];
         assert_eq!(infer_value_type(&values), "date");
     }
 

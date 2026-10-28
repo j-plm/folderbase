@@ -1,12 +1,23 @@
 import { describe, it, expect } from "vitest";
-import { formatForSlot, columnByName, columnPart, definitionFromFilter, parseDefinition, planRule, planRules, ruleSlots, writeKeys, type RuleDefinition, type RuleEnv } from "./rules";
+import { formatForSlot, columnByName, columnPart, definitionFromFilter, parseDefinition, planRule, planRules, ruleSlots, withFilterConditions, writeKeys, type RuleDefinition, type RuleEnv } from "./rules";
+import { parseDateAs } from "./patterns";
 import { PROP_PREFIX, nativeValue, NATIVE_KINDS, KIND_BY_TYPE, metaValue } from "./fileColumns";
 import type { FileRecord, ValueType } from "../types";
 
 const file = (id: string, path: string, metadata: Record<string, unknown> = {}): FileRecord =>
   ({ file_id: id, file_path: `/docs/${path}`, relative_path: path, metadata, tags: [] }) as unknown as FileRecord;
 
-const types: Record<string, ValueType> = { Person: "enum", Date: "date", Tags: "array", Code: "free_text", Amount: "number" };
+const types: Record<string, ValueType> = {
+  Person: "enum",
+  Date: "date",
+  Tags: "array",
+  Code: "free_text",
+  Amount: "number",
+  Test: "enum",
+  Rig: "enum",
+  Project: "enum",
+  Rigs: "array",
+};
 const env = (written: Set<string> = new Set()): RuleEnv => ({
   valueOf: (f, c) => (c.startsWith(PROP_PREFIX) ? metaValue(f, c.slice(PROP_PREFIX.length)) : nativeValue(f, c)),
   kindOf: (c) => (c.startsWith(PROP_PREFIX) ? KIND_BY_TYPE[types[c.slice(PROP_PREFIX.length)] ?? "free_text"] : NATIVE_KINDS[c] ?? "text"),
@@ -68,6 +79,30 @@ describe("planRule", () => {
       expect(plan.edits).toEqual([]);
       expect(plan.rows[0].status).toBe("edited");
     }
+    // …unless Apply Now includes values changed by hand
+    const over = planRule("r", { ...statements, actions: [statements.actions[0]] }, [changed], { ...env(written), overHandEdits: true });
+    expect(over.edits).toEqual([{ file_id: "1", key: "Person", value: "Ruben" }]);
+  });
+
+  it("updates its own values when the rule changes, overwrite or not", () => {
+    // It wrote "Rubn" (a mistake), and the value is still that: not a hand edit
+    const written = writeKeys([{ rule_id: "r", file_id: "1", key: "Person", value: '"Rubn"' }]);
+    const f = file("1", "250301_Ruben.pdf", { Person: "Rubn" });
+    const plan = planRule("r", { ...statements, actions: [statements.actions[0]] }, [f], env(written));
+    expect(plan.edits).toEqual([{ file_id: "1", key: "Person", value: "Ruben" }]);
+    expect(plan.rows[0].status).toBe("change");
+  });
+
+  it("takes back Multi-select items it added that it no longer gives", () => {
+    const def: RuleDefinition = {
+      match: "all",
+      conditions: [{ id: "c", column: "name", op: "contains", value: "Burton" }],
+      actions: [{ id: "a", property: "Tags", mode: "fixed", value: "House" }],
+    };
+    // It added "0014" before; "Invoice" was there already
+    const written = writeKeys([{ rule_id: "r", file_id: "9", key: "Tags", value: '"0014"' }]);
+    const f = file("9", "BurtonRd_Kitchen.pdf", { Tags: ["Invoice", "0014"] });
+    expect(planRule("r", def, [f], env(written)).edits).toEqual([{ file_id: "9", key: "Tags", value: ["Invoice", "House"] }]);
   });
 
   it("adds to a Multi-select, but not a value taken off by hand", () => {
@@ -91,6 +126,29 @@ describe("planRule", () => {
     expect(planRule("r", def, [file("1", "Q3_ab12_final.docx")], env()).edits).toEqual([{ file_id: "1", key: "Code", value: "AB12" }]);
     const bad = planRule("r", { ...def, actions: [{ ...def.actions[0], value: "{Nope}" }] }, [file("1", "x.pdf")], env());
     expect(bad.rows[0]).toMatchObject({ status: "nomatch", problems: ["The pattern has no {Nope}"] });
+  });
+
+  it("reads a date and time from a camera's file name into a Date", () => {
+    const def: RuleDefinition = {
+      match: "all",
+      conditions: [{ id: "c", column: "name", op: "matches", value: "IMG_{Taken:15}.jpg" }],
+      actions: [{ id: "a", property: "Date", mode: "slot", value: "Taken", format: "YYYYMMDD_HHmmss" }],
+    };
+    expect(planRule("r", def, [file("1", "IMG_20240301_101522.jpg")], env()).edits).toEqual([
+      { file_id: "1", key: "Date", value: "2024-03-01T10:15:22" },
+    ]);
+    expect(formatForSlot("yyyymmdd_hhmmss")).toBe("YYYYMMDD_HHmmss");
+  });
+
+  it("reads OneDrive's camera upload names, whose time is UTC", () => {
+    const def: RuleDefinition = {
+      match: "all",
+      conditions: [{ id: "c", column: "name", op: "matches", value: "{Taken:18}_iOS" }],
+      actions: [{ id: "a", property: "Date", mode: "slot", value: "Taken", format: "YYYYMMDD_HHmmssSSS (UTC)" }],
+    };
+    const [edit] = planRule("r", def, [file("1", "20250610_094446600_iOS.heic")], env()).edits;
+    expect(edit.value).toBe(parseDateAs("20250610_094446600", "YYYYMMDD_HHmmssSSS (UTC)"));
+    expect(new Date(String(edit.value)).toISOString()).toBe("2025-06-10T09:44:46.000Z");
   });
 
   it("skips properties that don't exist, and values that can't be read", () => {
@@ -134,6 +192,44 @@ describe("definitions", () => {
       ["name", "contains", "2025"],
     ]);
     expect(def.actions).toHaveLength(1);
+  });
+
+  it("starts from the folder the table is in, ahead of its filters", () => {
+    const place = [{ id: "p", column: "prop:Person", op: "is" as const, value: "Josh" }];
+    const one = definitionFromFilter([{ id: "1", column: "ext", op: "has", value: "pdf" }], "any", "", place);
+    expect(one.match).toBe("all");
+    expect(one.conditions.map((c) => [c.column, c.value])).toEqual([
+      ["prop:Person", "Josh"],
+      ["ext", "pdf"],
+    ]);
+    expect(definitionFromFilter([], "all", "", place).conditions).toHaveLength(1);
+    // "Any of" several filters can't also require the folder
+    const any = definitionFromFilter([{ id: "1", column: "ext", op: "has", value: "pdf" }], "any", "2025", place);
+    expect(any.match).toBe("any");
+    expect(any.conditions.map((c) => c.column)).toEqual(["ext", "name"]);
+  });
+
+  it("adds the filter's conditions it doesn't already have", () => {
+    const filter = definitionFromFilter(
+      [
+        { id: "1", column: "prop:Tags", op: "has", value: "Ruben" },
+        { id: "2", column: "ext", op: "is", value: "pdf" },
+      ],
+      "any",
+      ""
+    );
+    const empty = withFilterConditions(definitionFromFilter([], "all", ""), filter);
+    expect(empty.match).toBe("any");
+    expect(empty.conditions).toHaveLength(2);
+
+    const own = definitionFromFilter([{ id: "x", column: "ext", op: "is", value: "pdf" }], "all", "");
+    const merged = withFilterConditions(own, filter);
+    expect(merged.match).toBe("all");
+    expect(merged.conditions.map((c) => [c.column, c.value])).toEqual([
+      ["ext", "pdf"],
+      ["prop:Tags", "Ruben"],
+    ]);
+    expect(withFilterConditions(merged, filter)).toBe(merged);
   });
 
   it("lists the slots its patterns fill, and survives a damaged definition", () => {
@@ -186,13 +282,20 @@ describe("values from other columns", () => {
     expect(columnPart("2025-03-01", "yearMonth")).toBe("2025-03");
     expect(columnPart("2025-03-01", "quarter")).toBe("Q1");
     expect(columnPart("2025-03-01", "monthName")).toBe("March");
+    expect(columnPart("2025-03-01T10:15:22", "date")).toBe("2025-03-01");
+    expect(columnPart("2025-03-01T10:15:22", "dateTime")).toBe("2025-03-01T10:15:22");
+    expect(columnPart("2025-03-01T10:15:22", "time")).toBe("10:15");
+    expect(columnPart("2025-03-01T10:15:22", "hour")).toBe("10");
+    expect(columnPart("2025-03-01", "time")).toBeNull();
     expect(columnPart("Acme", "year")).toBe("Acme");
     expect(columnPart(null, "year")).toBeNull();
   });
 
   it("finds columns by their header names", () => {
     expect(columnByName("Created")).toBe("created");
-    expect(columnByName("source tags")).toBe("tags");
+    expect(columnByName("path tags")).toBe("tags");
+    // Formulas written before Source Tags was renamed still read it
+    expect(columnByName("Source Tags")).toBe("tags");
     expect(columnByName("Client")).toBe("prop:Client");
   });
 
@@ -257,6 +360,117 @@ describe("dates from slots", () => {
     expect(formatForSlot("YYMMDD")).toBe("YYMMDD");
     expect(formatForSlot("yyyymmdd")).toBe("YYYYMMDD");
     expect(formatForSlot("Test")).toBe("");
+  });
+});
+
+describe("nothing to write", () => {
+  it("says why when the property is empty, rather than calling it already set", () => {
+    const def: RuleDefinition = {
+      match: "all",
+      conditions: [{ id: "c", column: "name", op: "matches", value: "{Date:8 digits}_{Time:6 digits}" }],
+      actions: [{ id: "a", property: "Code", mode: "formula", value: '""' }],
+    };
+    const row = planRule("r", def, [file("1", "20250619_113501.jpg")], env()).rows[0];
+    expect(row).toMatchObject({ status: "nomatch", problems: ["the formula gives nothing"] });
+    // With a value there already, nothing to write is fine
+    const set = planRule("r", def, [file("1", "20250619_113501.jpg", { Code: "x" })], env()).rows[0];
+    expect(set.status).toBe("set");
+  });
+
+  it("shows a date the formula can't read as a problem", () => {
+    const def: RuleDefinition = {
+      match: "all",
+      conditions: [{ id: "c", column: "name", op: "matches", value: "{Date:8 digits}_{Time:6 digits}" }],
+      actions: [{ id: "a", property: "Date", mode: "formula", value: 'date({Date} & {Time}, "YYYYMMDD_HHmmss")' }],
+    };
+    const row = planRule("r", def, [file("1", "20250619_113501.jpg")], env()).rows[0];
+    expect(row.status).toBe("nomatch");
+    expect(row.problems[0]).toMatch(/isn't a YYYYMMDD_HHmmss date/);
+  });
+});
+
+describe("from files with the same …", () => {
+  const rigFromTest: RuleDefinition = {
+    match: "all",
+    conditions: [],
+    actions: [{ id: "a", property: "Rig", mode: "same", value: "prop:Test" }],
+  };
+
+  it("fills a property from files sharing a value, and leaves the rest", () => {
+    const plan = planRule("r", rigFromTest, [
+      file("1", "a.jpg", { Test: "1", Rig: "A1" }),
+      file("2", "b.jpg", { Test: "1" }),
+      file("3", "c.jpg", { Test: "2" }),
+      file("4", "d.jpg", {}),
+    ], env());
+    expect(plan.edits).toEqual([{ file_id: "2", key: "Rig", value: "A1" }]);
+    expect(plan.rows.find((r) => r.file.file_id === "2")?.sources).toEqual([{ column: "prop:Test", text: "1" }]);
+  });
+
+  it("writes nothing where those files disagree, and says how", () => {
+    const plan = planRule("r", rigFromTest, [
+      file("1", "a.jpg", { Test: "1", Rig: "A1" }),
+      file("2", "b.jpg", { Test: "1", Rig: "A1" }),
+      file("3", "c.jpg", { Test: "1", Rig: "A2" }),
+      file("4", "d.jpg", { Test: "1" }),
+    ], env());
+    expect(plan.edits).toEqual([]);
+    expect(plan.rows.find((r) => r.file.file_id === "4")).toMatchObject({
+      status: "nomatch",
+      problems: ["Test 1 is on Rig A1 in 2 files, A2 in 1 file"],
+    });
+  });
+
+  it("matches on every column chosen", () => {
+    const def: RuleDefinition = { ...rigFromTest, actions: [{ ...rigFromTest.actions[0], also: ["prop:Project"] }] };
+    const plan = planRule("r", def, [
+      file("1", "a.jpg", { Test: "1", Project: "X", Rig: "A1" }),
+      file("2", "b.jpg", { Test: "1", Project: "Y", Rig: "B1" }),
+      file("3", "c.jpg", { Test: "1", Project: "Y" }),
+      file("4", "d.jpg", { Test: "1" }),
+    ], env());
+    expect(plan.edits).toEqual([{ file_id: "3", key: "Rig", value: "B1" }]);
+  });
+
+  it("learns from files outside the conditions, but fills only those meeting them", () => {
+    const def: RuleDefinition = { ...rigFromTest, conditions: [{ id: "c", column: "ext", op: "has", value: "pdf" }] };
+    const plan = planRule("r", def, [
+      file("1", "a.jpg", { Test: "1", Rig: "A1" }),
+      file("2", "b.jpg", { Test: "1" }),
+      file("3", "c.pdf", { Test: "1" }),
+    ], env());
+    expect(plan.edits).toEqual([{ file_id: "3", key: "Rig", value: "A1" }]);
+  });
+
+  it("copies a Multi-select as a list; lists that differ disagree", () => {
+    const def: RuleDefinition = { ...rigFromTest, actions: [{ id: "a", property: "Rigs", mode: "same", value: "prop:Test" }] };
+    const agree = planRule("r", def, [
+      file("1", "a.jpg", { Test: "1", Rigs: ["A1", "A2"] }),
+      file("2", "b.jpg", { Test: "1", Rigs: ["a2", "A1"] }),
+      file("3", "c.jpg", { Test: "1" }),
+    ], env());
+    expect(agree.edits).toEqual([{ file_id: "3", key: "Rigs", value: ["A1", "A2"] }]);
+    const differ = planRule("r", def, [
+      file("1", "a.jpg", { Test: "1", Rigs: ["A1", "A2"] }),
+      file("2", "b.jpg", { Test: "1", Rigs: ["A1"] }),
+      file("3", "c.jpg", { Test: "1" }),
+    ], env());
+    expect(differ.edits).toEqual([]);
+  });
+
+  it("counts a file's own value: one that disagrees holds the rest back until it's fixed", () => {
+    const files = [file("1", "a.jpg", { Test: "1", Rig: "A1" }), file("2", "b.jpg", { Test: "1", Rig: "Z" }), file("3", "c.jpg", { Test: "1" })];
+    const plan = planRule("r", rigFromTest, files, env());
+    expect(plan.edits).toEqual([]);
+    expect(plan.rows.find((r) => r.file.file_id === "3")?.problems).toEqual(["Test 1 is on Rig A1 in 1 file, Z in 1 file"]);
+  });
+
+  it("never rewrites its own value once changed by hand", () => {
+    const written = writeKeys([{ rule_id: "r", file_id: "2", key: "Rig", value: '"A1"' }]);
+    const files = [file("1", "a.jpg", { Test: "1", Rig: "A1" }), file("2", "b.jpg", { Test: "1" })];
+    const plan = planRule("r", rigFromTest, files, env(written));
+    expect(plan.edits).toEqual([]);
+    expect(plan.rows.find((r) => r.file.file_id === "2")?.status).toBe("edited");
   });
 });
 

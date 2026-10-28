@@ -1,5 +1,5 @@
 import { parseDateAs } from "./patterns";
-import { dateKey, formatDatePattern } from "./propertyTypes";
+import { dateTimeKey, formatDatePattern, keyToDate, timeOfKey } from "./propertyTypes";
 
 // Rule formulas: Notion-style functions for values a pattern can't describe.
 // A formula only decides what a rule writes; nothing stays formula-driven.
@@ -24,7 +24,7 @@ export interface FormulaContext {
   kind: string;
   size: string;
   slots: Record<string, string>;
-  /** Any column's value by its header name: a property, or Created, Kind, Source Tags… */
+  /** Any column's value by its header name: a property, or Created, Kind, Path Tags… */
   prop: (name: string) => string;
 }
 
@@ -153,23 +153,30 @@ export const FORMULA_FUNCTIONS: Record<string, { args: [number, number]; help: s
   upper: { args: [1, 1], help: "upper(text)" },
   lower: { args: [1, 1], help: "lower(text)" },
   trim: { args: [1, 1], help: "trim(text): without spaces at either end" },
-  date: { args: [2, 2], help: "date(text, \"YYMMDD\"): the text read as a date" },
-  prop: { args: [1, 1], help: "prop(\"Client\"): any column's value on the file (a property, or Created, Kind, Source Tags…)" },
+  date: { args: [2, 2], help: "date(text, \"YYMMDD\"): the text read as a date; with a time: date(text, \"YYYYMMDD_HHmmss\")" },
+  prop: { args: [1, 1], help: "prop(\"Client\"): any column's value on the file (a property, or Created, Kind, Path Tags…)" },
   folder: { args: [1, 1], help: "folder(1): the top folder; folder(-1): the folder the file is in" },
   year: { args: [1, 1], help: "year(created): the year of a date" },
   month: { args: [1, 1], help: "month(created): the month of a date, 01–12" },
   day: { args: [1, 1], help: "day(created): the day of a date, 01–31" },
   quarter: { args: [1, 1], help: "quarter(created): Q1–Q4" },
-  formatdate: { args: [2, 2], help: "formatDate(created, \"MMM YYYY\"): a date written out (YYYY YY MMMM MMM MM M DD D dddd ddd)" },
+  time: { args: [1, 1], help: "time(created): the time of a date, 10:15 (empty if it has none)" },
+  hour: { args: [1, 1], help: "hour(created): the hour of a date, 00–23 (empty if it has no time)" },
+  formatdate: { args: [2, 2], help: "formatDate(created, \"MMM YYYY\"): a date written out (YYYY YY MMMM MMM MM M DD D dddd ddd HH H mm ss)" },
 };
 
 const NAMES = ["name", "filename", "ext", "path", "folder", "created", "modified", "kind", "size"] as const;
 
-/** A date in text (ISO, or with a time) as [year, month, day], or a FormulaError. */
-function dateParts(text: string): [number, number, number] {
-  const key = dateKey(text);
+/** A date in text (ISO, or with a time) as its key (see dateTimeKey), or a FormulaError. */
+function dateOf(text: string): string {
+  const key = dateTimeKey(text);
   if (!key) throw new FormulaError(`“${text}” isn't a date`);
-  const [y, m, d] = key.split("-").map(Number);
+  return key;
+}
+
+/** A date in text as [year, month, day], or a FormulaError. */
+function dateParts(text: string): [number, number, number] {
+  const [y, m, d] = dateOf(text).slice(0, 10).split("-").map(Number);
   return [y, m, d];
 }
 
@@ -246,8 +253,13 @@ function evaluate(node: Node, ctx: FormulaContext): string {
           return a[0].toLowerCase();
         case "trim":
           return a[0].trim();
-        case "date":
-          return parseDateAs(a[0], a[1]) ?? "";
+        case "date": {
+          if (a[0].trim() === "") return "";
+          // Say so rather than give nothing: an empty result looks like there was nothing to read
+          const read = parseDateAs(a[0], a[1]);
+          if (read == null) throw new FormulaError(`date(): “${a[0]}” isn't a ${a[1]} date`);
+          return read;
+        }
         case "prop":
           return ctx.prop(a[0]);
         case "folder": {
@@ -263,10 +275,12 @@ function evaluate(node: Node, ctx: FormulaContext): string {
           return String(dateParts(a[0])[2]).padStart(2, "0");
         case "quarter":
           return `Q${Math.ceil(dateParts(a[0])[1] / 3)}`;
-        case "formatdate": {
-          const [y, m, d] = dateParts(a[0]);
-          return formatDatePattern(new Date(y, m - 1, d), a[1]);
-        }
+        case "time":
+          return timeOfKey(dateOf(a[0]))?.slice(0, 5) ?? "";
+        case "hour":
+          return timeOfKey(dateOf(a[0]))?.slice(0, 2) ?? "";
+        case "formatdate":
+          return formatDatePattern(keyToDate(dateOf(a[0])), a[1]);
       }
       return "";
     }

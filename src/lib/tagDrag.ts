@@ -1,6 +1,6 @@
 import { listValues } from "./propertyTypes";
 
-// Dragging a tag pill onto a list column in the database view. A source tag is
+// Dragging a tag pill onto a list column in the database view. A path tag is
 // a folder name (dropping it maps every folder with that name to the column);
 // a property's value moves from its column into the other (see move_property_value).
 
@@ -10,7 +10,7 @@ export const DROP_DWELL_MS = 500;
 /** Pointer travel before a press on a pill becomes a drag (a shorter one is a click). */
 export const DRAG_THRESHOLD = 4;
 
-/** How many distinct folders called `name` the files sit in (a source tag's folders). */
+/** How many distinct folders called `name` the files sit in (a path tag's folders). */
 export function countFoldersNamed(relativePaths: (string | null | undefined)[], name: string): number {
   const found = new Set<string>();
   for (const rel of relativePaths) {
@@ -24,7 +24,7 @@ export function countFoldersNamed(relativePaths: (string | null | undefined)[], 
 }
 
 /**
- * Every value a file holds in its properties. A source tag in this set is
+ * Every value a file holds in its properties. A path tag in this set is
  * "covered": already recorded in a property, so the pill shows faded.
  * Keys starting with "_" are internal and don't count.
  */

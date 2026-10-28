@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { FileRecord } from "../types";
 import {
+  dateGroup,
+  dateGroupRange,
   formatFinderDate,
   formatFinderSize,
   formatLongDate,
   groupFiles,
   kindCategory,
   kindLabel,
+  sizeGroup,
+  sizeGroupRange,
   sortFiles,
   type Arrangement,
 } from "./arrange";
@@ -135,5 +139,29 @@ describe("Finder formatting", () => {
     expect(kindLabel(file("/a/x.png", { file_type: "image/png" }))).toBe("PNG image");
     expect(kindLabel(file("/a/x.webp", { file_type: "image/webp" }))).toBe("WEBP image");
     expect(kindLabel(file("/a/x.drawio"))).toBe("DRAWIO file");
+  });
+});
+
+describe("bucket ranges", () => {
+  it("covers exactly the days each date bucket holds", () => {
+    for (const now of [new Date(2026, 9, 27, 15), new Date(2026, 0, 12, 9)]) {
+      for (let back = 0; back < 800; back++) {
+        const day = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back, 12);
+        const [label] = dateGroup(day.toISOString(), now);
+        const range = dateGroupRange(label, now);
+        expect(range, label).not.toBeNull();
+        const [from, end] = range!;
+        expect(day >= from && (end == null || day < end), `${label} ${day.toDateString()}`).toBe(true);
+      }
+    }
+    expect(dateGroupRange("No Date", new Date())).toBeNull();
+  });
+
+  it("covers exactly the sizes each size bucket holds", () => {
+    for (const bytes of [0, 10239, 10240, 99999, 1048575, 1048576, 2 ** 30 - 1, 2 ** 30, 2 ** 40]) {
+      const [min, end] = sizeGroupRange(sizeGroup(bytes)[0])!;
+      expect(bytes >= min && (end == null || bytes < end)).toBe(true);
+    }
+    expect(sizeGroupRange("Huge")).toBeNull();
   });
 });

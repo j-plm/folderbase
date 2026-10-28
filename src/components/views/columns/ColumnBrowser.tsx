@@ -31,8 +31,17 @@ import {
 import { middleTruncate } from "../../../lib/tileLabel";
 import { measureText, uiFont } from "../../../lib/textMeasure";
 import { useReportSelection } from "../../../lib/selectionStatus";
-import { showContextMenu } from "../../../lib/nativeMenu";
+import { showContextMenu, withLead, type MenuEntry } from "../../../lib/nativeMenu";
 import { arrangementMenu, useArrangement } from "../../../contexts/ArrangementContext";
+
+const sameIds = (a: string[], b: string[]) => a.length === b.length && a.every((id, i) => id === b[i]);
+
+/** The folders along a path (ids), up to the first file; with several selected, the last item doesn't open. */
+function openFolders(root: BrowserNode[], path: string[], multi: boolean): string[] {
+  return resolveColumns(root, multi ? path.slice(0, -1) : path)
+    .selected.filter(isFolder)
+    .map((n) => n.id);
+}
 
 // Finder column view metrics (macOS 26)
 const DEFAULT_WIDTH = 260;
@@ -68,10 +77,26 @@ function nameWidth(width: number, folder: boolean): number {
  * selected nothing opens to the right. `path` always ends at the item last
  * clicked or moved to, and `sel` holds the selection in that column.
  */
-export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
+export default function ColumnBrowser({
+  root,
+  folderPath,
+  onFolderPathChange,
+  nodeMenu,
+  columnMenu,
+}: {
+  root: BrowserNode[];
+  /** The folders open (their ids), followed when it changes elsewhere (Back, Enclosing Folder). */
+  folderPath?: string[];
+  /** The folders open changed here. */
+  onFolderPathChange?: (ids: string[]) => void;
+  /** A row's own right-click menu (null: the column's arrangement menu). */
+  nodeMenu?: (node: BrowserNode) => MenuEntry[] | null;
+  /** A column's empty-space menu, before the arrangement items, by the folder it shows (null: the first column). */
+  columnMenu?: (parent: BrowserNode | null) => MenuEntry[];
+}) {
   const arrangementCtx = useArrangement();
   const { arrangement } = arrangementCtx;
-  const [path, setPath] = useState<string[]>([]);
+  const [path, setPath] = useState<string[]>(() => folderPath ?? []);
   const [sel, setSel] = useState<SelectionState>(EMPTY_SELECTION);
   const multi = sel.selected.length > 1;
   const pendingCollapse = useRef<number | undefined>(undefined);
@@ -103,11 +128,25 @@ export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
     return depth === activeDepth && multi ? sel.selected.includes(id) : path[depth] === id;
   }
 
-  function update(nextPath: string[], changedDepth: number) {
+  /** `several`: more than one item is selected now, so the last one doesn't open. */
+  function update(nextPath: string[], changedDepth: number, several = false) {
     setPath(nextPath);
     const count = resolveColumns(root, nextPath).columns.length;
     setWidths((w) => inheritWidths(w, changedDepth, count, DEFAULT_WIDTH));
+    const folders = openFolders(root, nextPath, several);
+    if (onFolderPathChange && !sameIds(folders, folderPath ?? [])) onFolderPathChange(folders);
   }
+
+  // Follow the open folders when they change elsewhere
+  useEffect(() => {
+    if (!folderPath) return;
+    if (sameIds(openFolders(root, path, multi), folderPath)) return;
+    setPath(folderPath);
+    const last = folderPath[folderPath.length - 1];
+    setSel(last ? singleSelection(last) : EMPTY_SELECTION);
+    // Only a change to the folders open should move the columns, not a new root
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderPath]);
 
   /** Single-item navigation: the selection follows the end of the path. */
   function navigateTo(nextPath: string[], changedDepth: number) {
@@ -120,7 +159,7 @@ export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
   function applySelection(depth: number, next: SelectionState, cursor: string) {
     setSel(next);
     if (next.selected.length === 0) update(selectAt(path, depth, null), depth);
-    else update(selectAt(path, depth, next.selected.length === 1 ? next.selected[0] : cursor), depth);
+    else update(selectAt(path, depth, next.selected.length === 1 ? next.selected[0] : cursor), depth, next.selected.length > 1);
   }
 
   function handleRowClick(e: React.MouseEvent, depth: number, node: BrowserNode) {
@@ -179,7 +218,8 @@ export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
       if (moved) applySelection(activeDepth, moved.state, moved.cursor);
       return;
     }
-    if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+    // ⌘↑ goes to the enclosing folder (BrowseContext), not up the column
+    if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key) || e.metaKey || e.ctrlKey) return;
     e.preventDefault();
     const next = navigate(path, ordered, e.key as ArrowKey);
     let changed = 0;
@@ -239,6 +279,7 @@ export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
     <div
       ref={containerRef}
       tabIndex={0}
+      data-browse-keys
       onKeyDown={handleKeyDown}
       onContextMenu={(e) => {
         e.preventDefault();
@@ -252,6 +293,14 @@ export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
           key={depth}
           style={{ width: colWidths[depth] }}
           onClick={() => navigateTo(selectAt(path, depth, null), depth)}
+          // Empty space in a column: what its folders are (their level's settings), then the arrangement
+          onContextMenu={(e) => {
+            const lead = columnMenu?.(depth === 0 ? null : (selected[depth - 1] ?? null)) ?? [];
+            if (lead.length === 0) return;
+            e.preventDefault();
+            e.stopPropagation();
+            showContextMenu(withLead(lead, arrangementMenu(arrangementCtx)), { event: e });
+          }}
           className="relative shrink-0 h-full border-r border-neutral-700/60"
         >
           <ColumnList
@@ -263,6 +312,13 @@ export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
             revealId={path[depth]}
             onRowClick={(e, node) => handleRowClick(e, depth, node)}
             onRowDoubleClick={(e, node) => handleRowDoubleClick(e, depth, node)}
+            onRowMenu={(e, node) => {
+              const entries = nodeMenu?.(node);
+              if (!entries) return;
+              e.preventDefault();
+              e.stopPropagation();
+              showContextMenu(entries, { event: e });
+            }}
           />
           {/* Drag the column edge to resize; double-click to fit. Outside the
               scrolling list, so it stays put however far the column is scrolled */}
@@ -279,6 +335,8 @@ export default function ColumnBrowser({ root }: { root: BrowserNode[] }) {
       ))}
 
       {previewNode?.file && <PreviewColumn node={previewNode} />}
+      {/* Room to scroll the last column out from behind an open side panel */}
+      <div style={{ width: "var(--scroll-end, 0px)" }} className="shrink-0" aria-hidden />
     </div>
   );
 }
@@ -301,6 +359,7 @@ function ColumnList({
   revealId,
   onRowClick,
   onRowDoubleClick,
+  onRowMenu,
 }: {
   groups: NodeGroup[];
   width: number;
@@ -312,6 +371,7 @@ function ColumnList({
   revealId: string | undefined;
   onRowClick: (e: React.MouseEvent, node: BrowserNode) => void;
   onRowDoubleClick: (e: React.MouseEvent, node: BrowserNode) => void;
+  onRowMenu: (e: React.MouseEvent, node: BrowserNode) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const items = useMemo(
@@ -404,6 +464,7 @@ function ColumnList({
                 data-node={node.id}
                 onClick={(e) => onRowClick(e, node)}
                 onDoubleClick={(e) => onRowDoubleClick(e, node)}
+                onContextMenu={(e) => onRowMenu(e, node)}
                 style={{ ...place, gap: ICON_GAP }}
                 className={`flex items-center px-2 rounded-md text-body text-neutral-100 cursor-default ${
                   joinsAbove ? "rounded-t-none" : ""

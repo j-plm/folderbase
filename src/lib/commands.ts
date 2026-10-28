@@ -86,6 +86,11 @@ export async function renameLocation(locationId: string, name: string): Promise<
   return invoke<Location>("rename_location", { locationId, name });
 }
 
+/** Puts the locations in this order (the sidebar's). */
+export async function reorderLocations(locationIds: string[]): Promise<void> {
+  return invoke<void>("reorder_locations", { locationIds });
+}
+
 export async function deleteLocation(locationId: string): Promise<void> {
   return invoke<void>("delete_location", { locationId });
 }
@@ -114,7 +119,7 @@ export async function createProperty(
   });
 }
 
-/** A location's saved views: the default first, then the rest in order. */
+/** A location's saved views, in order (the default wherever it was put). */
 export async function getLocationViews(locationId: string): Promise<StoredView[]> {
   return invoke<StoredView[]>("get_location_views", { locationId });
 }
@@ -124,9 +129,19 @@ export async function saveLocationView(view: StoredView): Promise<StoredView> {
   return invoke<StoredView>("save_location_view", { view });
 }
 
-/** Deletes a named view (the default can't be). */
+/** Deletes a view (the default can't be). */
 export async function deleteLocationView(viewId: string): Promise<void> {
   return invoke<void>("delete_location_view", { viewId });
+}
+
+/** Puts a location's views in this order, the default among them. */
+export async function reorderLocationViews(locationId: string, viewIds: string[]): Promise<void> {
+  return invoke<void>("reorder_location_views", { locationId, viewIds });
+}
+
+/** Makes a view its location's default (its edits are saved into it); returns the location's views. */
+export async function setDefaultLocationView(viewId: string): Promise<StoredView[]> {
+  return invoke<StoredView[]>("set_default_location_view", { viewId });
 }
 
 /** The library's rules, in order. */
@@ -482,7 +497,7 @@ export async function clearFolderLabels(locationId: string, folderPaths: string[
   return invoke<void>("clear_folder_labels", { locationId, folderPaths });
 }
 
-/** Every folder in the location with this name, at any depth: the folders a source tag stands for. */
+/** Every folder in the location with this name, at any depth: the folders a path tag stands for. */
 export async function foldersNamed(locationId: string, name: string): Promise<string[]> {
   return invoke<string[]>("folders_named", { locationId, name });
 }
@@ -522,6 +537,11 @@ export async function getNativeIcon(kind: string, size: number): Promise<string>
 /** Names the changes Edit ▸ Undo / Redo act on ("Undo Paste"); null for plain "Undo". */
 export async function setEditMenuLabels(undo: string | null, redo: string | null): Promise<void> {
   return invoke<void>("set_edit_menu_labels", { undo, redo });
+}
+
+/** Enables File ▸ Save View (macOS menu bar): on while the showing view has unsaved edits. */
+export async function setSaveViewEnabled(enabled: boolean): Promise<void> {
+  return invoke<void>("set_save_view_enabled", { enabled });
 }
 
 /** A cached Quick Look thumbnail (PNG path) for a file, or null when there isn't one. */

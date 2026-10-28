@@ -236,12 +236,22 @@ fn extract_exif(exif: &exif::Exif, metadata: &mut Map<String, Value>) {
 
     for (tag, key) in EXIF_FIELDS {
         if let Some(field) = exif.get_field(*tag, In::PRIMARY) {
-            metadata.insert(
-                key.to_string(),
-                Value::String(field.display_value().to_string()),
-            );
+            let text = field.display_value().to_string();
+            let text = if *key == "date_taken" { iso_date_time(&text) } else { text };
+            metadata.insert(key.to_string(), Value::String(text));
         }
     }
+}
+
+/// EXIF's "2023-06-15 12:00:00" (or "2023:06:15 12:00:00") as ISO
+/// "2023-06-15T12:00:00", as Date properties store a date with a time. It's the
+/// camera's clock time, so no time zone is added. Other text is kept as it is.
+pub(crate) fn iso_date_time(text: &str) -> String {
+    ["%Y-%m-%d %H:%M:%S", "%Y:%m:%d %H:%M:%S"]
+        .iter()
+        .find_map(|f| chrono::NaiveDateTime::parse_from_str(text.trim(), f).ok())
+        .map(|d| d.format("%Y-%m-%dT%H:%M:%S").to_string())
+        .unwrap_or_else(|| text.to_string())
 }
 
 pub(crate) async fn bootstrap_properties(
@@ -318,6 +328,21 @@ mod tests {
     fn folder_tags_lists_parent_folders() {
         assert_eq!(folder_tags("Finance/Receipts/a.pdf"), r#"["Finance","Receipts"]"#);
         assert_eq!(folder_tags("a.pdf"), "[]");
+    }
+
+    #[test]
+    fn iso_date_time_reads_exif_dates() {
+        assert_eq!(iso_date_time("2023-06-15 12:00:00"), "2023-06-15T12:00:00");
+        assert_eq!(iso_date_time("2023:06:15 12:00:00"), "2023-06-15T12:00:00");
+        assert_eq!(iso_date_time("not a date"), "not a date");
+    }
+
+    #[test]
+    fn date_taken_is_stored_as_iso() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.jpg");
+        let (_, _, _, _, metadata) = extract_file_data(&path, true).unwrap();
+        assert_eq!(metadata.get("date_taken"), Some(&Value::String("2023-06-15T12:00:00".into())));
+        assert_eq!(infer_value_type(&["2023-06-15T12:00:00".to_string()]), "date");
     }
 
     #[test]

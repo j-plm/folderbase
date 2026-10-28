@@ -13,7 +13,7 @@ const ctx: FormulaContext = {
   kind: "Documents",
   size: "48211",
   slots: { Code: "ab12", Date: "250301" },
-  prop: (n) => ({ Client: "Acme", "Source Tags": "Clients, Acme" })[n] ?? "",
+  prop: (n) => ({ Client: "Acme", "Path Tags": "Clients, Acme" })[n] ?? "",
 };
 const run = (f: string) => runFormula(f, ctx);
 
@@ -68,6 +68,17 @@ describe("dates, folders and other columns", () => {
     expect(() => run("year(kind)")).toThrow(/isn't a date/);
   });
 
+  it("reads and writes times", () => {
+    const at = { ...ctx, slots: { Date: "20240301", Time: "101522" } };
+    expect(runFormula('date({Date} & {Time}, "YYYYMMDDHHmmss")', at)).toBe("2024-03-01T10:15:22");
+    expect(runFormula('time(date({Date} & {Time}, "YYYYMMDDHHmmss"))', at)).toBe("10:15");
+    expect(runFormula('hour(date({Date} & {Time}, "YYYYMMDDHHmmss"))', at)).toBe("10");
+    expect(runFormula('formatDate(date({Date} & {Time}, "YYYYMMDDHHmmss"), "HH.mm")', at)).toBe("10.15");
+    expect(run("time(modified)")).toBe("");
+    // Text that doesn't fit the format is a mistake, not an empty date (no "_" to fit here)
+    expect(() => runFormula('date({Date} & {Time}, "YYYYMMDD_HHmmss")', at)).toThrow(/“20240301101522” isn't a YYYYMMDD_HHmmss date/);
+  });
+
   it("picks folders from the top or the bottom", () => {
     expect(run("folder(1)")).toBe("Clients");
     expect(run("folder(-1)")).toBe("Acme");
@@ -75,7 +86,7 @@ describe("dates, folders and other columns", () => {
   });
 
   it("reads native columns by name", () => {
-    expect(run('kind & " · " & prop("Source Tags")')).toBe("Documents · Clients, Acme");
+    expect(run('kind & " · " & prop("Path Tags")')).toBe("Documents · Clients, Acme");
     expect(run("size")).toBe("48211");
   });
 });

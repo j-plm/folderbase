@@ -35,7 +35,6 @@ import {
 } from "../../lib/commands";
 import type { FileRecord, Property, PropertyConfig, PropertyScope, PropertyValue, ValueType } from "../../types";
 import {
-  applies,
   dependsOn,
   describeScope,
   impliedValues,
@@ -50,11 +49,13 @@ import {
 import ScopeDialog from "./db/ScopeDialog";
 import RulesPanel, { RULES_PANEL_MIN_WIDTH } from "./db/RulesPanel";
 import { definitionFromFilter, writeKeys, type RuleDefinition, type RuleEnv, type RulePlan, type RuleWrite, type StoredRule } from "../../lib/rules";
-import { KIND_BY_TYPE, NATIVE_KINDS, PROP_PREFIX, fileExtension, fileName, metaValue, nativeValue, propName } from "../../lib/fileColumns";
+import { impliedByFile as impliedByFiles, isEmptyValue, valueReader } from "../../lib/fileValues";
+import { NATIVE_KINDS, PROP_PREFIX, fileExtension, fileName, metaValue, nativeValue, propName } from "../../lib/fileColumns";
 import { FileIcon, SymbolIcon } from "../../lib/fileIcons";
 import { useNavigation } from "../../contexts/NavigationContext";
-import { KIND_CATEGORIES, dateGroup, formatFinderDate, formatFinderSize, kindCategory, nameGroup, sizeGroup } from "../../lib/arrange";
-import { flattenGroups, groupIds as groupIdsAll, groupRows, levelState, setLevelCollapsed, toggleCollapsed, type GroupKey, type GroupLevel, type RowGroup } from "../../lib/dbGroups";
+import { formatFinderDate, formatFinderSize, kindCategory } from "../../lib/arrange";
+import { flattenGroups, groupIds as groupIdsAll, groupRows, levelState, setLevelCollapsed, toggleCollapsed, type GroupLevel, type RowGroup } from "../../lib/dbGroups";
+import { folderGroupPath, type PlaceFilter } from "../../lib/folderTree";
 import {
   CELL_PADDING,
   cellBoxStyle,
@@ -75,8 +76,8 @@ import { selectionLabel } from "../../lib/selectionStatus";
 import { describeRefresh, type RefreshSummary } from "../../lib/refreshSummary";
 import MenuPopover, { type MenuAnchor } from "../shared/MenuPopover";
 import Dialog, { DialogButton, DialogField, dialogTextField } from "../shared/Dialog";
-import { useTableViews } from "./db/useTableViews";
-import { DEFAULT_SORT, legacyTable, uniqueViewName, type ViewDefinition } from "../../lib/tableViews";
+import { useLocationViews } from "../../contexts/LocationViewsContext";
+import { DEFAULT_SORT, type ViewDefinition } from "../../lib/tableViews";
 import { useOverwriteConfirm } from "../shared/OverwriteDialog";
 import CloudBadge from "./shared/CloudBadge";
 import {
@@ -91,13 +92,13 @@ import { hasPrimaryModifier, isToggleSelect } from "../../lib/platform";
 import {
   CURRENCIES,
   DATE_DISPLAY_FORMATS,
+  dateConfig,
   formatDate,
   formatDatePattern,
   EXTRACTED_KEYS,
   EXTRACTED_LABELS,
   propertyLabel,
   coerceValue,
-  dateKey,
   defaultCurrency,
   editText,
   formatValue,
@@ -108,7 +109,7 @@ import {
   parseInput,
   valueToText,
 } from "../../lib/propertyTypes";
-import { applyFilters, cycleSort, multiSort, newRule, type ColumnKind, type FilterMatch, type FilterRule } from "../../lib/dbTable";
+import { applyFilters, cycleSort, multiSort, newRule, type FilterMatch, type FilterRule } from "../../lib/dbTable";
 import {
   EMPTY_CELLS,
   cellKey,
@@ -130,8 +131,33 @@ import {
 import FilterSortPopover, { type FilterColumn } from "./db/FilterSortPopover";
 import { HeaderNameEditor, ListCellEditor, ValueListEditor, PropertyValueView, TextCellEditor, PILL_CLASS, PILL_MARK_CLASS, type CommitMove } from "./db/CellEditors";
 
+/** Where you are in the view's folders (BrowseContext), as the table follows it. */
+export interface TablePlace {
+  /**
+   * The files under the folder you're in (null at the view's top): a soft
+   * filter on the view, never saved into it. Counts and value lists still
+   * cover the whole location.
+   */
+  within: ReadonlySet<string> | null;
+  /** The folder you're in (null at the top). */
+  name: string | null;
+  /** The place as filter rows ("Person is Josh"), above the view's own filters; changing one moves there. */
+  filters: PlaceFilter[];
+  /** The levels the folders below the place are made of, named. */
+  levelNames: string[];
+  /** Opens the hierarchy editor. */
+  onEditHierarchy: () => void;
+  /** New View from Folder for a folder group (null when its files can't be filtered for exactly). */
+  newViewFrom: (path: string[]) => { label: string; create: () => Promise<void> } | null;
+  /** The folders below the place as groups, used while the table isn't grouped itself. */
+  groupsFor: (rows: FileRecord[]) => RowGroup<FileRecord>[] | null;
+  /** Opens a folder group's folder. */
+  onOpen: (path: string[]) => void;
+}
+
 interface Props {
   files: FileRecord[];
+  place?: TablePlace | null;
   locationId: string;
   /** Called after file data changes here (edits, mapping, property changes) so the files reload. */
   onChanged?: () => void;
@@ -159,7 +185,7 @@ const STANDARD_COLUMNS: ColumnDef[] = [
   { id: "modified", label: "Modified", weight: 1.2, minWidth: 100 },
 ];
 /** Source tags: the folder names on each file's path, read-only (the "Tags" property holds hand-added ones). */
-const TAGS_COLUMN: ColumnDef = { id: "tags", label: "Source Tags", weight: 2, minWidth: 120, sortable: false };
+const TAGS_COLUMN: ColumnDef = { id: "tags", label: "Path Tags", weight: 2, minWidth: 120, sortable: false };
 /** The trailing header cell holding "+" (add property) and "…" (show or hide columns). */
 const ADD_COLUMN: ColumnDef = {
   id: "__add",
@@ -186,15 +212,11 @@ function defaultGroupDirection(columnId: string): "asc" | "desc" {
   return columnId === "created" || columnId === "modified" || columnId === "size" ? "desc" : "asc";
 }
 
-const isEmptyValue = (v: unknown) =>
-  v == null || (typeof v === "string" && v.trim() === "") || (Array.isArray(v) && v.length === 0);
-
 const sameValue = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 
 const CELL = "shrink-0 px-3 truncate whitespace-nowrap";
 // Finder list metrics: 20pt rows, rounded stripes inset 10px.
 const ROW_HEIGHT = 20;
-const NO_IMPLIED: Record<string, string[]> = {};
 /** A dragged tag's target over a header: promote it to a property ("header:<column id>"). */
 const HEADER_TARGET = "header:";
 /** A dragged tag's target between two headers: a new property there ("insert:<index among the columns>"). */
@@ -212,10 +234,6 @@ function listNames(names: string[]): string {
 const GROUP_HEIGHT = 30;
 /** Each nested grouping level's heading steps in by this much. */
 const GROUP_INDENT = 16;
-const MONTH_NAMES = [
-  "January", "February", "March", "April", "May", "June",
-  "July", "August", "September", "October", "November", "December",
-];
 const INSET = 10;
 
 const TOOLBAR_BUTTON = "px-2.5 py-1 text-xs rounded-md border whitespace-nowrap transition-colors";
@@ -253,7 +271,8 @@ function saveJson(key: string, value: unknown) {
   }
 }
 
-export default function LocationDatabaseView({ files, locationId, onChanged }: Props) {
+export default function LocationDatabaseView({ files, place = null, locationId, onChanged }: Props) {
+  const within = place?.within ?? null;
   const [search, setSearch] = useState("");
   const [sorts, setSorts] = useState<SortState[]>([DEFAULT_SORT]);
   /** The rule being looked at in the Rules panel: the table shows only its files. */
@@ -287,22 +306,26 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   const [deleting, setDeleting] = useState<string | null>(null);
   /** A list column whose values are being edited (Edit Values…), and the header it opens from. */
   const [valuesEditor, setValuesEditor] = useState<{ columnId: string; anchor: HTMLElement } | null>(null);
-  const { structureLocationId } = useNavigation();
-  const structureOpen = structureLocationId === locationId;
+  const { diskFoldersLocationId, rulesOpen, setRulesOpen } = useNavigation();
+  const diskFoldersOpen = diskFoldersLocationId === locationId;
 
   // Column visibility
   const [hiddenStandard, setHiddenStandard] = useState<string[]>([]);
   const [columnOrder, setColumnOrder] = useState<string[]>([]);
   const [showTags, setShowTags] = useState(false);
-  /** Source Tags shows only tags not yet recorded in a property. */
+  /** Path Tags shows only tags not yet recorded in a property. */
   const [hideCovered, setHideCovered] = useState(false);
   const [visibleProperties, setVisibleProperties] = useState<string[]>([]);
   /** Metadata keys present on this location's files. */
   const [metadataKeys, setMetadataKeys] = useState<string[]>([]);
   const [frozen, setFrozen] = useState(true);
+  /** Custom properties with a value in the rows shown appear as columns (TableDefinition). */
+  const [nonEmptyColumns, setNonEmptyColumns] = useState(true);
+  /** While the table isn't grouped itself, the folders below where you are group it. */
+  const [folderGroups, setFolderGroups] = useState(false);
   /** Multi-select properties whose values stay on one line (the rest wrap, the default). */
   const [noWrap, setNoWrap] = useState<string[]>([]);
-  /** Source Tags wrap like a Multi-select, unless turned off. */
+  /** Path Tags wrap like a Multi-select, unless turned off. */
   const [wrapSourceTags, setWrapSourceTags] = useState(true);
   const [scrolledX, setScrolledX] = useState(false);
 
@@ -369,15 +392,15 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     setVisibleProperties(t.visibleProperties);
     setNoWrap(t.noWrap);
     setFrozen(t.frozen);
+    setNonEmptyColumns(t.nonEmptyColumns);
+    setFolderGroups(t.folderGroups);
     setAppliedView((n) => n + 1);
   }, []);
-  const tableViews = useTableViews(
-    locationId,
-    applyView,
-    // The default view starts from the column settings kept before views existed
-    () => ({ table: legacyTable((key) => loadJson<unknown>(`${key}-${locationId}`, undefined)) }),
-    setError
-  );
+  // The location's views are shared with the hierarchy (LocationViewsContext)
+  const tableViews = useLocationViews();
+  const { connect } = tableViews;
+  // Before the first paint: otherwise the table shows every file for a frame before the view's filters
+  useLayoutEffect(() => connect({ apply: applyView, onError: setError }), [connect, applyView]);
   const currentView: ViewDefinition = useMemo(
     () => ({
       table: {
@@ -391,76 +414,27 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         hideCovered,
         wrapSourceTags,
         visibleProperties,
+        nonEmptyColumns,
         noWrap,
         frozen,
+        folderGroups,
       },
     }),
-    [rules, match, sorts, groupLevels, hiddenStandard, columnOrder, showTags, hideCovered, wrapSourceTags, visibleProperties, noWrap, frozen]
+    [rules, match, sorts, groupLevels, hiddenStandard, columnOrder, showTags, hideCovered, wrapSourceTags, visibleProperties, nonEmptyColumns, noWrap, frozen, folderGroups]
   );
   const recordedApply = useRef(-1);
-  const recordView = tableViews.record;
+  const recordTable = tableViews.recordTable;
   useEffect(() => {
-    // The render a view was applied in (or the first) shows the view itself, not an edit
+    // Until a view is applied the table is empty, not edited: recording it then
+    // (as React's second mount pass in development did) cleared the view's filters
+    if (appliedView === 0) return;
+    // The render a view was applied in shows the view itself, not an edit
     if (recordedApply.current !== appliedView) {
       recordedApply.current = appliedView;
       return;
     }
-    recordView(currentView);
-  }, [currentView, appliedView, recordView]);
-
-  /** Save as New View… or Rename View…, while its sheet is open. */
-  const [viewNaming, setViewNaming] = useState<{ mode: "new" | "rename"; text: string; error?: string } | null>(null);
-  const [deletingView, setDeletingView] = useState(false);
-
-  function showViewMenu(e: React.MouseEvent) {
-    const { views, active, edited } = tableViews;
-    const named = !!active && !active.is_default;
-    showContextMenu(
-      [
-        ...views.map(
-          (v): MenuEntry => ({
-            type: "check",
-            text: v.name,
-            checked: v.view_id === active?.view_id,
-            action: () => void tableViews.select(v.view_id),
-            key: v.view_id,
-          })
-        ),
-        { type: "separator" },
-        { type: "item", text: "Save Changes", enabled: edited, action: () => void tableViews.saveChanges() },
-        { type: "item", text: "Revert Changes", enabled: edited, action: () => void tableViews.revert() },
-        {
-          type: "item",
-          text: "Save as New View…",
-          action: () =>
-            setViewNaming({ mode: "new", text: uniqueViewName(named ? active.name : "New View", views.map((v) => v.name)) }),
-        },
-        { type: "separator" },
-        {
-          type: "item",
-          text: "Rename View…",
-          enabled: named,
-          action: () => active && setViewNaming({ mode: "rename", text: active.name }),
-        },
-        { type: "item", text: "Delete View…", enabled: named, action: () => setDeletingView(true) },
-      ],
-      // A pop-up button: the menu opens with the current view under the pointer
-      { event: e, alignKey: active?.view_id }
-    );
-  }
-
-  async function submitViewName() {
-    if (!viewNaming || !tableViews.active) return;
-    const name = viewNaming.text.trim();
-    if (!name) return;
-    try {
-      if (viewNaming.mode === "new") await tableViews.saveAs(name);
-      else await tableViews.rename(tableViews.active.view_id, name);
-      setViewNaming(null);
-    } catch (e) {
-      setViewNaming({ ...viewNaming, error: String(e) });
-    }
-  }
+    recordTable(currentView.table);
+  }, [currentView, appliedView, recordTable]);
 
   function setCollapsed(next: ReadonlySet<string>) {
     setCollapsedState(next);
@@ -480,10 +454,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   }, [locationId]);
   useEffect(loadKeys, [loadKeys]);
 
-  // Re-read keys whenever Map Structure closes: mappings can add properties
+  // Re-read keys whenever Map Disk Folders closes: mappings can add properties
   useEffect(() => {
-    if (!structureOpen) loadKeys();
-  }, [structureOpen, loadKeys]);
+    if (!diskFoldersOpen) loadKeys();
+  }, [diskFoldersOpen, loadKeys]);
 
   const loadRegistry = useCallback(async () => {
     if (!library) {
@@ -515,7 +489,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   /**
    * Refetches every list property's values, keeping the current ones until the
    * new arrive: clearing them first would drop the renamed-value aliases for a
-   * render, and covered Source Tags would flash back.
+   * render, and covered Path Tags would flash back.
    */
   const registryRef = useRef(registry);
   registryRef.current = registry;
@@ -585,22 +559,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         .sort((a, b) => a.localeCompare(b)),
     [metadataKeys, registry]
   );
-  const shownProperties = useMemo(
-    () => visibleProperties.filter((p) => availableProperties.includes(p)),
-    [visibleProperties, availableProperties]
-  );
-
   /** Custom property cells are editable; native columns and values read from the file are not. */
   const isEditable = useCallback(
     (columnId: string) => columnId.startsWith(PROP_PREFIX) && !EXTRACTED_KEYS.has(propName(columnId)),
     []
   );
 
-  const kindOf = useCallback(
-    (columnId: string): ColumnKind =>
-      columnId.startsWith(PROP_PREFIX) ? KIND_BY_TYPE[typeOf(propName(columnId))] : NATIVE_KINDS[columnId] ?? "text",
-    [typeOf]
-  );
 
   // ── Rows: edits applied, then search, filters and sort ─────────────────────
 
@@ -624,55 +588,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     if (pendingWrites.current === 0) setPatches((p) => (p.size === 0 ? p : new Map()));
   }, [files]);
 
-  /**
-   * Values files hold only by implication (Housing = Rent implies Tags has
-   * `housing`): shown faded, and counted by filters, sorting and grouping, but
-   * never written back as stored values.
-   */
-  const impliedByFile = useMemo(() => {
-    const map = new Map<string, Record<string, string[]>>();
-    if (scopes.length === 0) return map;
-    for (const f of rows) {
-      const implied = impliedValues(f.metadata as Record<string, unknown> | null, scopes, isListProperty);
-      if (Object.keys(implied).length > 0) map.set(f.file_id, implied);
-    }
-    return map;
-  }, [rows, scopes, isListProperty]);
-  const impliedFor = useCallback((fileId: string) => impliedByFile.get(fileId) ?? NO_IMPLIED, [impliedByFile]);
-
-  /** A property's value with any implied values added. */
-  const effectiveValue = useCallback(
-    (file: FileRecord | undefined, name: string): unknown => {
-      const value = metaValue(file, name);
-      const implied = file ? impliedByFile.get(file.file_id)?.[name] : undefined;
-      if (!implied) return value;
-      const stored = listValues(value);
-      return typeOf(name) === "array" || stored.length + implied.length > 1 ? [...stored, ...implied] : implied[0];
-    },
-    [impliedByFile, typeOf]
-  );
-
-  const columnValue = useCallback(
-    (file: FileRecord, columnId: string): unknown =>
-      columnId.startsWith(PROP_PREFIX) ? effectiveValue(file, propName(columnId)) : nativeValue(file, columnId),
-    [effectiveValue]
-  );
-
-  const sortValue = useCallback(
-    (file: FileRecord, columnId: string): string | number | null | undefined => {
-      if (!columnId.startsWith(PROP_PREFIX)) {
-        const v = nativeValue(file, columnId);
-        return Array.isArray(v) ? v.join(", ") : (v as string | number | null);
-      }
-      const name = propName(columnId);
-      const v = effectiveValue(file, name);
-      if (v == null) return null;
-      const type = typeOf(name);
-      if (type === "number" && typeof v === "number") return v;
-      if (type === "date") return dateKey(v) ?? valueToText(v);
-      return valueToText(v);
-    },
-    [typeOf, effectiveValue]
+  /** Implied scope values, by file (see lib/fileValues). */
+  const impliedByFile = useMemo(() => impliedByFiles(rows, scopes, isListProperty), [rows, scopes, isListProperty]);
+  // How filters, sorting and grouping read each file's values: shared with the hierarchy
+  const { impliedFor, effectiveValue, columnValue, kindOf, sortValue, groupKey } = useMemo(
+    () => valueReader({ typeOf, scopes, implied: impliedByFile }),
+    [typeOf, scopes, impliedByFile]
   );
 
   // Only re-filter and re-sort when the inputs change, not on every render
@@ -686,86 +607,51 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
             (f.relative_path ?? "").toLowerCase().includes(q)
         )
       : rows;
-    const filtered = applyFilters(searched, rules, match, columnValue, kindOf);
+    const placed = within ? searched.filter((f) => within.has(f.file_id)) : searched;
+    const filtered = applyFilters(placed, rules, match, columnValue, kindOf);
     // While a rule is looked at in the Rules panel, just the files it applies to
     const focused = ruleFocus
       ? applyFilters(filtered, ruleFocus.definition.conditions, ruleFocus.definition.match, columnValue, kindOf)
       : filtered;
     return multiSort(focused, sorts, sortValue);
-  }, [rows, search, rules, match, sorts, columnValue, kindOf, sortValue, ruleFocus]);
+  }, [rows, search, within, rules, match, sorts, columnValue, kindOf, sortValue, ruleFocus]);
 
-  /** Which group a file falls in for a column: Finder's buckets for its own columns, the value for properties. */
-  const groupKey = useCallback(
-    (file: FileRecord, columnId: string): GroupKey | null => {
-      const bucket = ([label, rank]: [string, number]) => ({ label, rank });
-      if (!columnId.startsWith(PROP_PREFIX)) {
-        switch (columnId) {
-          case "name":
-            return bucket(nameGroup(file));
-          case "type": {
-            const category = kindCategory(file);
-            return { label: category, rank: KIND_CATEGORIES.indexOf(category) };
-          }
-          case "size":
-            if (file.file_size == null) return null;
-            // Buckets run largest first; ranked so ascending is smallest first
-            return { ...bucket(sizeGroup(file.file_size)), rank: -sizeGroup(file.file_size)[1] };
-          case "created":
-          case "modified": {
-            const iso = columnId === "created" ? file.timestamp : file.modified_at ?? file.timestamp;
-            if (!iso) return null;
-            // Ranked so ascending is oldest first (Finder's buckets count back from today)
-            const [label, rank] = dateGroup(iso, new Date());
-            return { label, rank: -rank };
-          }
-          case "path": {
-            const rel = (file.relative_path ?? "").replace(/\\/g, "/");
-            const folder = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : "";
-            return { label: folder || "Top Level", rank: folder };
-          }
-          default: {
-            const v = nativeValue(file, columnId);
-            const list = listValues(v);
-            if (list.length === 0) return v == null || v === "" ? null : { label: String(v), rank: String(v) };
-            const label = [...list].sort((a, b) => a.localeCompare(b)).join(", ");
-            return { label, rank: label };
-          }
-        }
-      }
-      const name = propName(columnId);
-      const v = effectiveValue(file, name);
-      if (isEmptyValue(v)) {
-        // A scoped property's files it doesn't apply to group apart from those still missing a value
-        const scope = scopeOf(name);
-        if (scope && !applies(scope, file.metadata as Record<string, unknown> | null, impliedFor(file.file_id))) {
-          return { label: "Doesn't Apply", rank: "\uffff" };
-        }
-        return null;
-      }
-      const type = typeOf(name);
-      if (type === "number" && typeof v === "number") return { label: valueToText(v), rank: v };
-      if (type === "date") {
-        const key = dateKey(v);
-        if (!key) return { label: valueToText(v), rank: valueToText(v) };
-        const [year, month] = key.split("-");
-        return { label: `${MONTH_NAMES[Number(month) - 1]} ${year}`, rank: `${year}-${month}` };
-      }
-      if (type === "array") {
-        // A file with several values is grouped under that combination
-        const label = [...listValues(v)].sort((a, b) => a.localeCompare(b)).join(", ");
-        return { label, rank: label };
-      }
-      return { label: valueToText(v), rank: valueToText(v) };
-    },
-    [typeOf, effectiveValue, scopeOf, impliedFor]
-  );
+
+  /**
+   * The properties shown as columns: those chosen, and with non-empty columns
+   * on, every custom property the rows shown have a value in, so the columns
+   * follow the folder or filter you're in.
+   */
+  const shownProperties = useMemo(() => {
+    const chosen = visibleProperties.filter((p) => availableProperties.includes(p));
+    if (!nonEmptyColumns) return chosen;
+    const filled = availableProperties.filter(
+      (p) => !EXTRACTED_KEYS.has(p) && !chosen.includes(p) && matched.some((f) => !isEmptyValue(metaValue(f, p)))
+    );
+    return [...chosen, ...filled];
+  }, [visibleProperties, availableProperties, nonEmptyColumns, matched]);
 
   // Grouped: headings and rows in display order; `sorted` is the rows left showing
   const groups = useMemo(() => {
-    if (groupLevels.length === 0) return null;
+    // Not grouped here: the folders below the place group it, so they can be opened from the table
+    if (groupLevels.length === 0) return folderGroups ? (place?.groupsFor(matched) ?? null) : null;
     return groupRows(matched, groupLevels, groupKey, (columnId) => `No ${columnLabel(columnId)}`);
-  }, [matched, groupLevels, groupKey]);
+  }, [matched, groupLevels, groupKey, place, folderGroups]);
   const { items, rows: sorted } = useMemo(() => flattenGroups(matched, groups, collapsed), [matched, groups, collapsed]);
+  /**
+   * Row keys: the file's id, or with folder groups, a later copy of a file in
+   * several folders (a Multi-select) gets its own.
+   */
+  const rowKeys = useMemo(() => {
+    const seen = new Map<string, number>();
+    return items.map((item) => {
+      if (item.type !== "row") return "";
+      const id = item.row.file_id;
+      const n = seen.get(id) ?? 0;
+      seen.set(id, n + 1);
+      return n === 0 ? id : `${id}:${n}`;
+    });
+  }, [items]);
   /** Each visible row's position in `items` (which also holds the group headings). */
   const itemOfRow = useMemo(() => {
     const out: number[] = [];
@@ -795,7 +681,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     setHideCovered(next);
   }
 
-  /** A file's source tags as shown: without the covered ones when those are hidden. */
+  /** A file's path tags as shown: without the covered ones when those are hidden. */
   /** Folder names behind renamed values ("Apollo" ← "01 Apollo"), across this library's list properties. */
   const aliasSources = useMemo(() => {
     const map = new Map<string, string[]>();
@@ -831,7 +717,14 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   }
 
   function toggleProperty(name: string) {
-    updateVisibleProperties((prev) => (prev.includes(name) ? prev.filter((p) => p !== name) : [...prev, name]));
+    const shown = shownProperties.includes(name);
+    // Hiding a column that's shown for having values: the columns stop following the rows, as they are now
+    if (shown && nonEmptyColumns && hasValue(name)) {
+      setNonEmptyColumns(false);
+      updateVisibleProperties(() => shownProperties.filter((p) => p !== name));
+      return;
+    }
+    updateVisibleProperties((prev) => (shown ? prev.filter((p) => p !== name) : [...prev, name]));
   }
 
   function toggleWrap(name: string) {
@@ -909,20 +802,20 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     if (id === TAGS_COLUMN.id) {
       if (showTags) toggleShowTags();
     } else if (id.startsWith(PROP_PREFIX)) {
-      if (visibleProperties.includes(propName(id))) toggleProperty(propName(id));
+      if (shownProperties.includes(propName(id))) toggleProperty(propName(id));
     } else if (!hiddenStandard.includes(id)) {
       toggleStandard(id);
     }
   }
 
-  // Bulk visibility. Native: the standard columns, Source Tags and values read
+  // Bulk visibility. Native: the standard columns, Path Tags and values read
   // from the file (EXIF). Custom: the editable properties.
   // In More Info order (Camera Make, Camera Model, Date Taken…), not alphabetical
   const extractedProperties = Object.keys(EXTRACTED_LABELS).filter((p) => availableProperties.includes(p));
   const customProperties = availableProperties.filter((p) => !EXTRACTED_KEYS.has(p));
   const allNativeShown =
     hiddenStandard.length === 0 && showTags && extractedProperties.every((p) => visibleProperties.includes(p));
-  const allCustomShown = customProperties.every((p) => visibleProperties.includes(p));
+  const allCustomShown = customProperties.every((p) => shownProperties.includes(p));
 
   function setNativeShown(shown: boolean) {
     const next = shown ? [] : STANDARD_COLUMNS.map((c) => c.id).filter((id) => id !== "name");
@@ -932,6 +825,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   }
 
   function setPropertiesShown(names: string[], shown: boolean) {
+    // Hiding columns shown for having values: the columns stop following the rows, as they are now
+    if (!shown && nonEmptyColumns && names.some(hasValue)) {
+      setNonEmptyColumns(false);
+      updateVisibleProperties(() => shownProperties.filter((p) => !names.includes(p)));
+      return;
+    }
     updateVisibleProperties((prev) =>
       shown ? [...prev, ...names.filter((p) => !prev.includes(p))] : prev.filter((p) => !names.includes(p))
     );
@@ -942,8 +841,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   // the visibility settings
   const hasValue = (name: string) => matched.some((f) => !isEmptyValue(metaValue(f, name)));
   const emptyShown =
-    matched.length > 0 ? customProperties.filter((p) => visibleProperties.includes(p) && !hasValue(p)) : [];
-  const nonEmptyHidden = customProperties.filter((p) => !visibleProperties.includes(p) && hasValue(p));
+    matched.length > 0 ? customProperties.filter((p) => shownProperties.includes(p) && !hasValue(p)) : [];
 
   const allExtractedShown = extractedProperties.every((p) => visibleProperties.includes(p));
 
@@ -951,7 +849,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     return {
       type: "check",
       text: propertyLabel(name),
-      checked: visibleProperties.includes(name),
+      checked: shownProperties.includes(name),
       action: () => toggleProperty(name),
       key: PROP_PREFIX + name,
       // Custom properties can be deleted from here (not values read from the file, nor the built-in Tags)
@@ -989,6 +887,15 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         text: allCustomShown ? "Hide All Custom Properties" : "Show All Custom Properties",
         action: () => setPropertiesShown(customProperties, !allCustomShown),
       },
+      ...(extractedProperties.length > 0
+        ? [
+            {
+              type: "item" as const,
+              text: allExtractedShown ? "Hide All Media Properties" : "Show All Media Properties",
+              action: () => setPropertiesShown(extractedProperties, !allExtractedShown),
+            },
+          ]
+        : []),
       { type: "separator" },
       {
         type: "item",
@@ -997,12 +904,20 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         action: () => setPropertiesShown(emptyShown, false),
       },
       {
-        type: "item",
+        // A setting, not a one-off: the columns follow the folder or filter you're in
+        type: "check",
         text: "Show Non-Empty Custom Properties",
-        enabled: nonEmptyHidden.length > 0,
-        action: () => setPropertiesShown(nonEmptyHidden, true),
+        checked: nonEmptyColumns,
+        action: () => {
+          // Off: keep the columns showing now, so nothing jumps
+          if (nonEmptyColumns) updateVisibleProperties(() => shownProperties);
+          setNonEmptyColumns(!nonEmptyColumns);
+        },
       },
       { type: "separator" },
+      // The columns, as everywhere properties are listed: Custom, then Native, then Media (read from the file)
+      ...(customProperties.length > 0 ? [{ type: "header" as const, text: "Custom" }, ...customProperties.map(propertyEntry), { type: "separator" as const }] : []),
+      { type: "header", text: "Native" },
       ...STANDARD_COLUMNS.map((c) => ({
         type: "check" as const,
         text: c.label,
@@ -1012,32 +927,9 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         key: c.id,
       })),
       { type: "check", text: TAGS_COLUMN.label, checked: showTags, action: toggleShowTags, key: TAGS_COLUMN.id },
-      // Values read from the file (EXIF), grouped as in Finder's Get Info
       ...(extractedProperties.length > 0
-        ? [
-            {
-              type: "submenu" as const,
-              text: "More Info",
-              items: [
-                {
-                  type: "item" as const,
-                  text: "Show All",
-                  enabled: !allExtractedShown,
-                  action: () => setPropertiesShown(extractedProperties, true),
-                },
-                {
-                  type: "item" as const,
-                  text: "Hide All",
-                  enabled: extractedProperties.some((p) => visibleProperties.includes(p)),
-                  action: () => setPropertiesShown(extractedProperties, false),
-                },
-                { type: "separator" as const },
-                ...extractedProperties.map(propertyEntry),
-              ],
-            },
-          ]
+        ? [{ type: "separator" as const }, { type: "header" as const, text: "Media" }, ...extractedProperties.map(propertyEntry)]
         : []),
-      ...(customProperties.length > 0 ? [{ type: "separator" as const }, ...customProperties.map(propertyEntry)] : []),
       { type: "separator" },
       { type: "item", text: "Size All Properties to Fit", action: layout.fitAll },
     ];
@@ -1046,16 +938,30 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   const closeColumnsMenu = useCallback(() => setPropertyMenu(null), []);
   const closePanel = useCallback(() => setPanel(null), []);
   /** Right-click on a group heading: this group, its level, or every group. */
+  function newViewItem(made: { label: string; create: () => Promise<void> } | null): MenuEntry[] {
+    return made
+      ? [{ type: "item", text: `New View from “${made.label}”`, action: () => made.create().catch((e) => setError(String(e))) }]
+      : [];
+  }
+
   function showGroupMenu(e: React.MouseEvent, group: RowGroup<FileRecord>, isCollapsed: boolean) {
     e.preventDefault();
     e.stopPropagation();
     if (!groups) return;
     const level = groupLevels[group.depth];
-    const levelName = level ? columnLabel(level.key) : "";
+    const folderPath = folderGroupPath(group.id);
+    const levelName = level ? columnLabel(level.key) : "Folder";
     const state = levelState(collapsed, groups, group.depth);
     const allShut = groupIdsAll(groups).every((id) => collapsed.has(id));
     showContextMenu(
       [
+        ...(folderPath && place
+          ? [
+              { type: "item" as const, text: `Open “${group.label}”`, action: () => place.onOpen(folderPath) },
+              ...newViewItem(place.newViewFrom(folderPath)),
+              { type: "separator" as const },
+            ]
+          : []),
         {
           type: "item",
           text: isCollapsed ? `Expand “${group.label}”` : `Collapse “${group.label}”`,
@@ -1093,7 +999,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   // ── Rules ─────────────────────────────────────────────────────────────────
 
-  const [rulesOpen, setRulesOpen] = useState(false);
   /** The Rules panel's width, dragged at its left edge; kept between sessions. */
   const [rulesWidth, setRulesWidthState] = useState(() => Math.max(RULES_PANEL_MIN_WIDTH, loadJson("rules-panel-width", 760)));
   function setRulesWidth(width: number, save: boolean) {
@@ -1117,11 +1022,12 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     loadRules().catch(() => {});
   }, [loadRules, files]);
 
-  /** The view's filter (and search) as a rule's conditions, when it has any. */
+  /** The folder you're in, the view's filter and search as a rule's conditions, when there are any. */
+  const placeConditions = place?.filters;
   const viewFilterRule = useMemo(() => {
-    const def = definitionFromFilter(rules, match, search);
+    const def = definitionFromFilter(rules, match, search, placeConditions?.flatMap((f) => f.conditions));
     return def.conditions.length > 0 ? def : null;
-  }, [rules, match, search]);
+  }, [rules, match, search, placeConditions]);
 
   function openRules(draft: RuleDefinition | null) {
     setRuleDraft(draft);
@@ -1450,7 +1356,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       );
     }
     if (col.id === TAGS_COLUMN.id) {
-      entries.push({ type: "check", text: "Hide Tags Recorded in Properties", checked: hideCovered, action: toggleHideCovered });
+      entries.push({ type: "check", text: "Hide Captured Path Tags", checked: hideCovered, action: toggleHideCovered });
     }
     entries.push({
       type: "item",
@@ -1479,7 +1385,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       }
       if (typeOf(name) === "date") {
         // Each format shown with today's date in it
-        const current = configOf(name).dateFormat ?? "medium";
+        const config = configOf(name);
+        const current = config.dateFormat ?? "medium";
         const today = new Date().toISOString().slice(0, 10);
         entries.push({
           type: "submenu",
@@ -1490,7 +1397,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                 type: "check",
                 text: `${f.label}  ${formatDate(today, f.id)}`,
                 checked: current === f.id,
-                action: () => void changeType(name, "date", f.id === "medium" ? null : { dateFormat: f.id }),
+                action: () => void changeType(name, "date", dateConfig({ ...config, dateFormat: f.id })),
               })
             ),
             { type: "separator" },
@@ -1500,6 +1407,13 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               checked: current.startsWith("custom:"),
               action: () =>
                 setDateFormatEditing({ name, pattern: current.startsWith("custom:") ? current.slice(7) : "DD/MM/YYYY" }),
+            },
+            { type: "separator" },
+            {
+              type: "check",
+              text: "Show Time",
+              checked: !config.hideTime,
+              action: () => void changeType(name, "date", dateConfig({ ...config, hideTime: !config.hideTime })),
             },
           ],
         });
@@ -1616,18 +1530,20 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   const [cellSel, setCellSel] = useState<CellSelection>(EMPTY_CELLS);
   useEffect(() => setCellSel((s) => pruneCells(s, grid)), [grid]);
   const solidRect = useMemo(() => isSolidRect(cellSel, grid), [cellSel, grid]);
+  // Rows with a selected cell, marked at the left edge so the file is clear from far-right columns
+  const cellRows = useMemo(() => new Set([...cellSel.cells].map((k) => parseCellKey(k).row)), [cellSel]);
   // Files selected (whole rows, or the rows that have a selected cell), shown in the count line
   const selectedFiles = useMemo(() => {
     if (cellSel.cells.size === 0) return sorted.filter((f) => selection.isSelected(f.file_id)).length;
-    return new Set([...cellSel.cells].map((k) => parseCellKey(k).row)).size;
-  }, [cellSel, sorted, selection]);
+    return cellRows.size;
+  }, [cellSel, cellRows, sorted, selection]);
 
   const cellValue = useCallback(
     (row: string, col: string) => metaValue(rowById.get(row), propName(col)),
     [rowById]
   );
 
-  const [editing, setEditing] = useState<{ ref: CellRef; seed?: string } | null>(null);
+  const [editing, setEditing] = useState<{ ref: CellRef; seed?: string; renaming?: string } | null>(null);
   const [editAnchor, setEditAnchor] = useState<HTMLElement | null>(null);
   const listMove = useRef<CommitMove>("none");
 
@@ -1893,9 +1809,9 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     window.addEventListener("mouseup", onUp);
   }
 
-  function startEdit(ref: CellRef, seed?: string) {
+  function startEdit(ref: CellRef, seed?: string, renaming?: string) {
     setCellSel({ cells: new Set([cellKey(ref)]), anchor: ref, active: ref });
-    setEditing({ ref, seed });
+    setEditing({ ref, seed, renaming });
     reveal(ref);
   }
 
@@ -2062,7 +1978,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   // ── Dragging tags onto columns ────────────────────────────────────────────
 
-  // A source tag (folder name) dropped on a list column maps every folder with
+  // A path tag (folder name) dropped on a list column maps every folder with
   // that name to the property; a hand-added tag moves out of Tags into it.
   // The column must be hovered for DROP_DWELL_MS before a release drops there.
 
@@ -2247,7 +2163,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   /**
    * Source tag → column: maps every folder with that name to the property, so it
-   * holds on every refresh. The tag stays (source tags never change) and shows as covered.
+   * holds on every refresh. The tag stays (path tags never change) and shows as covered.
    */
   async function mapTag(value: string, name: string, type: ValueType) {
     const folders = await foldersNamed(locationId, value);
@@ -2379,17 +2295,20 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
   }
 
   /**
-   * Right-click on a pill: Make Property from it, and for a value that opens
-   * into a scoped property, Unlink it (that property stops depending on it).
+   * Right-click on a pill: Rename it (a property's value, in its cell's editor),
+   * Make Property from it, and for a value that opens into a scoped property,
+   * Unlink it (that property stops depending on it).
    */
-  function showPillMenu(e: React.MouseEvent, value: string, source: TagSource) {
+  function showPillMenu(e: React.MouseEvent, value: string, source: TagSource, rename?: () => void) {
     e.preventDefault();
     e.stopPropagation();
-    // A source tag's link runs through Tags (or the property its folders map to)
+    // A path tag's link runs through Tags (or the property its folders map to)
     const linked = scopes.filter((sc) =>
       sc.conditions.some((c) => (source === "source" || c.property === source.property) && hasText([c.value], value))
     );
-    const entries: MenuEntry[] = [{ type: "item", text: `Make Property from “${value}”…`, action: () => openPromote(value, source) }];
+    const entries: MenuEntry[] = [];
+    if (rename) entries.push({ type: "item", text: `Rename “${value}”…`, action: rename }, { type: "separator" });
+    entries.push({ type: "item", text: `Make Property from “${value}”…`, action: () => openPromote(value, source) });
     if (linked.length > 0) entries.push({ type: "separator" });
     for (const sc of linked) {
       const rest = sc.conditions.filter(
@@ -2416,7 +2335,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   /**
    * Makes `name` a property scoped to the tag: it applies where the tag is held.
-   * A hand-added tag or value is the condition as it stands; a source tag's
+   * A hand-added tag or value is the condition as it stands; a path tag's
    * folders are mapped into Tags first (so the condition holds on every
    * refresh), unless they're already mapped to a property, which is then the
    * condition. An existing property of that name is linked rather than duplicated.
@@ -2569,6 +2488,10 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
 
   const frozenId = frozen ? "name" : null;
   const extraColCount = (showTags ? 1 : 0) + shownProperties.length;
+  // The toolbar buttons show only that something is set (no count, which reads as a notification)
+  const sortedOwnWay =
+    sorts.length > 0 && !(sorts.length === 1 && sorts[0].key === DEFAULT_SORT.key && sorts[0].direction === DEFAULT_SORT.direction);
+  const grouped = groupLevels.length > 0 || (folderGroups && !!place && place.levelNames.length > 0);
 
   function renderPropertyCell(col: ColumnDef, file: FileRecord, rowIdx: number) {
     const style = cellBoxStyle(layout.widths[col.id], layout.phaseOf(col.id));
@@ -2673,7 +2596,9 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               config={config}
               // Any Select / Multi-select value can be dragged onto another list column
               onPillMouseDown={isList ? (e, v) => startTagDrag(e, v, { property: name }) : undefined}
-              onPillContextMenu={isList ? (e, v) => showPillMenu(e, v, { property: name }) : undefined}
+              onPillContextMenu={
+                isList ? (e, v) => showPillMenu(e, v, { property: name }, () => startEdit(ref, undefined, v)) : undefined
+              }
               wrap={isList && wraps(name)}
               implied={isList ? impliedHere : undefined}
               opens={isList ? (v) => opensInto(scopes, name, v) : undefined}
@@ -2709,8 +2634,8 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                     position: "sticky",
                     left: INSET,
                     zIndex: 1,
-                    // Covers the inset strip beside it, plus a hairline edge once scrolled across
-                    boxShadow: `-${INSET}px 0 0 var(--n-900)${scrolledX ? ", 1px 0 0 var(--n-700)" : ""}`,
+                    // A hairline edge once scrolled across
+                    boxShadow: scrolledX ? "1px 0 0 var(--n-700)" : undefined,
                   }
                 : style
             }
@@ -2718,6 +2643,11 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
               isFrozen ? `rounded-l-md ${rowSelected ? "native-selected" : rowIdx % 2 === 1 ? "bg-neutral-850" : "bg-neutral-900"}` : ""
             }`}
           >
+            {isFrozen && (
+              // Covers the inset strip beside it, square-cornered (a shadow would follow the
+              // rounded corners and let the row scrolling underneath show through them)
+              <div aria-hidden className="absolute top-0 bottom-0 right-full bg-neutral-900" style={{ width: INSET }} />
+            )}
             <FileIcon path={file.file_path} mimeType={file.file_type} size={16} />
             <span className="truncate min-w-0">{fileName(file.file_path)}</span>
             <CloudBadge show={file.online_only} className="ml-auto" />
@@ -2837,14 +2767,17 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
     });
   }
 
-  /** Removes a Select / Multi-select value from the property and from every file that has it. */
-  async function coreDeleteValue(name: string, value: string) {
+  /** Removes Select / Multi-select values from the property and from every file that has them. */
+  async function coreDeleteValue(name: string, ...values: string[]) {
     const prop = await ensureProperty(name);
-    const record =
-      (await getPropertyValues(prop.property_id)).find((v) => v.value === value) ??
-      // A value found only on files: register it so it can be deleted
-      (await createPropertyValue(prop.property_id, value));
-    await deletePropertyValue(record.value_id);
+    const records = await getPropertyValues(prop.property_id);
+    for (const value of values) {
+      const record =
+        records.find((v) => v.value === value) ??
+        // A value found only on files: register it so it can be deleted
+        (await createPropertyValue(prop.property_id, value));
+      await deletePropertyValue(record.value_id);
+    }
     await afterPropertyChange();
   }
 
@@ -2866,6 +2799,27 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         await restoreValues(before);
       },
       redo: () => coreDeleteValue(name, value),
+    });
+  }
+
+  /** Removes several list values at once (Edit Values… ▸ Delete): one Undo puts them all back. */
+  async function deleteListValues(columnId: string, values: string[]) {
+    const name = propName(columnId);
+    const before = snapshot(name).filter((e) => listValues(e.value).some((v) => values.includes(v)));
+    try {
+      await history.queue(() => coreDeleteValue(name, ...values));
+    } catch (e) {
+      setError(String(e));
+      return;
+    }
+    history.push({
+      label: values.length === 1 ? "Delete Value" : "Delete Values",
+      undo: async () => {
+        const prop = await ensureProperty(name);
+        for (const value of values) await createPropertyValue(prop.property_id, value).catch(() => {});
+        await restoreValues(before);
+      },
+      redo: () => coreDeleteValue(name, ...values),
     });
   }
 
@@ -2908,46 +2862,36 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           {selectionLabel({ selected: selectedFiles, total: matched.length }) ??
             (ruleFocus
               ? `${matched.length.toLocaleString()} ${matched.length === 1 ? "file matches" : "files match"} “${ruleFocus.name}”`
-              : matched.length === rows.length
-                ? `${matched.length.toLocaleString()} files`
-                : `${matched.length.toLocaleString()} of ${rows.length.toLocaleString()} files`)}
+              : `${
+                  matched.length === rows.length
+                    ? `${matched.length.toLocaleString()} files`
+                    : `${matched.length.toLocaleString()} of ${rows.length.toLocaleString()} files`
+                }${place?.name ? ` in “${place.name}”` : ""}`)}
         </span>
         <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            onClick={showViewMenu}
-            title="Saved views of this location: filters, sorts, groups and columns"
-            className={`${TOOLBAR_BUTTON} flex items-center gap-1 max-w-[220px] ${
-              tableViews.active && !tableViews.active.is_default ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE
-            }`}
-          >
-            <SymbolIcon name="rectangle.stack" size={11} fallback="▤" />
-            <span className="truncate">{tableViews.active?.name ?? "View"}</span>
-            {tableViews.edited && <span className="text-neutral-500 shrink-0">— Edited</span>}
-            <SymbolIcon name="chevron.down" size={8} fallback="▾" />
-          </button>
           <button
             ref={filterButtonRef}
             onClick={() => setPanel((p) => (p === "filter" ? null : "filter"))}
             className={`${TOOLBAR_BUTTON} flex items-center gap-1 ${activeRules.length > 0 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
           >
             <SymbolIcon name="line.3.horizontal.decrease" size={11} fallback="≡" />
-            {activeRules.length > 0 ? `Filter (${activeRules.length})` : "Filter"}
+            Filter
           </button>
           <button
             ref={sortButtonRef}
             onClick={() => setPanel((p) => (p === "sort" ? null : "sort"))}
-            className={`${TOOLBAR_BUTTON} flex items-center gap-1 ${sorts.length > 1 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
+            className={`${TOOLBAR_BUTTON} flex items-center gap-1 ${sortedOwnWay ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
           >
             <SymbolIcon name="arrow.up.arrow.down" size={11} fallback="↕" />
-            {sorts.length > 1 ? `Sort (${sorts.length})` : "Sort"}
+            Sort
           </button>
           <button
             ref={groupButtonRef}
             onClick={() => setPanel((p) => (p === "group" ? null : "group"))}
-            className={`${TOOLBAR_BUTTON} flex items-center gap-1 ${groupLevels.length > 0 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
+            className={`${TOOLBAR_BUTTON} flex items-center gap-1 ${grouped ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
           >
             <SymbolIcon name="square.grid.3x2" size={11} fallback="▦" />
-            {groupLevels.length > 0 ? `Group (${groupLevels.length})` : "Group"}
+            Group
           </button>
           <button
             onClick={() => (rulesOpen ? setRulesOpen(false) : openRules(null))}
@@ -2977,7 +2921,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                   }}
                   className={`${TOOLBAR_BUTTON} ${extraColCount > 0 ? TOOLBAR_BUTTON_ACTIVE : TOOLBAR_BUTTON_IDLE}`}
                 >
-                  {extraColCount > 0 ? `Properties (${extraColCount})` : "Properties"}
+                  Properties
                 </button>
               ),
               menu: [{ type: "submenu", text: "Properties", items: columnMenuEntries() }],
@@ -3009,6 +2953,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
       <div
         ref={layout.setContainer}
         tabIndex={0}
+        data-browse-keys
         onKeyDown={onTableKeyDown}
         onScroll={(e) => {
           const x = e.currentTarget.scrollLeft > 0;
@@ -3128,8 +3073,14 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                       }}
                       onClick={(e) => {
                         e.stopPropagation();
+                        if (e.detail > 1) return;
                         // Option-click opens or closes every group at this level, as with Finder's disclosure triangles
                         if (groups) setCollapsed(toggleCollapsed(collapsed, group, groups, e.altKey));
+                      }}
+                      // A folder's group opens the folder, as double-clicking a folder does in Icons and List
+                      onDoubleClick={() => {
+                        const path = folderGroupPath(group.id);
+                        if (path && place) place.onOpen(path);
                       }}
                       onContextMenu={(e) => showGroupMenu(e, group, item.collapsed)}
                       className="flex items-end cursor-default select-none"
@@ -3161,7 +3112,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                 const joinsBelow = isSelected && next?.type === "row" && selection.isSelected(next.row.file_id);
                 return (
                   <div
-                    key={file.file_id}
+                    key={rowKeys[virtualRow.index]}
                     style={{
                       position: "absolute",
                       top: 0,
@@ -3187,6 +3138,13 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
                           : ""
                     }`}
                   >
+                    {(cellRows.has(file.file_id) || editing?.ref.row === file.file_id) && (
+                      // Zero-width and pinned at the row's start, so the bar stays in the inset
+                      // strip (above the frozen Name column's cover) however far across it's scrolled
+                      <div aria-hidden className="shrink-0 w-0 self-stretch" style={{ position: "sticky", left: INSET, zIndex: 2 }}>
+                        <div className="absolute top-[3px] bottom-[3px] w-[3px] rounded-full bg-blue-500" style={{ left: -INSET + 3 }} />
+                      </div>
+                    )}
                     {columns.map((col) => renderCell(col, file, rowIdx, isSelected))}
                   </div>
                 );
@@ -3233,6 +3191,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           multiple={typeOf(propName(editingList.ref.col)) === "array"}
           options={valuesFor(editingList.ref.col)}
           seed={editingList.seed}
+          renaming={editingList.renaming}
           onDeleteValue={(value) => deleteListValue(editingList.ref.col, value)}
           onRenameValue={(from, to) => renameListValue(editingList.ref.col, from, to)}
           sourcesOf={(value) => sourcesOf(editingList.ref.col, value)}
@@ -3271,6 +3230,7 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           onAdd={(value) => addListValue(valuesEditor.columnId, value)}
           onRename={(from, to) => renameListValue(valuesEditor.columnId, from, to)}
           onDelete={(value) => deleteListValue(valuesEditor.columnId, value)}
+          onDeleteMany={(values) => deleteListValues(valuesEditor.columnId, values)}
           onClose={() => setValuesEditor(null)}
         />
       )}
@@ -3303,10 +3263,26 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           groupLevelState={(depth) => (groups ? levelState(collapsed, groups, depth) : "expanded")}
           onCollapseLevel={(depth, collapse) => groups && setCollapsed(setLevelCollapsed(collapsed, groups, depth, collapse))}
           valuesFor={valuesFor}
-          onMakeRule={() => {
-            setPanel(null);
-            openRules(definitionFromFilter(rules, match, search));
-          }}
+          folder={place ? { filters: place.filters, onGo: place.onOpen } : undefined}
+          folderGrouping={
+            place && place.levelNames.length > 0
+              ? {
+                  name: place.name,
+                  levels: place.levelNames,
+                  on: folderGroups,
+                  onToggle: setFolderGroups,
+                  onEditHierarchy: place.onEditHierarchy,
+                }
+              : undefined
+          }
+          onMakeRule={
+            viewFilterRule
+              ? () => {
+                  setPanel(null);
+                  openRules(viewFilterRule);
+                }
+              : undefined
+          }
         />
       )}
 
@@ -3377,64 +3353,6 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
         />
       )}
 
-      {viewNaming && (
-        <Dialog
-          title={viewNaming.mode === "new" ? "Save as New View" : "Rename View"}
-          message={
-            viewNaming.mode === "new"
-              ? "A view keeps this table's filters, sorts, groups and columns, to come back to."
-              : undefined
-          }
-          onCancel={() => setViewNaming(null)}
-          onSubmit={() => void submitViewName()}
-          footer={
-            <>
-              <span className="flex-1" />
-              <DialogButton onClick={() => setViewNaming(null)}>Cancel</DialogButton>
-              <DialogButton variant="default" disabled={!viewNaming.text.trim()}>
-                {viewNaming.mode === "new" ? "Save" : "Rename"}
-              </DialogButton>
-            </>
-          }
-        >
-          <div className="flex flex-col gap-1.5">
-            <DialogField label="Name:">
-              <input
-                autoFocus
-                value={viewNaming.text}
-                onChange={(e) => setViewNaming({ ...viewNaming, text: e.target.value, error: undefined })}
-                onFocus={(e) => e.currentTarget.select()}
-                className={dialogTextField}
-              />
-            </DialogField>
-            {viewNaming.error && <p className="pl-[80px] text-xs text-red-500">{viewNaming.error}</p>}
-          </div>
-        </Dialog>
-      )}
-
-      {deletingView && tableViews.active && (
-        <Dialog
-          title={`Delete “${tableViews.active.name}”?`}
-          message="The view is removed. Files and their values aren't changed."
-          onCancel={() => setDeletingView(false)}
-          footer={
-            <>
-              <span className="flex-1" />
-              <DialogButton onClick={() => setDeletingView(false)}>Cancel</DialogButton>
-              <DialogButton
-                variant="destructive"
-                onClick={() => {
-                  setDeletingView(false);
-                  if (tableViews.active) tableViews.remove(tableViews.active.view_id).catch((e) => setError(String(e)));
-                }}
-              >
-                Delete
-              </DialogButton>
-            </>
-          }
-        />
-      )}
-
       {deleting && (
         <Dialog
           title={`Delete “${deleting}”?`}
@@ -3460,15 +3378,15 @@ export default function LocationDatabaseView({ files, locationId, onChanged }: P
           message={
             <>
               Shown as <span className="font-medium">{formatDatePattern(new Date(), dateFormatEditing.pattern) || "…"}</span>. Use YYYY or YY
-              for the year, MMMM, MMM, MM or M for the month, DD or D for the day, dddd or ddd for the weekday; put other words in
-              [brackets].
+              for the year, MMMM, MMM, MM or M for the month, DD or D for the day, dddd or ddd for the weekday, HH or H for the hour,
+              mm for the minute and ss for the second; put other words in [brackets].
             </>
           }
           onCancel={() => setDateFormatEditing(null)}
           onSubmit={() => {
             const { name, pattern } = dateFormatEditing;
             setDateFormatEditing(null);
-            if (pattern.trim()) void changeType(name, "date", { dateFormat: `custom:${pattern}` });
+            if (pattern.trim()) void changeType(name, "date", dateConfig({ ...configOf(name), dateFormat: `custom:${pattern}` }));
           }}
           footer={
             <>
@@ -3684,7 +3602,7 @@ function TagPills({
   );
 }
 
-/** Where a dragged pill came from: Source Tags (a folder name), or a list property's values. */
+/** Where a dragged pill came from: Path Tags (a folder name), or a list property's values. */
 type TagSource = "source" | { property: string };
 
 /** A tag pill being dragged: where it is, and the column it will drop on once armed. */

@@ -15,10 +15,12 @@ export interface NavigationState {
   views: View[];
   viewNodes: ViewNode[];
   currentLibrary: string | null;
-  editStructure: boolean;
+  editHierarchy: boolean;
   masterEditorOpen: boolean;
-  /** The location whose Map Structure panel is open, if any. */
-  structureLocationId: string | null;
+  /** The location whose Map Disk Folders panel is open, if any. */
+  diskFoldersLocationId: string | null;
+  /** Whether the Database view's Rules panel is open. Only one side panel (Hierarchy, Map Disk Folders, Rules) is open at once. */
+  rulesOpen: boolean;
   navigateTo: (path: string[]) => void;
   pushSegment: (segment: string) => void;
   /** Sets path to path.slice(0, index). index=0 returns to root. */
@@ -28,12 +30,13 @@ export interface NavigationState {
   setActiveLocation: (locationId: string | null) => void;
   /** Switches to a different view and resets path to []. */
   setActiveView: (viewId: string) => void;
-  setEditStructure: (v: boolean) => void;
+  setEditHierarchy: (v: boolean) => void;
   openMasterEditor: () => void;
   closeMasterEditor: () => void;
-  /** Opens Map Structure for a location, switching to it if needed. */
-  openStructureMapping: (locationId: string) => void;
-  closeStructureMapping: () => void;
+  /** Opens Map Disk Folders for a location, switching to it if needed. */
+  openDiskFolders: (locationId: string) => void;
+  closeDiskFolders: () => void;
+  setRulesOpen: (open: boolean) => void;
   refreshViews: () => Promise<void>;
   refreshViewNodes: () => Promise<void>;
 }

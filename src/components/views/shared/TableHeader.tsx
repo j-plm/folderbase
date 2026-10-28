@@ -112,7 +112,12 @@ export default function TableHeader({
     <div
       data-table-header
       className="sticky top-0 z-10 bg-neutral-900 border-b border-neutral-700/60"
-      style={{ width: contentWidth + inset * 2, paddingLeft: inset, paddingRight: inset }}
+      // --scroll-end: room to scroll the last column out from behind an open side panel
+      style={{
+        width: `calc(${contentWidth + inset * 2}px + var(--scroll-end, 0px))`,
+        paddingLeft: inset,
+        paddingRight: `calc(${inset}px + var(--scroll-end, 0px))`,
+      }}
       onContextMenu={(e) =>
         onContextMenu?.(
           e,

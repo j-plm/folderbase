@@ -77,21 +77,58 @@ export function parseNumber(text: string): number | null {
   return percent ? n / 100 : n;
 }
 
-/** "YYYY-MM-DD" for ISO and EXIF ("2024:03:01 10:00:00") dates, else null. */
-export function dateKey(value: unknown): string | null {
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** A Date in local time as "YYYY-MM-DDTHH:MM:SS". */
+function localKey(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+}
+
+/**
+ * A date as "YYYY-MM-DD", or with its time as "YYYY-MM-DDTHH:MM:SS", from ISO
+ * text and EXIF ("2024:03:01 10:00:00"); else null. A time with a zone (Created,
+ * Modified: "…Z", "…+00:00") is a moment, given in local time; one without is
+ * kept as written, the clock time the camera or file name gave. These keys sort
+ * as text, a date alone before the same day with a time.
+ */
+export function dateTimeKey(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  const m = /^(\d{4})[-:](\d{2})[-:](\d{2})/.exec(value);
-  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+  const m = /^(\d{4})[-:](\d{2})[-:](\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?\s*(Z|[+-]\d{2}:?\d{2})?)?/i.exec(value.trim());
+  if (!m) return null;
+  const day = `${m[1]}-${m[2]}-${m[3]}`;
+  if (m[4] == null) return day;
+  if (m[7]) {
+    const d = new Date(`${day}T${m[4]}:${m[5]}:${m[6] ?? "00"}${m[7].length === 5 ? `${m[7].slice(0, 3)}:${m[7].slice(3)}` : m[7]}`);
+    return Number.isNaN(d.getTime()) ? day : localKey(d);
+  }
+  return `${day}T${m[4]}:${m[5]}:${m[6] ?? "00"}`;
+}
+
+/** "YYYY-MM-DD" for a date, with or without a time (see dateTimeKey), else null. */
+export function dateKey(value: unknown): string | null {
+  return dateTimeKey(value)?.slice(0, 10) ?? null;
+}
+
+/** "HH:MM:SS" when a date has a time, else null. */
+export function timeOfKey(key: string): string | null {
+  return key.length > 10 ? key.slice(11, 19) : null;
+}
+
+/** A date key (see dateTimeKey) as a local Date. */
+export function keyToDate(key: string): Date {
+  const [y, m, d] = key.slice(0, 10).split("-").map(Number);
+  const [h, min, s] = (timeOfKey(key) ?? "00:00:00").split(":").map(Number);
+  return new Date(y, m - 1, d, h, min, s);
 }
 
 function parseDate(text: string): string | null {
-  const key = dateKey(text.trim());
+  const key = dateTimeKey(text.trim());
   if (key) return key;
   const t = Date.parse(text);
   if (Number.isNaN(t)) return null;
   const d = new Date(t);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  // "1 March 2024 10:15" keeps its time; "1 March 2024" is a date alone
+  return /\d:\d{2}/.test(text) ? localKey(d) : localKey(d).slice(0, 10);
 }
 
 /** Plain text for a stored value: what copy puts on the clipboard. */
@@ -154,8 +191,8 @@ export function formatValue(value: unknown, type: ValueType | undefined, config:
     }
   }
   if (type === "date") {
-    const key = dateKey(value);
-    if (key) return formatDate(key, config.dateFormat);
+    const key = dateTimeKey(value);
+    if (key) return formatDate(config.hideTime ? key.slice(0, 10) : key, config.dateFormat);
   }
   return valueToText(value);
 }
@@ -214,37 +251,52 @@ export const DATE_DISPLAY_FORMATS: { id: string; label: string }[] = [
 
 const DAY_MS = 86_400_000;
 
+/** A Date property's settings as stored: defaults (Medium, times shown) left out, null when nothing's left. */
+export function dateConfig(config: PropertyConfig): PropertyConfig | null {
+  const out: PropertyConfig = {};
+  if (config.dateFormat && config.dateFormat !== "medium") out.dateFormat = config.dateFormat;
+  if (config.hideTime) out.hideTime = true;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 /**
- * A stored date (YYYY-MM-DD) as a Date property shows it. The named formats
- * follow the system's own date styles; "custom:<pattern>" uses tokens:
- * YYYY YY (year) · MMMM MMM MM M (month) · DD D (day) · dddd ddd (weekday);
- * text in [brackets] is shown as it is.
+ * A stored date (YYYY-MM-DD, or with a time: YYYY-MM-DDTHH:MM:SS) as a Date
+ * property shows it. The named formats follow the system's own date styles,
+ * a time following as Finder shows one ("1 Mar 2024 at 10:15"); "custom:<pattern>"
+ * uses tokens: YYYY YY (year) · MMMM MMM MM M (month) · DD D (day) · dddd ddd
+ * (weekday) · HH H (hour) · mm (minute) · ss (second); text in [brackets] is
+ * shown as it is. A custom pattern shows a time only through its own tokens.
  */
 export function formatDate(key: string, format: string | undefined, now: Date = new Date()): string {
-  const [y, m, d] = key.split("-").map(Number);
-  const date = new Date(y, m - 1, d);
+  const date = keyToDate(key);
+  const time = timeOfKey(key);
+  const at = (day: string) =>
+    time ? `${day} at ${date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}` : day;
   try {
     switch (format ?? "medium") {
       case "short":
-        return date.toLocaleDateString(undefined, { dateStyle: "short" });
+        return time
+          ? date.toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" })
+          : date.toLocaleDateString(undefined, { dateStyle: "short" });
       case "long":
-        return date.toLocaleDateString(undefined, { dateStyle: "long" });
+        return at(date.toLocaleDateString(undefined, { dateStyle: "long" }));
       case "full":
-        return date.toLocaleDateString(undefined, { dateStyle: "full" });
+        return at(date.toLocaleDateString(undefined, { dateStyle: "full" }));
       case "iso":
-        return key;
+        return time ? `${key.slice(0, 10)} ${time}` : key;
       case "relative": {
         const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-        const days = Math.round((date.getTime() - today) / DAY_MS);
+        const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+        const days = Math.round((day - today) / DAY_MS);
         // A week either way reads as days ("yesterday", "in 3 days"); further off, as a date
-        if (Math.abs(days) <= 7) return new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(days, "day");
-        return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+        if (Math.abs(days) <= 7) return at(new Intl.RelativeTimeFormat(undefined, { numeric: "auto" }).format(days, "day"));
+        return at(date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }));
       }
       case "medium":
-        return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+        return at(date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }));
       default:
         if (format?.startsWith("custom:")) return formatDatePattern(date, format.slice("custom:".length));
-        return date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+        return at(date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }));
     }
   } catch {
     return key;
@@ -265,6 +317,10 @@ export function formatDatePattern(date: Date, pattern: string): string {
     ["D", () => String(date.getDate())],
     ["dddd", () => name({ weekday: "long" })],
     ["ddd", () => name({ weekday: "short" })],
+    ["HH", () => pad2(date.getHours())],
+    ["H", () => String(date.getHours())],
+    ["mm", () => pad2(date.getMinutes())],
+    ["ss", () => pad2(date.getSeconds())],
   ];
   let out = "";
   let i = 0;

@@ -56,9 +56,11 @@ export interface PropertyConfig {
   /**
    * How a Date property shows its dates: "short", "medium" (the default),
    * "long", "full", "iso", "relative", or "custom:<pattern>" (DD/MM/YYYY…).
-   * Dates are always stored as YYYY-MM-DD.
+   * Dates are stored as YYYY-MM-DD, or YYYY-MM-DDTHH:MM:SS with a time.
    */
   dateFormat?: string;
+  /** A Date property showing its dates without the times they have (Show Time off). */
+  hideTime?: boolean;
   /** Marks the library's built-in Tags property (renamable, not deletable, always Multi-select). */
   system?: "tags";
 }

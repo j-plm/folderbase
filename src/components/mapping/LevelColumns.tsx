@@ -4,18 +4,7 @@ import { inheritWidths } from "../../lib/columnBrowser";
 import { FolderIcon, SymbolIcon } from "../../lib/fileIcons";
 import { middleTruncate } from "../../lib/tileLabel";
 import { measureText, uiFont } from "../../lib/textMeasure";
-import {
-  InheritNameButton,
-  LevelNameInput,
-  MappedLabel,
-  levelCaption,
-  levelKey,
-  levelName,
-  levelNodes,
-  levelPlaceholder,
-  levelTargets,
-  type LevelRendererProps,
-} from "./levels";
+import { FolderNote, levelNodes, type FolderNoteText, type LevelLayoutProps, type LevelNode } from "./levels";
 
 // Finder column view metrics, as in ColumnBrowser.
 const DEFAULT_WIDTH = 240;
@@ -48,9 +37,9 @@ function saveRootWidth(width: number) {
   }
 }
 
-/** Room the mapped property label takes beside a folder's name. */
-function labelWidth(label: string | undefined): number {
-  return label ? measureText(label, uiFont(11)) + ICON_GAP : 0;
+/** Room a folder's note takes beside its name. */
+function noteWidth(note: FolderNoteText | undefined): number {
+  return note ? measureText(note.text, uiFont(11)) + ICON_GAP : 0;
 }
 
 /** Room left for the name in a row of a column `width` wide. */
@@ -59,21 +48,22 @@ function nameWidth(width: number): number {
 }
 
 /**
- * Column mode of the mapping editor: one column per level, headed by the
- * level's property name. Selecting several folders groups their children
- * by parent in the next column.
+ * Levels as columns: one column per level, headed by the level's property.
+ * Selecting several folders groups their children by parent in the next column.
  */
-export default function MappingColumns({
+export default function LevelColumns<N extends LevelNode>({
   levels,
-  labels,
-  savedLevel,
+  heading,
+  headingText,
+  caption,
   folderName,
   onToggle,
-  onCommit,
-  onInherit,
-  excluded,
   onFolderMenu,
-}: LevelRendererProps) {
+  note,
+  dimmed,
+  hasChildren,
+  emptyGroup,
+}: LevelLayoutProps<N>) {
   const containerRef = useRef<HTMLDivElement>(null);
   const font = useMemo(() => uiFont(13), []);
   const headerFont = useMemo(() => uiFont(13, 600), []);
@@ -116,7 +106,7 @@ export default function MappingColumns({
       (n) => measureText(n.folder_name, font) + DEFAULT_WIDTH - nameWidth(DEFAULT_WIDTH)
     );
     const headings = [
-      levelName(levelNodes(level), labels).value,
+      headingText(levelIndex),
       ...(level.groups.length > 1 ? level.groups.map((g) => folderName(g.parentPath)) : []),
     ].map((t) => measureText(t, headerFont) + HEADER_CHROME);
     const width = Math.max(MIN_WIDTH, Math.ceil(Math.max(0, ...rows, ...headings)) + 2);
@@ -129,7 +119,6 @@ export default function MappingColumns({
   return (
     <div ref={containerRef} className="flex-1 flex min-h-0 h-full overflow-x-auto overflow-y-hidden">
       {levels.map((level, levelIndex) => {
-        const { value } = levelName(levelTargets(level).targets, labels);
         const width = colWidths[levelIndex];
         return (
           <div
@@ -138,19 +127,8 @@ export default function MappingColumns({
             className="relative shrink-0 h-full flex flex-col border-r border-neutral-700/60"
           >
             <div className="shrink-0 flex flex-col px-4 pt-2 pb-1.5 border-b border-neutral-700/60">
-              <div className="flex items-center gap-1">
-                <LevelNameInput
-                  key={levelKey(level)}
-                  value={value}
-                  placeholder={levelPlaceholder(level, labels)}
-                  onCommit={(name) => onCommit(levelIndex, name)}
-                  className="flex-1 text-[13px] text-neutral-100"
-                />
-                <InheritNameButton onClick={() => onInherit(levelIndex)} />
-              </div>
-              <span className="text-[11px] text-neutral-500 truncate">
-                {levelCaption(level, savedLevel === levelIndex, folderName)}
-              </span>
+              <div className="flex items-center gap-1">{heading(levelIndex, "columns")}</div>
+              <span className="text-[11px] text-neutral-500 truncate">{caption(levelIndex)}</span>
             </div>
             <div className="flex-1 overflow-y-auto px-2 pb-2">
               {level.groups.map((group, groupIndex) => (
@@ -163,10 +141,13 @@ export default function MappingColumns({
                       {folderName(group.parentPath)}
                     </div>
                   )}
+                  {group.nodes.length === 0 && emptyGroup && (
+                    <div className="px-2 py-1 text-[12px] text-neutral-500">{emptyGroup(group)}</div>
+                  )}
                   {group.nodes.map((node) => {
                     const isSelected = level.selected.includes(node.folder_path);
-                    const isExcluded = excluded.has(node.folder_path);
-                    const label = isExcluded ? "Excluded" : labels[node.folder_path];
+                    const isDimmed = dimmed(node);
+                    const folderNote = note(node);
                     return (
                       <div
                         key={node.folder_path}
@@ -175,14 +156,14 @@ export default function MappingColumns({
                         style={{ height: ROW_HEIGHT, gap: ICON_GAP }}
                         className={`flex items-center px-2 rounded-md text-body text-neutral-100 cursor-default select-none ${
                           isSelected ? (levelIndex === activeLevel ? "native-selected" : "bg-neutral-700") : ""
-                        } ${isExcluded ? "opacity-50" : ""}`}
+                        } ${isDimmed ? "opacity-50" : ""}`}
                       >
                         <FolderIcon size={ICON_SIZE} />
                         <span className="flex-1 min-w-0 whitespace-nowrap overflow-hidden" title={node.folder_name}>
-                          {middleTruncate(node.folder_name, nameWidth(width) - labelWidth(label), (t) => measureText(t, font))}
+                          {middleTruncate(node.folder_name, nameWidth(width) - noteWidth(folderNote), (t) => measureText(t, font))}
                         </span>
-                        <MappedLabel name={label} className="max-w-[45%]" />
-                        {node.children.length > 0 && !isExcluded && (
+                        <FolderNote note={folderNote} className="max-w-[45%]" />
+                        {hasChildren(node) && (
                           <SymbolIcon
                             name="chevron.right"
                             size={CHEVRON_SIZE}

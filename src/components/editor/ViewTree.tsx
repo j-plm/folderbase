@@ -39,7 +39,7 @@ export default function ViewTree({
   return (
     <div className="text-sm">
       {rootNodes.length === 0 && !addingRoot && (
-        <p className="text-xs text-neutral-500 px-3 py-2 italic">No layers configured.</p>
+        <p className="text-xs text-neutral-500 px-3 py-2 italic">No levels configured.</p>
       )}
 
       {rootNodes.map((node) => (

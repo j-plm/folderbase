@@ -225,7 +225,24 @@ button {
   }
 }
 
+/*
+ * A drag resting on a level of the hierarchy: the row's blue blinks twice
+ * just before it springs open (as Finder blinks a folder held over).
+ */
+@keyframes spring-flash {
+  0%,
+  50%,
+  100% {
+    opacity: 1;
+  }
+  25%,
+  75% {
+    opacity: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  [style*="spring-flash"],
   [style*="column-arm"],
   [style*="column-close"] {
     animation: none !important;

@@ -482,6 +482,8 @@ pub async fn rename_property_value_impl(pool: &DbPool, property_id: &str, from: 
         .map_err(|e| e.to_string())?;
     // Properties scoped to the value follow it
     crate::commands::scopes::move_condition_value(&mut tx, property_id, from, property_id, to).await?;
+    // Folders that branch on the value keep their structure
+    crate::commands::location_views::rename_value_in_views(&mut tx, prop.library.as_deref(), &prop.name, from, to).await?;
 
     for (file_id, mut meta) in files_in_scope(&mut tx, prop.library.as_deref()).await? {
         if meta.get_mut(&prop.name).is_some_and(|v| rename_in_value(v, from, to)) {

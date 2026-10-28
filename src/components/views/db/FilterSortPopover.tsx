@@ -1,4 +1,5 @@
 import Popover, { popoverField, popoverSelect } from "../../shared/Popover";
+import ColumnOptions from "../../shared/ColumnOptions";
 import { useRef, useState } from "react";
 import type React from "react";
 import { SymbolIcon } from "../../../lib/fileIcons";
@@ -12,6 +13,7 @@ import {
   type FilterRule,
 } from "../../../lib/dbTable";
 import { dropIndexAt, moveColumnId, type SortState } from "../../../lib/columns";
+import type { PlaceFilter } from "../../../lib/folderTree";
 import { compilePattern, isPatternError } from "../../../lib/patterns";
 
 /** What's wrong with a "matches pattern" value, or null. */
@@ -53,6 +55,23 @@ interface Props {
   valuesFor: (columnId: string) => string[];
   /** Opens the Rules panel with a new rule made from these filters. */
   onMakeRule?: () => void;
+  /**
+   * The folder you're in: a row per folder on the way, narrowing the view
+   * without being one of its filters. Changing a row's folder moves there;
+   * removing it goes up out of that folder.
+   */
+  folder?: { filters: PlaceFilter[]; onGo: (path: string[]) => void };
+  /**
+   * The view's folders below where you are, which group the table while it has
+   * no grouping of its own (when `on`).
+   */
+  folderGrouping?: {
+    name: string | null;
+    levels: string[];
+    on: boolean;
+    onToggle: (on: boolean) => void;
+    onEditHierarchy: () => void;
+  };
 }
 
 /** The database view's filter rules (Filter button), sort keys (Sort button) or grouping levels (Group button). */
@@ -75,6 +94,8 @@ export default function FilterSortPopover({
   onCollapseLevel,
   valuesFor,
   onMakeRule,
+  folder,
+  folderGrouping,
 }: Props) {
   const first = columns[0];
 
@@ -102,7 +123,47 @@ export default function FilterSortPopover({
                 </label>
               )}
             </div>
-            {rules.length === 0 && <p className="text-neutral-500">No filters. Every file is shown.</p>}
+            {folder && folder.filters.length > 0 && (
+              <div className="flex flex-col gap-1.5 pb-2 border-b border-neutral-700/60">
+                <div className="flex items-baseline gap-2">
+                  <p className="text-neutral-400 flex-1">In folder</p>
+                  <button
+                    type="button"
+                    onClick={() => folder.onGo([])}
+                    className="h-6 px-1.5 rounded-[6px] text-blue-400 hover:bg-neutral-700/40"
+                  >
+                    Exit Folder
+                  </button>
+                </div>
+                {folder.filters.map((f, i) => (
+                  <div key={f.path.join("/")} className="flex items-center gap-1.5">
+                    <span className={`${popoverField} w-[120px] flex items-center text-neutral-400 truncate`}>{f.column}</span>
+                    <span className="w-[118px] text-neutral-400">is</span>
+                    <select
+                      value={f.value}
+                      onChange={(e) => folder.onGo([...f.path.slice(0, -1), e.target.value])}
+                      className={`${popoverSelect} flex-1 min-w-0`}
+                    >
+                      {f.options.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                    <RemoveButton
+                      label={i === 0 ? "Exit folder" : "Go up out of this folder"}
+                      onClick={() => folder.onGo(f.path.slice(0, -1))}
+                    />
+                  </div>
+                ))}
+                <p className="text-[11px] text-neutral-500">Where you are in the view's folders. It isn't saved with the view.</p>
+              </div>
+            )}
+            {rules.length === 0 && (
+              <p className="text-neutral-500">
+                {folder?.filters.length ? "No filters of the view's own." : "No filters. Every file is shown."}
+              </p>
+            )}
             <ConditionRows columns={columns} rules={rules} onChange={onRulesChange} valuesFor={valuesFor} removeLabel="Remove filter" />
             <div className="flex items-center">
               {first && (
@@ -146,7 +207,37 @@ export default function FilterSortPopover({
         {section === "group" && (
           <>
             <p className="font-semibold">Group</p>
-            {groups.length === 0 && <p className="text-neutral-500">Not grouped.</p>}
+            {folderGrouping && (
+              // One line: the switch, then the view's folder levels, which open its Hierarchy
+              <div
+                className={`flex items-center gap-1.5 min-w-0 pb-2 border-b border-neutral-700/60 ${
+                  folderGrouping.on && groups.length > 0 ? "text-neutral-500" : ""
+                }`}
+                title={
+                  groups.length > 0
+                    ? "The groups below take its place while there are any."
+                    : `Groups by the folders ${folderGrouping.name ? `below “${folderGrouping.name}”` : "of the view"}.`
+                }
+              >
+                <label className="flex items-center gap-1.5 shrink-0">
+                  <input
+                    type="checkbox"
+                    checked={folderGrouping.on}
+                    onChange={(e) => folderGrouping.onToggle(e.target.checked)}
+                  />
+                  Group by Hierarchy
+                </label>
+                <button
+                  type="button"
+                  onClick={folderGrouping.onEditHierarchy}
+                  title="Edit Hierarchy…"
+                  className="min-w-0 truncate text-blue-400 hover:underline"
+                >
+                  {folderGrouping.levels.join(" › ")}
+                </button>
+              </div>
+            )}
+            {groups.length === 0 && !folderGrouping?.on && <p className="text-neutral-500">Not grouped.</p>}
             <LevelList
               levels={groups}
               columns={columns}
@@ -181,7 +272,7 @@ export default function FilterSortPopover({
   );
 }
 
-/** Which item of a list a pattern is tried on: Source Tags are folders, top first. */
+/** Which item of a list a pattern is tried on: Path Tags are folders, top first. */
 export function itemChoices(columnId: string): [string, string][] {
   return columnId === "tags"
     ? [
@@ -209,12 +300,18 @@ export function ConditionRows({
   onChange,
   valuesFor,
   removeLabel,
+  rowAction,
+  below,
 }: {
   columns: FilterColumn[];
   rules: FilterRule[];
   onChange: (rules: FilterRule[]) => void;
   valuesFor: (columnId: string) => string[];
   removeLabel: string;
+  /** A control at the end of a row, before its remove button. */
+  rowAction?: (rule: FilterRule) => React.ReactNode;
+  /** Shown under a row, attached to it. */
+  below?: (rule: FilterRule) => React.ReactNode;
 }) {
   const kindOf = (id: string) => columns.find((c) => c.id === id)?.kind ?? "text";
   function updateRule(id: string, patch: Partial<FilterRule>) {
@@ -239,11 +336,7 @@ export function ConditionRows({
                 onChange={(e) => updateRule(rule.id, { column: e.target.value })}
                 className={`${popoverSelect} w-[120px]`}
               >
-                {columns.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.label}
-                  </option>
-                ))}
+                <ColumnOptions columns={columns} />
               </select>
               <select
                 value={rule.op}
@@ -283,9 +376,11 @@ export function ConditionRows({
               ) : (
                 <span className="flex-1" />
               )}
+              {rowAction?.(rule)}
               <RemoveButton label={removeLabel} onClick={() => onChange(rules.filter((r) => r.id !== rule.id))} />
             </div>
             {problem && <p className="pl-[246px] text-[11px] text-red-500">{problem}</p>}
+            {below?.(rule)}
           </div>
         );
       })}
@@ -463,13 +558,7 @@ function LevelList({
             onChange={(e) => onChange(levels.map((l, j) => (j === i ? onKeyChange(e.target.value) : l)))}
             className={`${popoverSelect} flex-1 min-w-0`}
           >
-            {columns
-              .filter((c) => c.id === level.key || !levels.some((l) => l.key === c.id))
-              .map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                </option>
-              ))}
+            <ColumnOptions columns={columns.filter((c) => c.id === level.key || !levels.some((l) => l.key === c.id))} />
           </select>
           <select
             value={level.direction}

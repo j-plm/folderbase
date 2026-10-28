@@ -35,7 +35,7 @@ export const NATIVE_LABELS: Record<string, string> = {
   size: "Size",
   created: "Created",
   modified: "Modified",
-  tags: "Source Tags",
+  tags: "Path Tags",
 };
 
 /** A file's folders, top first ("Clients/Acme/2024/x.pdf" → Clients, Acme, 2024). */

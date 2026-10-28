@@ -371,3 +371,40 @@ fn test_infer_value_type_exif_date_is_enum() {
     let values = vec!["2023:01:15 10:23:45".to_string()];
     assert_eq!(infer_value_type(&values), "enum");
 }
+
+// ── Date Taken migration ──────────────────────────────────────────────────────
+
+/// Date Taken registered as a Select by earlier builds becomes a Date, and its
+/// EXIF-style values ("2023-06-15 12:00:00") become ISO with the time kept.
+#[tokio::test]
+async fn test_date_taken_becomes_a_date_with_time() {
+    let pool = setup_db().await;
+    let prop = insert_property(&pool, "date_taken", Some("photos"), "enum").await;
+    let file = insert_file_with_metadata(&pool, "photos", r#"{"date_taken":"2023-06-15 12:00:00","rig":"A"}"#).await;
+    let other = insert_file_with_metadata(&pool, "photos", r#"{"date_taken":"unknown"}"#).await;
+    sqlx::query("PRAGMA user_version = 1").execute(&pool).await.unwrap();
+
+    folderbase_lib::db::run_migrations(&pool).await.unwrap();
+
+    let value_type: String = sqlx::query_scalar("SELECT value_type FROM properties WHERE property_id = ?")
+        .bind(&prop)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(value_type, "date");
+    let meta = |id: String| {
+        let pool = pool.clone();
+        async move {
+            let s: String = sqlx::query_scalar("SELECT metadata FROM files WHERE file_id = ?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            serde_json::from_str::<serde_json::Value>(&s).unwrap()
+        }
+    };
+    let m = meta(file).await;
+    assert_eq!(m["date_taken"], "2023-06-15T12:00:00");
+    assert_eq!(m["rig"], "A");
+    assert_eq!(meta(other).await["date_taken"], "unknown");
+}

@@ -12,7 +12,7 @@ export default function LocalViewEditor() {
     views,
     refreshViewNodes,
     refreshViews,
-    setEditStructure,
+    setEditHierarchy,
   } = useNavigation();
 
   const [showFullTree, setShowFullTree] = useState(false);
@@ -64,10 +64,10 @@ export default function LocalViewEditor() {
       {/* Header */}
       <div className="flex items-center gap-2 px-3 h-11 border-b border-neutral-700/60 shrink-0">
         <span className="flex-1 text-xs font-medium text-neutral-300 truncate">
-          {activeView?.name ?? "Edit Structure"}
+          {activeView?.name ?? "Edit Hierarchy"}
         </span>
         <button
-          onClick={() => setEditStructure(false)}
+          onClick={() => setEditHierarchy(false)}
           title="Close"
           className="w-5 h-5 flex items-center justify-center text-neutral-500 hover:text-neutral-300 text-xs"
         >

@@ -1,4 +1,4 @@
-// Finder-style sorting and grouping for the Tiles, List and Columns views.
+// Finder-style sorting and grouping for the Icons, List and Columns views.
 
 import type { FileRecord } from "../types";
 import { compareSortValues, type SortDirection } from "./columns";
@@ -220,6 +220,31 @@ export function dateGroup(iso: string | null | undefined, now: Date): [string, n
   return [String(date.getFullYear()), 100 + (now.getFullYear() - date.getFullYear())];
 }
 
+/**
+ * The days a date bucket from dateGroup covers, as [first, end) day starts
+ * (end null: up to now). Null for a label dateGroup doesn't make.
+ */
+export function dateGroupRange(label: string, now: Date): [Date, Date | null] | null {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const daysAgo = (n: number) => new Date(today.getFullYear(), today.getMonth(), today.getDate() - n);
+  // Older buckets hold only what the recent ones (the last 30 days) don't
+  const older = (from: Date, end: Date): [Date, Date] => [from, end < daysAgo(30) ? end : daysAgo(30)];
+  switch (label) {
+    case "Today":
+      return [today, null];
+    case "Yesterday":
+      return [daysAgo(1), today];
+    case "Previous 7 Days":
+      return [daysAgo(7), daysAgo(1)];
+    case "Previous 30 Days":
+      return [daysAgo(30), daysAgo(7)];
+  }
+  const month = MONTHS.indexOf(label);
+  if (month >= 0) return older(new Date(now.getFullYear(), month, 1), new Date(now.getFullYear(), month + 1, 1));
+  if (/^\d{4}$/.test(label)) return older(new Date(Number(label), 0, 1), new Date(Number(label) + 1, 0, 1));
+  return null;
+}
+
 const MB = 1024 * 1024;
 const SIZE_BUCKETS: [number, string][] = [
   [1024 * MB, "More than 1 GB"],
@@ -235,6 +260,12 @@ export function sizeGroup(bytes: number | null | undefined): [string, number] {
   if (bytes == null) return ["Unknown Size", SIZE_BUCKETS.length];
   const i = SIZE_BUCKETS.findIndex(([min]) => bytes >= min);
   return [SIZE_BUCKETS[i][1], i];
+}
+
+/** The sizes a bucket from sizeGroup covers, in bytes: [min, end) (end null: no limit). */
+export function sizeGroupRange(label: string): [number, number | null] | null {
+  const i = SIZE_BUCKETS.findIndex(([, l]) => l === label);
+  return i < 0 ? null : [SIZE_BUCKETS[i][0], i === 0 ? null : SIZE_BUCKETS[i - 1][0]];
 }
 
 export function nameGroup(file: FileRecord): [string, number] {

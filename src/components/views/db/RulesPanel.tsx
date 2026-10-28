@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import ColumnOptions from "../../shared/ColumnOptions";
 import type React from "react";
 import { popoverField, popoverSelect } from "../../shared/Popover";
 import { SymbolIcon } from "../../../lib/fileIcons";
-import { listItems, matchesRule, newRule, type FilterMatch } from "../../../lib/dbTable";
+import { listItems, matchesRule, newRule, type FilterMatch, type FilterRule } from "../../../lib/dbTable";
 import { dropIndexAt, moveColumnId } from "../../../lib/columns";
 import { baseName, fileName } from "../../../lib/fileColumns";
-import { formulaProblem, FORMULA_FUNCTIONS } from "../../../lib/formula";
+import { formulaProblem } from "../../../lib/formula";
 import { DATE_FORMATS, examplePattern, type ExampleSlot } from "../../../lib/patterns";
 import { valueToText } from "../../../lib/propertyTypes";
 import {
@@ -15,6 +16,7 @@ import {
   parseDefinition,
   planRule,
   ruleSlots,
+  withFilterConditions,
   type ActionMode,
   type RuleAction,
   type RuleDefinition,
@@ -23,8 +25,8 @@ import {
   type RulePlan,
   type StoredRule,
 } from "../../../lib/rules";
-import { AddButton, ConditionRows, RemoveButton, itemChoices, type FilterColumn } from "./FilterSortPopover";
-import RulesHelp from "./RulesHelp";
+import { AddButton, ConditionRows, RemoveButton, type FilterColumn } from "./FilterSortPopover";
+import RulesHelp, { FormulaHelp, PatternHelp } from "./RulesHelp";
 import Dialog, { DialogButton } from "../../shared/Dialog";
 
 /** A remembered size (panel widths, preview columns); the fallback if storage is unavailable. */
@@ -80,7 +82,7 @@ interface Props {
   valuesFor: (columnId: string) => string[];
   /** A new rule to start from (Make Rule from Filter…). */
   draft: RuleDefinition | null;
-  /** The view's current filter as a rule, offered as a starting point (null: no filter). */
+  /** The view's current filter as conditions (null: the view isn't filtered). */
   viewFilter: RuleDefinition | null;
   onSave: (rule: StoredRule) => Promise<StoredRule | null>;
   onDelete: (ruleId: string) => Promise<void>;
@@ -168,7 +170,7 @@ export default function RulesPanel(props: Props) {
     return out;
   }, [rules, files, env]);
 
-  const previewEnv = useMemo(() => (overHandEdits ? { ...env, written: new Set<string>() } : env), [env, overHandEdits]);
+  const previewEnv = useMemo(() => (overHandEdits ? { ...env, overHandEdits: true } : env), [env, overHandEdits]);
   const plan = useMemo(
     () => (editing ? planRule(editing.rule_id || NEW, editing.def, files, previewEnv) : null),
     [editing, files, previewEnv]
@@ -214,6 +216,13 @@ export default function RulesPanel(props: Props) {
   }
 
   const change = (patch: Partial<Editing>) => setEditing((e) => (e ? { ...e, ...patch, dirty: true } : e));
+
+  /** Keep running, from the list or the editor: a saved rule saves it at once, so the two always agree. */
+  function setEnabled(ruleId: string, enabled: boolean) {
+    setEditing((e) => (e && e.rule_id === ruleId ? { ...e, enabled } : e));
+    const rule = rules.find((r) => r.rule_id === ruleId);
+    if (rule) void props.onSave({ ...rule, enabled });
+  }
   const changeDef = (patch: Partial<RuleDefinition>) => setEditing((e) => (e ? { ...e, def: { ...e.def, ...patch }, dirty: true } : e));
 
   async function applyNow() {
@@ -287,8 +296,7 @@ export default function RulesPanel(props: Props) {
           newSelected={selected === NEW}
           onSelect={(id) => void select(id)}
           onNew={() => startNew()}
-          onNewFromFilter={props.viewFilter ? () => startNew(props.viewFilter!) : undefined}
-          onToggle={(rule) => void props.onSave({ ...rule, enabled: !rule.enabled })}
+          onToggle={(rule) => setEnabled(rule.rule_id, !rule.enabled)}
           onReorder={props.onReorder}
         />
         {/* Drag to make the list of rules wider or narrower */}
@@ -318,9 +326,13 @@ export default function RulesPanel(props: Props) {
               columns={props.columns}
               properties={props.properties}
               valuesFor={props.valuesFor}
+              viewFilter={props.viewFilter}
               onCreateProperty={props.onCreateProperty}
-              onChange={change}
+              onChange={(patch) =>
+                patch.enabled !== undefined && editing.rule_id ? setEnabled(editing.rule_id, patch.enabled) : change(patch)
+              }
               onChangeDef={changeDef}
+              onIncludeHandEdits={() => setOverHandEdits(true)}
             />
           )}
         </div>
@@ -337,7 +349,7 @@ export default function RulesPanel(props: Props) {
           >
             {editing.rule_id ? "Delete Rule" : "Discard"}
           </button>
-          <label className="flex items-center gap-1.5 ml-3 text-neutral-400" title="Apply Now writes over values you've changed by hand, too">
+          <label className="flex items-center gap-1.5 ml-3 text-neutral-400" title="Apply Now writes over values you've changed by hand since this rule set them, too">
             <input type="checkbox" checked={overHandEdits} onChange={(e) => setOverHandEdits(e.target.checked)} />
             Include values changed by hand
           </label>
@@ -394,7 +406,6 @@ function RuleList({
   newSelected,
   onSelect,
   onNew,
-  onNewFromFilter,
   onToggle,
   onReorder,
 }: {
@@ -405,8 +416,6 @@ function RuleList({
   newSelected: boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
-  /** Present when the view is filtered. */
-  onNewFromFilter?: () => void;
   onToggle: (rule: StoredRule) => void;
   onReorder: (ids: string[]) => Promise<void>;
 }) {
@@ -468,7 +477,7 @@ function RuleList({
           <input
             type="checkbox"
             checked={rule.enabled}
-            title={rule.enabled ? "On: runs whenever files load or change" : "Off: runs only with Apply Now"}
+            title={rule.enabled ? "Keep running: on (runs whenever files load or change)" : "Keep running: off (runs only with Apply Now)"}
             onClick={(e) => e.stopPropagation()}
             onChange={() => onToggle(rule)}
           />
@@ -484,7 +493,6 @@ function RuleList({
       )}
       <div className="mt-1 flex flex-col">
         <AddButton onClick={onNew}>New Rule</AddButton>
-        {onNewFromFilter && <AddButton onClick={onNewFromFilter}>New Rule from Current Filter</AddButton>}
       </div>
     </div>
   );
@@ -502,9 +510,11 @@ function RuleEditor({
   columns,
   properties,
   valuesFor,
+  viewFilter,
   onCreateProperty,
   onChange,
   onChangeDef,
+  onIncludeHandEdits,
 }: {
   editing: Editing;
   plan: RulePlan | null;
@@ -513,13 +523,34 @@ function RuleEditor({
   columns: FilterColumn[];
   properties: { name: string; type: ValueType }[];
   valuesFor: (columnId: string) => string[];
+  viewFilter: RuleDefinition | null;
   onCreateProperty: (name: string, type: ValueType) => Promise<boolean>;
   onChange: (patch: Partial<Editing>) => void;
   onChangeDef: (patch: Partial<RuleDefinition>) => void;
+  onIncludeHandEdits: () => void;
 }) {
   const { def } = editing;
   const first = columns[0];
   const slots = ruleSlots(def);
+  const withFilter = viewFilter ? withFilterConditions(def, viewFilter) : def;
+  /** The "matches pattern" condition whose example is open beneath it. */
+  const [picking, setPicking] = useState<string | null>(null);
+  /** The condition or value whose pattern or formula help is open beneath it. */
+  const [help, setHelp] = useState<string | null>(null);
+  const toggleHelp = (id: string) => setHelp(help === id ? null : id);
+
+  function changeConditions(conditions: FilterRule[]) {
+    // A condition just turned into an empty pattern: open its example, as there's nothing to go on yet
+    const turned = conditions.find((c) => c.op === "matches" && !c.value.trim() && def.conditions.find((o) => o.id === c.id)?.op !== "matches");
+    if (turned) setPicking(turned.id);
+    onChangeDef({ conditions });
+  }
+
+  function addPatternFromExample() {
+    const condition: FilterRule = { ...newRule("name", env.kindOf("name")), op: "matches", value: "" };
+    onChangeDef({ conditions: [...def.conditions, condition] });
+    setPicking(condition.id);
+  }
 
   return (
     <div className="flex flex-col gap-4 p-5">
@@ -559,18 +590,65 @@ function RuleEditor({
         <ConditionRows
           columns={columns}
           rules={def.conditions}
-          onChange={(conditions) => onChangeDef({ conditions })}
+          onChange={changeConditions}
           valuesFor={valuesFor}
           removeLabel="Remove condition"
+          rowAction={(rule) =>
+            rule.op === "matches" && (
+              <>
+                <RowToggle
+                  label="Pick from an Example"
+                  icon="character.cursor.ibeam"
+                  fallback="I"
+                  on={picking === rule.id}
+                  disabled={files.length === 0}
+                  onClick={() => setPicking(picking === rule.id ? null : rule.id)}
+                />
+                <RowToggle label="Pattern Help" icon="questionmark.circle" fallback="?" on={help === rule.id} onClick={() => toggleHelp(rule.id)} />
+              </>
+            )
+          }
+          below={(rule) =>
+            rule.op === "matches" && (
+              <>
+                {picking === rule.id && (
+                  <ExamplePicker
+                    def={def}
+                    condition={rule}
+                    files={files}
+                    env={env}
+                    columns={columns}
+                    onChangeDef={onChangeDef}
+                    onClose={() => setPicking(null)}
+                  />
+                )}
+                {help === rule.id && (
+                  <PatternHelp
+                    condition={rule}
+                    files={files}
+                    env={env}
+                    onUse={(value) => onChangeDef({ conditions: def.conditions.map((c) => (c.id === rule.id ? { ...c, value } : c)) })}
+                    onClose={() => setHelp(null)}
+                  />
+                )}
+              </>
+            )
+          }
         />
-        {first && (
-          <AddButton onClick={() => onChangeDef({ conditions: [...def.conditions, newRule(first.id, first.kind)] })}>
-            Add Condition
-          </AddButton>
-        )}
+        <div className="flex items-center gap-4">
+          {first && (
+            <AddButton onClick={() => onChangeDef({ conditions: [...def.conditions, newRule(first.id, first.kind)] })}>
+              Add Condition
+            </AddButton>
+          )}
+          {withFilter !== def && (
+            <AddButton onClick={() => onChangeDef({ match: withFilter.match, conditions: withFilter.conditions })}>
+              Add Current Filter
+            </AddButton>
+          )}
+          {files.length > 0 && <AddButton onClick={addPatternFromExample}>Add Pattern from an Example</AddButton>}
+        </div>
       </section>
-
-      <ExamplePicker def={def} files={files} env={env} columns={columns} onChangeDef={onChangeDef} />
 
       {/* Then */}
       <section className="flex flex-col gap-2">
@@ -586,13 +664,63 @@ function RuleEditor({
             onCreateProperty={onCreateProperty}
             onChange={(patch) => onChangeDef({ actions: def.actions.map((a) => (a.id === action.id ? { ...a, ...patch } : a)) })}
             onRemove={() => onChangeDef({ actions: def.actions.filter((a) => a.id !== action.id) })}
+            helpOpen={help === action.id}
+            onToggleHelp={() => toggleHelp(action.id)}
+            help={
+              <FormulaHelp
+                formula={action.value}
+                // Files meeting the conditions: not the ones whose name doesn't fit the pattern
+                rows={plan?.rows.filter((r) => !r.problems.includes("doesn't fit the pattern")) ?? []}
+                env={env}
+                onUse={(value) => onChangeDef({ actions: def.actions.map((a) => (a.id === action.id ? { ...a, value } : a)) })}
+                onClose={() => setHelp(null)}
+              />
+            }
           />
         ))}
         <AddButton onClick={() => onChangeDef({ actions: [...def.actions, newAction()] })}>Add Value to Set</AddButton>
       </section>
 
-      {plan && (def.actions.some((a) => a.property) ? <Preview plan={plan} columns={columns} /> : <PreviewHint />)}
+      {plan &&
+        (def.actions.some((a) => a.property) ? (
+          <Preview plan={plan} columns={columns} onIncludeHandEdits={onIncludeHandEdits} />
+        ) : (
+          <PreviewHint />
+        ))}
     </div>
+  );
+}
+
+/** A small on/off button at the end of a row (Pick from an Example, help). */
+function RowToggle({
+  label,
+  icon,
+  fallback,
+  on,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  icon: string;
+  fallback: string;
+  on: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      aria-pressed={on}
+      disabled={disabled}
+      onClick={onClick}
+      className={`w-5 h-5 shrink-0 flex items-center justify-center rounded ${
+        on ? "bg-blue-500/25 text-blue-300" : "text-neutral-400 hover:text-neutral-100 hover:bg-neutral-700/60"
+      }`}
+    >
+      <SymbolIcon name={icon} size={12} fallback={fallback} />
+    </button>
   );
 }
 
@@ -617,7 +745,10 @@ function guessType(action: RuleAction, columns: FilterColumn[]): ValueType {
   if (action.format) return "date";
   if (action.mode === "column") {
     const kind = columns.find((c) => c.id === action.value)?.kind;
-    if (kind === "date") return action.part === "date" || !action.part ? "date" : action.part === "year" || action.part === "month" ? "free_text" : "enum";
+    if (kind === "date") {
+      if (action.part === "date" || action.part === "dateTime" || !action.part) return "date";
+      return ["year", "month", "time", "hour"].includes(action.part) ? "free_text" : "enum";
+    }
     if (kind === "list") return action.part === "all" ? "array" : "enum";
     if (kind === "number") return "number";
     return "free_text";
@@ -629,7 +760,7 @@ function guessType(action: RuleAction, columns: FilterColumn[]): ValueType {
 function suggestedName(action: RuleAction, columns: FilterColumn[]): string {
   const column = columns.find((c) => c.id === action.value);
   if (!column) return "";
-  const byPart: Record<string, string> = { year: "Year", month: "Month", monthName: "Month", yearMonth: "Month", quarter: "Quarter", weekday: "Weekday" };
+  const byPart: Record<string, string> = { year: "Year", month: "Month", monthName: "Month", yearMonth: "Month", quarter: "Quarter", weekday: "Weekday", time: "Time", hour: "Hour" };
   if (action.part && byPart[action.part]) return byPart[action.part];
   if (action.value === "tags") return action.part === "all" ? "Folders" : "Folder";
   return column.label;
@@ -642,7 +773,7 @@ const LIST_PARTS: [string, string][] = [
   ["n:3", "the 3rd"],
   ["last", "the last"],
 ];
-// Source Tags are folders, top first
+// Path Tags are folders, top first
 const FOLDER_PARTS: [string, string][] = [
   ["last", "the folder it's in"],
   ["first", "the top folder"],
@@ -652,6 +783,9 @@ const FOLDER_PARTS: [string, string][] = [
 ];
 const DATE_PARTS: [string, string][] = [
   ["date", "the date"],
+  ["dateTime", "the date and time"],
+  ["time", "the time"],
+  ["hour", "the hour"],
   ["year", "the year"],
   ["month", "the month (01–12)"],
   ["monthName", "the month's name"],
@@ -676,6 +810,9 @@ function ActionRow({
   onCreateProperty,
   onChange,
   onRemove,
+  helpOpen,
+  onToggleHelp,
+  help,
 }: {
   action: RuleAction;
   slots: string[];
@@ -685,8 +822,14 @@ function ActionRow({
   onCreateProperty: (name: string, type: ValueType) => Promise<boolean>;
   onChange: (patch: Partial<RuleAction>) => void;
   onRemove: () => void;
+  /** Formula help, shown under the row while open. */
+  helpOpen: boolean;
+  onToggleHelp: () => void;
+  help: React.ReactNode;
 }) {
   const sourceKind = action.mode === "column" ? columns.find((c) => c.id === action.value)?.kind : undefined;
+  /** For "same": what files can share, everything but the property being set. */
+  const sameChoices = columns.filter((c) => c.id !== `prop:${action.property}`);
   /** Then set ▸ New Property…, while its name and type are being chosen. */
   const [creating, setCreating] = useState<{ name: string; type: ValueType; error?: string } | null>(null);
   async function create() {
@@ -733,15 +876,21 @@ function ActionRow({
         </select>
         <select
           value={action.mode}
-          onChange={(e) => onChange({ mode: e.target.value as ActionMode, value: "" })}
+          onChange={(e) => onChange({ mode: e.target.value as ActionMode, value: "", also: undefined })}
           className={`${popoverSelect} w-[118px]`}
         >
           <option value="fixed">to</option>
           <option value="slot">from pattern</option>
           <option value="column">from property</option>
           <option value="formula">from formula</option>
+          <option value="same">from files with the same</option>
         </select>
-        {action.mode === "column" ? (
+        {action.mode === "same" ? (
+          <select value={action.value} onChange={(e) => onChange({ value: e.target.value })} className={`${popoverSelect} flex-1 min-w-0`}>
+            <option value="">Choose a property…</option>
+            <ColumnOptions columns={sameChoices} />
+          </select>
+        ) : action.mode === "column" ? (
           <>
             <select
               value={action.value}
@@ -752,11 +901,7 @@ function ActionRow({
               className={`${popoverSelect} flex-1 min-w-0`}
             >
               <option value="">Choose a column…</option>
-              {columns.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                </option>
-              ))}
+              <ColumnOptions columns={columns} />
             </select>
             {partsFor(action.value, sourceKind).length > 0 && (
               <select
@@ -786,17 +931,20 @@ function ActionRow({
               </option>
             ))}
           </select>
+        ) : action.mode === "formula" ? (
+          // The formula has a line of its own below, so all of it can be seen
+          <span className="flex-1" />
         ) : (
           <>
             <input
               value={action.value}
-              list={action.mode === "fixed" ? listId : undefined}
+              list={listId}
               onChange={(e) => onChange({ value: e.target.value })}
-              placeholder={action.mode === "formula" ? 'upper(slice(name, 3, 7))' : "Value"}
+              placeholder="Value"
               spellCheck={false}
-              className={`${popoverField} flex-1 min-w-0 ${action.mode === "formula" ? "font-mono text-[12px]" : ""}`}
+              className={`${popoverField} flex-1 min-w-0`}
             />
-            {action.mode === "fixed" && action.property && (
+            {action.property && (
               <datalist id={listId}>
                 {valuesFor(`prop:${action.property}`).map((v) => (
                   <option key={v} value={v} />
@@ -821,13 +969,19 @@ function ActionRow({
             ))}
           </select>
         )}
-        <label
-          className="flex items-center gap-1 text-neutral-400 shrink-0"
-          title={type === "array" ? "Replace the values instead of adding to them" : "Write over a value that's already there"}
-        >
-          <input type="checkbox" checked={!!action.overwrite} onChange={(e) => onChange({ overwrite: e.target.checked })} />
-          Overwrite
-        </label>
+        {action.mode !== "same" && (
+          <label
+            className="flex items-center gap-1 text-neutral-400 shrink-0"
+            title={
+              type === "array"
+                ? "Replace the values instead of adding to them. Values you've changed by hand since this rule set them stay, unless Apply Now includes them"
+                : "Write over a value that's already there. Values you've changed by hand since this rule set them stay, unless Apply Now includes them"
+            }
+          >
+            <input type="checkbox" checked={!!action.overwrite} onChange={(e) => onChange({ overwrite: e.target.checked })} />
+            Overwrite
+          </label>
+        )}
         <RemoveButton label="Remove" onClick={onRemove} />
       </div>
       {creating && (
@@ -875,13 +1029,44 @@ function ActionRow({
           {creating.error && <span className="text-[11px] text-red-500 truncate">{creating.error}</span>}
         </div>
       )}
-      {problem && <p className="pl-[254px] text-[11px] text-red-500">{problem}</p>}
-      {action.mode === "formula" && !problem && (
-        <p className="pl-[254px] text-[11px] text-neutral-500" title={Object.values(FORMULA_FUNCTIONS).map((f) => f.help).join("\n")}>
-          Names: name, filename, ext, path, folder, created, modified, kind, size, {"{Slot}"}, prop("Any Column"); folder(1) is the top
-          folder. Join with &. Hover for functions.
-        </p>
+      {action.mode === "same" && (
+        <div className="pl-[254px] flex flex-col gap-0.5">
+          {(action.also ?? []).map((column, i) => (
+            <div key={i} className="flex items-center gap-1.5">
+              <span className="text-neutral-400 shrink-0 w-[28px]">and</span>
+              <select
+                value={column}
+                onChange={(e) => onChange({ also: (action.also ?? []).map((c, j) => (j === i ? e.target.value : c)) })}
+                className={`${popoverSelect} flex-1 min-w-0`}
+              >
+                <option value="">Choose a property…</option>
+                <ColumnOptions columns={sameChoices} />
+              </select>
+              <RemoveButton label="Remove" onClick={() => onChange({ also: (action.also ?? []).filter((_, j) => j !== i) })} />
+            </div>
+          ))}
+          <AddButton onClick={() => onChange({ also: [...(action.also ?? []), ""] })}>And the Same…</AddButton>
+          <p className="text-[11px] text-neutral-500">
+            Learned from files that have {action.property || "the property"} filled in. Where they disagree, nothing is written: the preview
+            says how.
+          </p>
+        </div>
       )}
+      {action.mode === "formula" && (
+        <div className="flex items-center gap-1.5 pl-[136px]">
+          <input
+            value={action.value}
+            onChange={(e) => onChange({ value: e.target.value })}
+            placeholder="upper(slice(name, 3, 7))"
+            spellCheck={false}
+            aria-label="Formula"
+            className={`${popoverField} flex-1 min-w-0 font-mono text-[12px]`}
+          />
+          <RowToggle label="Formula Help" icon="questionmark.circle" fallback="?" on={helpOpen} onClick={onToggleHelp} />
+        </div>
+      )}
+      {problem && <p className="pl-[136px] text-[11px] text-red-500">{problem}</p>}
+      {action.mode === "formula" && helpOpen && help}
     </div>
   );
 }
@@ -905,29 +1090,42 @@ function textOffset(root: Node, node: Node, offset: number): number {
 }
 
 /**
- * Select part of a matching file's name and name it: the rule's Name pattern
- * is rewritten around the picked parts, and tried on every file at once.
+ * Under a "matches pattern" condition: select part of a matching file's name
+ * (or folder, or other column) and name it. The condition's pattern is
+ * rewritten around the picked parts, and tried on every file at once.
  */
 function ExamplePicker({
   def,
+  condition,
   files,
   env,
   columns,
   onChangeDef,
+  onClose,
 }: {
   def: RuleDefinition;
+  condition: FilterRule;
   files: FileRecord[];
   env: RuleEnv;
   columns: FilterColumn[];
   onChangeDef: (patch: Partial<RuleDefinition>) => void;
+  onClose: () => void;
 }) {
-  // Which column the example comes from: the name, a folder (Source Tags), the path, a property…
-  const source = def.example?.column ?? "name";
+  // The condition's column: the name, a folder (Path Tags), the path, a property…
+  const source = condition.column;
   const sourceLabel = columns.find((c) => c.id === source)?.label ?? "Name";
   const isList = columns.find((c) => c.id === source)?.kind === "list";
-  // On a list (Source Tags…): which of its items, such as the folder the file is in
-  const item = isList ? (def.example?.item ?? "any") : undefined;
-  const isPattern = (c: { column: string; op: string }) => c.column === source && c.op === "matches";
+  // On a list (Path Tags…): which of its items, such as the folder the file is in
+  const item = isList ? (condition.item ?? "any") : undefined;
+  const isPattern = (c: FilterRule) => c.id === condition.id;
+  // The picks kept for this condition (rules saved before they were tied to one: the example on its column)
+  const stored =
+    def.example &&
+    (def.example.column ?? "name") === source &&
+    (!def.example.condition || def.example.condition === condition.id) &&
+    (def.example.item ?? "any") === (item ?? "any")
+      ? def.example
+      : undefined;
 
   /** A file's texts to pick from in the source column: its name (without extension), the chosen folder(s), or the value. */
   const textsOf = (f: FileRecord): string[] => {
@@ -964,27 +1162,19 @@ function ExamplePicker({
     return (q ? allExamples.filter((x) => x.label.toLowerCase().includes(q)) : allExamples).slice(0, 500);
   }, [allExamples, find]);
 
-  const [open, setOpen] = useState(!!def.example);
-  const exampleName = def.example?.name || examples[0]?.text || "";
-  const slots = def.example?.name === exampleName ? (def.example?.slots ?? []) : [];
+  const exampleName = stored?.name || examples[0]?.text || "";
+  const slots = stored?.name === exampleName ? stored.slots : [];
   const [pending, setPending] = useState<{ start: number; end: number; name: string } | null>(null);
   const textRef = useRef<HTMLDivElement>(null);
 
-  /** Rewrites the Name pattern from the picks; with none left, the pattern they made goes too. */
+  /** Rewrites the condition's pattern from the picks; with none left, the pattern they made is cleared. */
   function apply(name: string, next: ExampleSlot[]) {
-    const existing = def.conditions.find(isPattern);
-    let conditions = def.conditions;
-    if (next.length > 0) {
-      const pattern = examplePattern(name, next);
-      // The pattern goes on the same folder the example came from
-      const onItem = item && item !== "any" ? { item } : { item: undefined };
-      conditions = existing
-        ? def.conditions.map((c) => (c === existing ? { ...c, value: pattern, ...onItem } : c))
-        : [...def.conditions, { ...newRule(source, env.kindOf(source)), op: "matches" as const, value: pattern, ...onItem }];
-    } else if (existing && existing.value === examplePattern(name, slots)) {
-      conditions = def.conditions.filter((c) => c !== existing);
-    }
-    onChangeDef({ conditions, example: { name, slots: next, column: source, item } });
+    const conditions = def.conditions.map((c) => {
+      if (!isPattern(c)) return c;
+      if (next.length > 0) return { ...c, value: examplePattern(name, next) };
+      return c.value === examplePattern(name, slots) ? { ...c, value: "" } : c;
+    });
+    onChangeDef({ conditions, example: { name, slots: next, column: source, item, condition: condition.id } });
   }
 
   /** The selection in the name, as character offsets (null if there's none there). */
@@ -1031,21 +1221,6 @@ function ExamplePicker({
     window.getSelection()?.removeAllRanges();
   }
 
-  if (!open) {
-    return (
-      <div>
-        <button
-          type="button"
-          disabled={files.length === 0}
-          onClick={() => setOpen(true)}
-          className="h-6 px-1.5 -ml-1.5 rounded-[6px] text-blue-400 hover:bg-neutral-700/40 disabled:text-neutral-500"
-        >
-          Take a value from the name, a folder or another column: pick it in an example…
-        </button>
-      </div>
-    );
-  }
-
   // The name as segments: picked parts highlighted, and the part being named outlined
   const segments: { text: string; slot?: ExampleSlot; pending?: boolean }[] = [];
   const marks: (ExampleSlot & { pending?: boolean })[] = [
@@ -1061,35 +1236,8 @@ function ExamplePicker({
   if (pos < exampleName.length) segments.push({ text: exampleName.slice(pos) });
 
   return (
-    <section className="flex flex-col gap-2 rounded-lg border border-neutral-700/60 p-3 min-w-0">
-      <p className={sectionTitle}>Pick from an example</p>
-      <div className="flex flex-wrap items-center gap-2 min-w-0">
-        <select
-          value={source}
-          onChange={(e) => onChangeDef({ example: { name: "", slots: [], column: e.target.value } })}
-          title="The column to take the value from"
-          className={`${popoverSelect} w-[130px] shrink-0`}
-        >
-          {columns.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.label}
-            </option>
-          ))}
-        </select>
-        {isList && (
-          <select
-            value={item}
-            onChange={(e) => onChangeDef({ example: { name: "", slots: [], column: source, item: e.target.value } })}
-            title="Which of them to pick from"
-            className={`${popoverSelect} w-[150px] shrink-0`}
-          >
-            {itemChoices(source).map(([id, label]) => (
-              <option key={id} value={id}>
-                {label}
-              </option>
-            ))}
-          </select>
-        )}
+    <div className="ml-2 mt-1 mb-1 pl-3 border-l-2 border-blue-500/40 flex flex-col gap-1.5 min-w-0">
+      <div className="flex items-center gap-1.5 min-w-0">
         <input
           value={find}
           onChange={(e) => setFind(e.target.value)}
@@ -1099,8 +1247,10 @@ function ExamplePicker({
         />
         <select
           value={exampleName}
-          onChange={(e) => onChangeDef({ example: { name: e.target.value, slots: [], column: source, item } })}
-          title="The example to pick from"
+          onChange={(e) => onChangeDef({ example: { name: e.target.value, slots: [], column: source, item, condition: condition.id } })}
+          title={`${allExamples.length.toLocaleString()} different ${source === "tags" ? "folder names" : `${sourceLabel} values`} from the ${fromFiles.toLocaleString()} files meeting the other conditions${
+            examples.length >= 500 ? " (first 500: type to narrow)" : ""
+          }`}
           className={`${popoverSelect} flex-1 min-w-[160px]`}
         >
           {!examples.some((x) => x.text === exampleName) && exampleName && <option value={exampleName}>{exampleName}</option>}
@@ -1110,19 +1260,17 @@ function ExamplePicker({
             </option>
           ))}
         </select>
+        <button type="button" onClick={onClose} className="h-6 px-2 rounded-[6px] text-neutral-400 hover:text-neutral-100 shrink-0">
+          Done
+        </button>
       </div>
       <p className="text-neutral-500 text-xs">
-        {`${allExamples.length.toLocaleString()} different ${source === "tags" ? "folder names" : `${sourceLabel} values`} from the ${fromFiles.toLocaleString()} files meeting the other conditions${
-          find.trim() ? ` · ${examples.length.toLocaleString()} containing “${find.trim()}”` : ""
-        }${examples.length >= 500 ? " (first 500: type to narrow)" : ""}. Add a condition above to narrow them.`}
-      </p>
-      <p className="text-neutral-500">
         {examples.length === 0
           ? find.trim()
             ? `No example contains “${find.trim()}”.`
             : `No file has a ${sourceLabel} to pick from.`
           : `Select the part of the ${source === "tags" ? "folder name" : sourceLabel} you want, then name it.${
-              isList && item === "any" ? " Any one that fits counts; choose a particular one to narrow it." : ""
+              isList && item === "any" ? " Any one that fits counts; choose a particular one in the row to narrow it." : ""
             }`}
       </p>
       <div
@@ -1194,10 +1342,9 @@ function ExamplePicker({
               </button>
             </span>
           ))}
-          <span className="text-neutral-500 text-xs">The Name pattern above is rewritten as you pick; edit it there to fine-tune.</span>
         </div>
       )}
-    </section>
+    </div>
   );
 }
 
@@ -1230,7 +1377,7 @@ type PreviewFilter = "all" | PreviewStatus;
  * pattern fitted, a column it copies), what its patterns picked out, and the
  * result. Narrow it to one outcome to check those files.
  */
-function Preview({ plan, columns }: { plan: RulePlan; columns: FilterColumn[] }) {
+function Preview({ plan, columns, onIncludeHandEdits }: { plan: RulePlan; columns: FilterColumn[]; onIncludeHandEdits: () => void }) {
   const { counts } = plan;
   const [only, setOnly] = useState<PreviewFilter>("all");
   const [limit, setLimit] = useState(PREVIEW_ROWS);
@@ -1273,6 +1420,16 @@ function Preview({ plan, columns }: { plan: RulePlan; columns: FilterColumn[] })
         {counts.set.toLocaleString()} already set
         {counts.edited > 0 && ` · ${counts.edited.toLocaleString()} changed by hand`}
         {counts.nomatch > 0 && ` · ${counts.nomatch.toLocaleString()} no match`}
+        {counts.edited > 0 && (
+          <button
+            type="button"
+            onClick={onIncludeHandEdits}
+            title="Apply Now writes these too, over the values you changed"
+            className="ml-2 h-5 px-2 rounded-[5px] text-xs bg-neutral-700/70 text-neutral-100"
+          >
+            Include Changed by Hand
+          </button>
+        )}
       </p>
       <div className="flex flex-wrap gap-1">
         {tabs

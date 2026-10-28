@@ -230,7 +230,8 @@ export default function MetadataCell({
       return (
         <div ref={cellRef} className="w-40 shrink-0 px-2 py-0.5">
           <input
-            type="date"
+            type={inlineText.includes("T") ? "datetime-local" : "date"}
+            step={inlineText.includes("T") ? 1 : undefined}
             autoFocus
             value={inlineText}
             onChange={(e) => setInlineText(e.target.value)}

@@ -14,6 +14,14 @@ describe("matchesRule", () => {
     expect(matchesRule("1,200", "number", rule("gte", "1200"))).toBe(true);
     expect(matchesRule(null, "number", rule("lt", "5"))).toBe(false);
   });
+  it("date conditions use times only when both sides have one", () => {
+    expect(matchesRule("2024-03-01T10:00:00", "date", rule("is", "2024-03-01"))).toBe(true);
+    expect(matchesRule("2024-03-01T10:00:00", "date", rule("after", "2024-03-01"))).toBe(false);
+    expect(matchesRule("2024-03-01T10:00:00", "date", rule("after", "2024-03-01T09:00"))).toBe(true);
+    expect(matchesRule("2024-03-01T10:00:00", "date", rule("before", "2024-03-01T09:00"))).toBe(false);
+    expect(matchesRule("2024-03-01", "date", rule("after", "2024-03-01T09:00"))).toBe(false);
+  });
+
   it("date conditions compare by day, including EXIF dates", () => {
     expect(matchesRule("2024:03:01 10:00:00", "date", rule("is", "2024-03-01"))).toBe(true);
     expect(matchesRule("2024-03-01", "date", rule("before", "2024-04-01"))).toBe(true);

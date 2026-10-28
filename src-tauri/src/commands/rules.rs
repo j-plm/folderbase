@@ -202,6 +202,23 @@ pub async fn rename_property_in_rules(
     Ok(())
 }
 
+/// A property deleted: rules forget what they wrote to it, so a new property
+/// of the same name starts fresh rather than looking changed by hand.
+pub async fn forget_property_in_rules(conn: &mut SqliteConnection, library: Option<&str>, key: &str) -> Result<(), String> {
+    match library {
+        Some(lib) => sqlx::query(
+            "DELETE FROM rule_writes WHERE key = ? AND rule_id IN (SELECT rule_id FROM rules WHERE library = ?)",
+        )
+        .bind(key)
+        .bind(lib),
+        None => sqlx::query("DELETE FROM rule_writes WHERE key = ?").bind(key),
+    }
+    .execute(&mut *conn)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Renames a property inside a rule definition; returns whether anything changed.
 pub fn rename_in_definition(def: &mut Value, from: &str, to: &str) -> bool {
     let mut changed = false;
@@ -220,7 +237,16 @@ pub fn rename_in_definition(def: &mut Value, from: &str, to: &str) -> bool {
                 a["property"] = Value::String(to.to_string());
                 changed = true;
             }
-            // A "from property" action reading it
+            // Further columns a "from files with the same" action matches on
+            if let Some(also) = a.get_mut("also").and_then(Value::as_array_mut) {
+                for c in also {
+                    if c.as_str() == Some(old_column.as_str()) {
+                        *c = Value::String(format!("prop:{to}"));
+                        changed = true;
+                    }
+                }
+            }
+            // A "from property" action reading it, or the first column a "same" one matches on
             if a.get("value").and_then(Value::as_str) == Some(old_column.as_str()) {
                 a["value"] = Value::String(format!("prop:{to}"));
                 changed = true;
@@ -279,6 +305,16 @@ mod tests {
         assert!(rename_in_definition(&mut def, "Client", "Customer"));
         assert_eq!(def["actions"][0]["value"], "prop:Customer");
         assert_eq!(def["example"]["column"], "prop:Customer");
+    }
+
+    #[test]
+    fn renames_columns_a_same_action_matches_on() {
+        let mut def = json!({
+            "actions": [{ "property": "Rig", "mode": "same", "value": "prop:Client", "also": ["prop:Project", "prop:Client"] }]
+        });
+        assert!(rename_in_definition(&mut def, "Client", "Customer"));
+        assert_eq!(def["actions"][0]["value"], "prop:Customer");
+        assert_eq!(def["actions"][0]["also"], json!(["prop:Project", "prop:Customer"]));
     }
 
     #[test]

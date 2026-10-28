@@ -140,6 +140,13 @@ function Panel({
           if (entry.type === "separator") {
             return <div key={i} className="mx-2.5 my-[5px] h-px bg-neutral-700/80" />;
           }
+          if (entry.type === "header") {
+            return (
+              <div key={i} role="presentation" className="h-6 flex items-center pl-[26px] pr-4 text-[11px] font-semibold text-neutral-500 whitespace-nowrap">
+                {entry.text}
+              </div>
+            );
+          }
           if (entry.type === "submenu") {
             const active = sub?.index === i;
             return (

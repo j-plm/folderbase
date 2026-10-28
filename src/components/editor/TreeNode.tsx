@@ -120,14 +120,14 @@ export default function TreeNode({
             </button>
             <button
               onClick={() => setInline(inline === "add-layer" ? null : "add-layer")}
-              title="Add layer below"
+              title="Add level below"
               className="w-5 h-5 flex items-center justify-center text-neutral-500 hover:text-neutral-300 text-xs"
             >
               ⬇
             </button>
             <button
               onClick={() => setInline(inline === "add-fork" ? null : "add-fork")}
-              title="Add fork"
+              title="Add branch"
               className="w-5 h-5 flex items-center justify-center text-neutral-500 hover:text-neutral-300 text-xs"
             >
               ⑂
@@ -146,7 +146,7 @@ export default function TreeNode({
       {/* Inline: Add layer */}
       {inline === "add-layer" && (
         <div className="relative" style={{ paddingLeft: `${8 + (depth + 1) * 16}px` }}>
-          <span className="text-xs text-neutral-400 italic">Select property for new layer:</span>
+          <span className="text-xs text-neutral-400 italic">Select property for new level:</span>
           <PropertyPicker
             library={library}
             onSelect={handleAddLayer}

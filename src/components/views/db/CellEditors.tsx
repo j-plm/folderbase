@@ -5,6 +5,7 @@ import { DELETE_REVEAL_MS } from "../../shared/MenuPopover";
 import { SymbolIcon } from "../../../lib/fileIcons";
 import { showContextMenu, type MenuEntry } from "../../../lib/nativeMenu";
 import { formatValue, listValues } from "../../../lib/propertyTypes";
+import { isToggleSelect, labels } from "../../../lib/platform";
 import type { PropertyConfig, ValueType } from "../../../types";
 
 /** Where the selection goes after a commit: Return moves down, Tab across. */
@@ -96,8 +97,16 @@ export function TextCellEditor({
 }) {
   const [text, setText] = useState(initial);
   const done = useRef(false);
-  // A date picker only when editing an existing date; typed-in text stays a text field
-  const asDate = type === "date" && (initial === "" || /^\d{4}-\d{2}-\d{2}$/.test(initial));
+  // A date picker only when editing an existing date (with its time if it has one);
+  // typed-in text stays a text field
+  const picker =
+    type !== "date"
+      ? "text"
+      : initial === "" || /^\d{4}-\d{2}-\d{2}$/.test(initial)
+        ? "date"
+        : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(initial)
+          ? "datetime-local"
+          : "text";
 
   function finish(move: CommitMove) {
     if (done.current) return;
@@ -108,7 +117,8 @@ export function TextCellEditor({
   return (
     <input
       autoFocus
-      type={asDate ? "date" : "text"}
+      type={picker}
+      step={picker === "datetime-local" ? 1 : undefined}
       inputMode={type === "number" ? "decimal" : undefined}
       value={text}
       onChange={(e) => setText(e.target.value)}
@@ -163,6 +173,7 @@ export function ListCellEditor({
   sourcesOf,
   stored,
   impliedBy,
+  renaming,
 }: {
   anchor: HTMLElement;
   value: unknown;
@@ -190,6 +201,8 @@ export function ListCellEditor({
   stored?: string[];
   /** Properties whose values imply a value on this file ("from House"). */
   impliedBy?: (value: string) => string[];
+  /** A value to open already being renamed (a pill's right-click ▸ Rename). */
+  renaming?: string;
 }) {
   // Ticked values are the ones set directly; implied ones show by themselves (faded) unless dropped
   const [chosen, setChosen] = useState<string[]>(() => stored ?? listValues(value));
@@ -252,6 +265,7 @@ export function ListCellEditor({
   // Take the keyboard once placed, caret after any text typed into the cell
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
+    if (renaming) return;
     const frame = requestAnimationFrame(() => {
       const el = inputRef.current;
       if (!el || document.activeElement === el) return;
@@ -259,6 +273,8 @@ export function ListCellEditor({
       el.setSelectionRange(el.value.length, el.value.length);
     });
     return () => cancelAnimationFrame(frame);
+    // Once, on opening
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Multi-select commits what's ticked when it closes
@@ -319,7 +335,7 @@ export function ListCellEditor({
     <Popover anchor={anchor} onClose={() => close()} className="w-[220px] p-[5px]">
       <input
         ref={inputRef}
-        autoFocus
+        autoFocus={!renaming}
         value={query}
         placeholder={multiple ? "Find or add values" : "Find or add a value"}
         onChange={(e) => setQuery(e.target.value)}
@@ -356,6 +372,7 @@ export function ListCellEditor({
             onClick={() => pick(item)}
             onDelete={onDeleteValue ? () => deleteValue(item) : undefined}
             onRename={onRenameValue ? (to) => renameValue(item, to) : undefined}
+            startRenaming={item === renaming}
             sources={sourcesOf?.(item)}
             usage={usage?.(item)}
             impliedBy={impliedBy?.(item)}
@@ -391,7 +408,8 @@ export function ListCellEditor({
 /**
  * A list property's values, for editing the list itself rather than a cell:
  * opened from the column's menu. Type to find or add a value; click a value to
- * rename it, or right-click for Rename and Delete.
+ * rename it, or right-click for Rename and Delete. ⌘-click and ⇧-click select
+ * several (or Select Unused) to delete them together.
  */
 export function ValueListEditor({
   anchor,
@@ -402,6 +420,7 @@ export function ValueListEditor({
   onAdd,
   onRename,
   onDelete,
+  onDeleteMany,
   onClose,
 }: {
   anchor: HTMLElement;
@@ -412,9 +431,14 @@ export function ValueListEditor({
   onAdd: (value: string) => Promise<void>;
   onRename: (from: string, to: string) => Promise<void>;
   onDelete: (value: string) => Promise<void>;
+  /** Deletes several values as one change (one Undo). */
+  onDeleteMany: (values: string[]) => Promise<void>;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [picked, setPicked] = useState<string[]>([]);
+  const [pickAnchor, setPickAnchor] = useState<string | null>(null);
+  const [confirmMany, setConfirmMany] = useState(false);
   const [removed, setRemoved] = useState<string[]>([]);
   const [added, setAdded] = useState<string[]>([]);
   const all = useMemo(
@@ -444,11 +468,42 @@ export function ValueListEditor({
 
   async function remove(value: string) {
     setRemoved((r) => [...r, value]);
+    setPicked((p) => p.filter((x) => x !== value));
     await onDelete(value);
   }
 
+  /** ⌘-click toggles a value; ⇧-click selects the run from the last one clicked (as in Finder). */
+  function pick(e: React.MouseEvent, item: string): boolean {
+    if (isToggleSelect(e)) {
+      setPicked((p) => (p.includes(item) ? p.filter((x) => x !== item) : [...p, item]));
+      setPickAnchor(item);
+      return true;
+    }
+    if (e.shiftKey) {
+      const from = shown.indexOf(pickAnchor ?? item);
+      const to = shown.indexOf(item);
+      const run = shown.slice(Math.min(from, to), Math.max(from, to) + 1);
+      setPicked((p) => [...new Set([...p, ...run])]);
+      if (!pickAnchor) setPickAnchor(item);
+      return true;
+    }
+    setPicked([]);
+    return false;
+  }
+
+  const unused = shown.filter((o) => usage(o) === 0);
+  const pickedUsage = picked.reduce((n, v) => n + usage(v), 0);
+
+  async function removePicked() {
+    const values = picked;
+    setConfirmMany(false);
+    setPicked([]);
+    setRemoved((r) => [...r, ...values]);
+    await onDeleteMany(values);
+  }
+
   return (
-    <Popover anchor={anchor} onClose={onClose} className="w-[240px] p-[5px]">
+    <Popover anchor={anchor} onClose={onClose} className="w-[280px] p-[5px]">
       <p className="px-1.5 pb-1 text-xs font-semibold text-neutral-500 truncate">{property}</p>
       <input
         autoFocus
@@ -470,8 +525,9 @@ export function ValueListEditor({
             key={item}
             label={item}
             checked={false}
-            highlighted={false}
+            highlighted={picked.includes(item)}
             renameOnClick
+            onPick={(e) => pick(e, item)}
             onClick={() => {}}
             onRename={(to) => rename(item, to)}
             onDelete={() => remove(item)}
@@ -484,9 +540,46 @@ export function ValueListEditor({
         )}
         {shown.length === 0 && !canAdd && <p className="px-2 py-1 text-neutral-500">Type to add a value</p>}
       </div>
-      <p className="px-1.5 pt-1 mt-1 border-t border-neutral-700/60 text-[11px] text-neutral-500">
-        Click a value to rename it. Right-click for more.
-      </p>
+      {picked.length > 0 ? (
+        <div className="flex items-center gap-1 px-1.5 pt-1.5 mt-1 border-t border-neutral-700/60">
+          {confirmMany ? (
+            <span className="flex-1 min-w-0 truncate text-red-300 text-xs">
+              Delete {picked.length} value{picked.length === 1 ? "" : "s"}
+              {pickedUsage ? ` from ${pickedUsage} file${pickedUsage === 1 ? "" : "s"}` : ""}?
+            </span>
+          ) : (
+            <>
+              <span className="text-xs text-neutral-400">{picked.length} selected</span>
+              <span className="flex-1" />
+              <button type="button" onClick={() => setPicked([])} className="h-5 px-2 rounded-[5px] text-xs text-neutral-300 hover:bg-neutral-700">
+                Deselect
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => (confirmMany ? void removePicked() : setConfirmMany(true))}
+            onMouseLeave={() => setConfirmMany(false)}
+            className={`h-5 px-2 rounded-[5px] text-xs shrink-0 ${confirmMany ? "bg-red-500 text-white" : "bg-red-900 text-red-300"}`}
+          >
+            {confirmMany ? "Delete" : "Delete…"}
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-1 px-1.5 pt-1 mt-1 border-t border-neutral-700/60 text-[11px] text-neutral-500">
+          <span className="flex-1 min-w-0">Click a value to rename it. {labels.toggleClick} to select several.</span>
+          {unused.length > 0 && (
+            <button
+              type="button"
+              title="Select the values no file in this location has"
+              onClick={() => setPicked(unused)}
+              className="h-5 px-1.5 rounded-[5px] shrink-0 text-neutral-300 hover:bg-neutral-700"
+            >
+              Select Unused ({unused.length})
+            </button>
+          )}
+        </div>
+      )}
     </Popover>
   );
 }
@@ -499,8 +592,10 @@ function OptionRow({
   muted,
   icon,
   onClick,
+  onPick,
   onDelete,
   onRename,
+  startRenaming = false,
   renameOnClick,
   sources,
   usage,
@@ -513,10 +608,14 @@ function OptionRow({
   muted?: boolean;
   icon?: string;
   onClick: () => void;
+  /** A click with ⌘ or ⇧ (selecting several): true if it was taken, so the click does nothing else. */
+  onPick?: (e: React.MouseEvent) => boolean;
   /** Offers deleting the value after a hover, with a confirmation in the row. */
   onDelete?: () => void;
   /** Offers renaming the value in place (right-click ▸ Rename). */
   onRename?: (to: string) => void;
+  /** Opens with the value already being renamed. */
+  startRenaming?: boolean;
   /** Clicking the row renames it (when editing the list rather than a cell). */
   renameOnClick?: boolean;
   /** Folder names the value was renamed from, shown greyed beside it. */
@@ -529,7 +628,7 @@ function OptionRow({
 }) {
   const [revealed, setRevealed] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const [renaming, setRenaming] = useState(false);
+  const [renaming, setRenaming] = useState(startRenaming && !!onRename);
   const timer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(timer.current), []);
 
@@ -601,7 +700,11 @@ function OptionRow({
         timer.current = window.setTimeout(() => setRevealed(true), DELETE_REVEAL_MS);
       }}
       onMouseLeave={leave}
-      onClick={renameOnClick && onRename ? () => setRenaming(true) : onClick}
+      onClick={(e) => {
+        if (onPick?.(e)) return;
+        if (renameOnClick && onRename) setRenaming(true);
+        else onClick();
+      }}
       onContextMenu={showMenu}
       className={`group w-full h-6 flex items-center gap-1 pl-1.5 rounded-[6px] text-left whitespace-nowrap cursor-default hover:bg-blue-500 hover:text-white ${
         revealed ? "pr-0.5" : "pr-3"

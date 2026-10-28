@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  emptyFolders,
   emptyTable,
   legacyTable,
   parseViewDefinition,
@@ -21,13 +22,54 @@ describe("parseViewDefinition", () => {
         visibleProperties: ["Client"],
         frozen: false,
       },
+      folders: emptyFolders(),
     };
     expect(parseViewDefinition(serializeViewDefinition(def))).toEqual(def);
+  });
+
+  it("keeps the item a list filter looks at", () => {
+    const filters = [{ id: "a", column: "tags", op: "matches" as const, value: "{Year:4}", item: "n:2" }];
+    const def = parseViewDefinition(serializeViewDefinition({ table: { ...emptyTable(), filters } }));
+    expect(def.table.filters).toEqual(filters);
+  });
+
+  it("round-trips a hierarchy with branches", () => {
+    const folders = {
+      root: {
+        column: "prop:Client",
+        direction: "asc" as const,
+        next: { column: "prop:Project", direction: "desc" as const, next: null, branches: {}, allValues: true as const },
+        branches: { Acme: { column: "created", direction: "asc" as const, next: null, branches: {} }, Globex: null },
+        noValue: "loose" as const,
+      },
+      pins: [{ at: [{ column: "prop:Client", value: "Acme" }], column: "prop:Project", value: "Pension" }],
+    };
+    const def = { table: emptyTable(), folders };
+    expect(parseViewDefinition(serializeViewDefinition(def))).toEqual(def);
+  });
+
+  it("reads a missing or malformed hierarchy as no folders", () => {
+    expect(parseViewDefinition(JSON.stringify({ table: {} })).folders).toEqual(emptyFolders());
+    expect(parseViewDefinition(JSON.stringify({ folders: { root: { direction: "asc" } } })).folders).toEqual(emptyFolders());
+    const nested = parseViewDefinition(JSON.stringify({ folders: { root: { column: "type", next: 4, branches: [] } } }));
+    expect(nested.folders).toEqual({ root: { column: "type", direction: "asc", next: null, branches: {} }, pins: [] });
+    // Malformed pins are dropped, good ones kept
+    const pins = parseViewDefinition(JSON.stringify({ folders: { root: null, pins: [{ at: [], column: "prop:A", value: "x" }, { at: 3 }] } }));
+    expect(pins.folders?.pins).toEqual([{ at: [], column: "prop:A", value: "x" }]);
   });
 
   it("fills missing and malformed fields from the defaults", () => {
     const def = parseViewDefinition(JSON.stringify({ table: { showTags: true, visibleProperties: "Client", match: "some" } }));
     expect(def.table).toEqual({ ...emptyTable(), showTags: true });
+  });
+
+  it("shows non-empty columns unless turned off, and groups by folders only once turned on", () => {
+    const old = parseViewDefinition(JSON.stringify({ table: { frozen: false } }));
+    expect(old.table.nonEmptyColumns).toBe(true);
+    expect(old.table.folderGroups).toBe(false);
+    const changed = { table: { ...emptyTable(), nonEmptyColumns: false, folderGroups: true } };
+    const back = parseViewDefinition(serializeViewDefinition(changed));
+    expect([back.table.nonEmptyColumns, back.table.folderGroups]).toEqual([false, true]);
   });
 
   it("treats broken or absent JSON as an empty view", () => {
@@ -42,6 +84,15 @@ describe("sameViewDefinition", () => {
     const a = { table: emptyTable() };
     const b = { table: { ...emptyTable(), sorts: [{ direction: "asc" as const, key: "path", extra: 1 } as never] } };
     expect(sameViewDefinition(a, b)).toBe(true);
+  });
+
+  it("treats a left-out hierarchy as none, and branch order as irrelevant", () => {
+    expect(sameViewDefinition({ table: emptyTable() }, { table: emptyTable(), folders: emptyFolders() })).toBe(true);
+    const level = (branches: Record<string, null>) => ({ root: { column: "type", direction: "asc" as const, next: null, branches } });
+    expect(
+      sameViewDefinition({ table: emptyTable(), folders: level({ a: null, b: null }) }, { table: emptyTable(), folders: level({ b: null, a: null }) })
+    ).toBe(true);
+    expect(sameViewDefinition({ table: emptyTable() }, { table: emptyTable(), folders: level({}) })).toBe(false);
   });
 
   it("notices a changed filter, sort or column", () => {

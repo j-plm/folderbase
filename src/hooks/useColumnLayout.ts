@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import {
   COLLAPSE_ANIMATION_MS,
@@ -60,7 +60,8 @@ export function useColumnLayout(
     setFixed(loadFixed(storageKey));
   }, [storageKey]);
 
-  useEffect(() => {
+  // Before the first paint, so the columns don't show at their zero-width fit for a frame
+  useLayoutEffect(() => {
     if (!container) return;
     const measure = () => setAvailable(Math.max(0, container.clientWidth - inset * 2));
     const observer = new ResizeObserver(measure);

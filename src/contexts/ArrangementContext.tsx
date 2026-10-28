@@ -32,7 +32,7 @@ interface ArrangementContextValue {
 
 const ArrangementContext = createContext<ArrangementContextValue | null>(null);
 
-/** Sort and grouping shared by the Tiles, List and Columns views; persisted. */
+/** Sort and grouping shared by the Icons, List and Columns views; persisted. */
 export function ArrangementProvider({ children }: { children: ReactNode }) {
   const [arrangement, setArrangement] = useState<Arrangement>(load);
 

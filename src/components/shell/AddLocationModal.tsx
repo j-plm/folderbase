@@ -109,7 +109,7 @@ export default function AddLocationModal({ onClose }: Props) {
             </div>
             <FolderChecklist rootPath={rootPath} excluded={excluded} onSetExcluded={setExcludedMany} />
             <p className="text-xs text-neutral-500">
-              Folders left out aren't scanned. You can change this later in Map Structure.
+              Excluded folders aren't scanned. You can change this later in Map Disk Folders.
             </p>
           </div>
         )}

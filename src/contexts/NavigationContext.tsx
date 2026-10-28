@@ -17,9 +17,10 @@ interface State {
   viewMode: ViewMode;
   views: View[];
   viewNodes: ViewNode[];
-  editStructure: boolean;
+  editHierarchy: boolean;
   masterEditorOpen: boolean;
-  structureLocationId: string | null;
+  diskFoldersLocationId: string | null;
+  rulesOpen: boolean;
 }
 
 export type NavAction =
@@ -31,10 +32,14 @@ export type NavAction =
   | { type: "SET_VIEW_MODE"; mode: ViewMode }
   | { type: "SET_VIEWS"; views: View[] }
   | { type: "SET_VIEW_NODES"; nodes: ViewNode[] }
-  | { type: "SET_EDIT_STRUCTURE"; value: boolean }
+  | { type: "SET_EDIT_HIERARCHY"; value: boolean }
   | { type: "SET_MASTER_EDITOR"; open: boolean }
-  | { type: "OPEN_STRUCTURE"; locationId: string }
-  | { type: "CLOSE_STRUCTURE" };
+  | { type: "OPEN_DISK_FOLDERS"; locationId: string }
+  | { type: "CLOSE_DISK_FOLDERS" }
+  | { type: "SET_RULES_OPEN"; open: boolean };
+
+/** The side panels (Hierarchy, Map Disk Folders, Rules) all closed: one opening closes the others. */
+const noSidePanel = { editHierarchy: false, diskFoldersLocationId: null, rulesOpen: false } as const;
 
 const initialState: State = {
   activeLocationId: null,
@@ -43,17 +48,18 @@ const initialState: State = {
   viewMode: "database",
   views: [],
   viewNodes: [],
-  editStructure: false,
+  editHierarchy: false,
   masterEditorOpen: false,
-  structureLocationId: null,
+  diskFoldersLocationId: null,
+  rulesOpen: false,
 };
 
 export function navigationReducer(state: State, action: NavAction): State {
   switch (action.type) {
     case "SET_LOCATION":
-      return { ...state, activeLocationId: action.locationId, activeViewId: null, path: [], structureLocationId: null };
+      return { ...state, activeLocationId: action.locationId, activeViewId: null, path: [], diskFoldersLocationId: null, rulesOpen: false };
     case "SET_VIEW":
-      return { ...state, activeViewId: action.viewId, path: [], editStructure: false };
+      return { ...state, activeViewId: action.viewId, path: [], editHierarchy: false };
     case "NAVIGATE_TO":
       return { ...state, path: action.path };
     case "PUSH_SEGMENT":
@@ -61,26 +67,30 @@ export function navigationReducer(state: State, action: NavAction): State {
     case "POP_TO_INDEX":
       return { ...state, path: state.path.slice(0, action.index) };
     case "SET_VIEW_MODE":
-      return { ...state, viewMode: action.mode };
+      // Rules belongs to the Database view
+      return { ...state, viewMode: action.mode, rulesOpen: action.mode === "database" && state.rulesOpen };
     case "SET_VIEWS":
       return { ...state, views: action.views };
     case "SET_VIEW_NODES":
       return { ...state, viewNodes: action.nodes };
-    case "SET_EDIT_STRUCTURE":
-      return { ...state, editStructure: action.value };
+    case "SET_EDIT_HIERARCHY":
+      return { ...state, ...(action.value ? noSidePanel : {}), editHierarchy: action.value };
     case "SET_MASTER_EDITOR":
       return { ...state, masterEditorOpen: action.open };
-    case "OPEN_STRUCTURE": {
-      // Map Structure opens over the location's files, so switch to it first
+    case "OPEN_DISK_FOLDERS": {
+      // Map Disk Folders opens over the location's files, so switch to it first
       const switching = state.activeLocationId !== action.locationId;
       return {
         ...state,
+        ...noSidePanel,
         ...(switching ? { activeLocationId: action.locationId, activeViewId: null, path: [] } : {}),
-        structureLocationId: action.locationId,
+        diskFoldersLocationId: action.locationId,
       };
     }
-    case "CLOSE_STRUCTURE":
-      return { ...state, structureLocationId: null };
+    case "CLOSE_DISK_FOLDERS":
+      return { ...state, diskFoldersLocationId: null };
+    case "SET_RULES_OPEN":
+      return { ...state, ...(action.open ? noSidePanel : {}), rulesOpen: action.open };
   }
 }
 
@@ -130,11 +140,12 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     setViewMode: (mode) => dispatch({ type: "SET_VIEW_MODE", mode }),
     setActiveLocation: (locationId) => dispatch({ type: "SET_LOCATION", locationId }),
     setActiveView: (viewId) => dispatch({ type: "SET_VIEW", viewId }),
-    setEditStructure: (v) => dispatch({ type: "SET_EDIT_STRUCTURE", value: v }),
+    setEditHierarchy: (v) => dispatch({ type: "SET_EDIT_HIERARCHY", value: v }),
     openMasterEditor: () => dispatch({ type: "SET_MASTER_EDITOR", open: true }),
     closeMasterEditor: () => dispatch({ type: "SET_MASTER_EDITOR", open: false }),
-    openStructureMapping: (locationId) => dispatch({ type: "OPEN_STRUCTURE", locationId }),
-    closeStructureMapping: () => dispatch({ type: "CLOSE_STRUCTURE" }),
+    openDiskFolders: (locationId) => dispatch({ type: "OPEN_DISK_FOLDERS", locationId }),
+    closeDiskFolders: () => dispatch({ type: "CLOSE_DISK_FOLDERS" }),
+    setRulesOpen: (open) => dispatch({ type: "SET_RULES_OPEN", open }),
     refreshViews,
     refreshViewNodes,
   };

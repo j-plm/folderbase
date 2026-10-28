@@ -3,7 +3,7 @@ mod common;
 use common::setup_db;
 use folderbase_lib::commands::metadata::{rename_property_impl, CellEdit};
 use folderbase_lib::commands::rules::{
-    apply_rule_writes_impl, delete_rule_impl, forget_rule_writes_impl, get_rule_writes_impl, get_rules_impl,
+    apply_rule_writes_impl, delete_rule_impl, forget_property_in_rules, forget_rule_writes_impl, get_rule_writes_impl, get_rules_impl,
     reorder_rules_impl, save_rule_impl,
 };
 use folderbase_lib::db::DbPool;
@@ -118,4 +118,21 @@ async fn renaming_a_property_renames_it_in_rules_and_their_writes() {
     assert_eq!(def["conditions"][0]["column"], "prop:Customer");
     assert_eq!(def["actions"][0]["property"], "Customer");
     assert_eq!(get_rule_writes_impl(&pool, "docs").await.unwrap()[0].key, "Customer");
+}
+
+#[tokio::test]
+async fn deleting_a_property_forgets_what_rules_wrote_to_it() {
+    let pool = setup_db().await;
+    let r = save_rule_impl(&pool, rule("Rig", json!({ "actions": [] }))).await.unwrap();
+    let file = insert_file(&pool).await;
+    let write = |key: &str| RuleWrite { rule_id: r.rule_id.clone(), file_id: file.clone(), key: key.into(), value: "\"0014\"".into() };
+    apply_rule_writes_impl(&pool, &[], &[write("Rig"), write("Test")]).await.unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    forget_property_in_rules(&mut conn, Some("docs"), "Rig").await.unwrap();
+    // Another library's property of the same name leaves these alone
+    forget_property_in_rules(&mut conn, Some("other"), "Test").await.unwrap();
+    drop(conn);
+    let keys: Vec<String> = get_rule_writes_impl(&pool, "docs").await.unwrap().into_iter().map(|w| w.key).collect();
+    assert_eq!(keys, vec!["Test"]);
 }

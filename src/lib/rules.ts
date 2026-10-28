@@ -1,7 +1,7 @@
 import { listItems, matchesRule, newRule, patternFor, patternMatch, type ColumnKind, type FilterMatch, type FilterRule } from "./dbTable";
 import { FormulaError, runFormula, type FormulaContext } from "./formula";
 import { DATE_FORMATS, parseDateAs, type ExampleSlot } from "./patterns";
-import { coerceValue, dateKey, listValues, parseNumber, valueToText } from "./propertyTypes";
+import { coerceValue, dateKey, dateTimeKey, listValues, parseNumber, timeOfKey, valueToText } from "./propertyTypes";
 import { NATIVE_LABELS, PROP_PREFIX, baseName, fileExtension, fileName, folderNames } from "./fileColumns";
 import type { CellEdit } from "./commands";
 import type { FileRecord, PropertyConfig, ValueType } from "../types";
@@ -10,19 +10,28 @@ import type { FileRecord, PropertyConfig, ValueType } from "../types";
 // Pure: the caller says how to read columns and what the properties are, so
 // the same code previews a rule in the editor and runs it in the background.
 
-/** Where an action's value comes from: typed in, a slot of the rule's pattern, another column, or a formula. */
-export type ActionMode = "fixed" | "slot" | "column" | "formula";
+/**
+ * Where an action's value comes from: typed in, a slot of the rule's pattern,
+ * another column, a formula, or other files that share the same values.
+ */
+export type ActionMode = "fixed" | "slot" | "column" | "formula" | "same";
 
 export interface RuleAction {
   id: string;
   property: string;
   mode: ActionMode;
-  /** The fixed text, the slot's name, the column's id ("created", "tags", "prop:Client"), or the formula. */
-  value: string;
   /**
-   * For a column: which part of its value. A list (Source Tags, a Multi-select):
-   * "all", "first", "last" or "n:2" (the 2nd). A date: "date", "year", "month",
-   * "monthName", "yearMonth", "quarter" or "weekday". Missing: the whole value.
+   * The fixed text, the slot's name, the column's id ("created", "tags", "prop:Client"),
+   * the formula, or (for "same") the first column files must share.
+   */
+  value: string;
+  /** For "same": further columns files must share ("same Test and Project"). */
+  also?: string[];
+  /**
+   * For a column: which part of its value. A list (Path Tags, a Multi-select):
+   * "all", "first", "last" or "n:2" (the 2nd). A date: "date", "dateTime",
+   * "time" (10:15), "hour", "year", "month", "monthName", "yearMonth", "quarter"
+   * or "weekday". Missing: the whole value.
    */
   part?: string;
   /** How to read the text before writing it: "" as it is, "number", or a date format such as "YYMMDD". */
@@ -37,9 +46,10 @@ export interface RuleDefinition {
   actions: RuleAction[];
   /**
    * The example slots were picked from, kept so the picks can be adjusted later:
-   * its text, and the column it came from (Name if missing).
+   * its text, the column it came from (Name if missing), and the "matches
+   * pattern" condition it writes (missing in rules saved before: the one on its column).
    */
-  example?: { name: string; slots: ExampleSlot[]; column?: string; item?: string };
+  example?: { name: string; slots: ExampleSlot[]; column?: string; item?: string; condition?: string };
 }
 
 export interface StoredRule {
@@ -88,15 +98,33 @@ export function parseDefinition(json: string): RuleDefinition {
 }
 
 /**
- * A new rule's conditions from the table's current context: its filter rules
- * (with all/any) and the search text as "Name contains …".
+ * A new rule's conditions from the table's current context: the folder it's
+ * in (its place's conditions), its filter rules (with all/any) and the search
+ * text as "Name contains …". A rule has one all/any, so the folder joins only
+ * filters that all hold (or a single one); "any of" several filters keeps
+ * just the filters.
  */
-export function definitionFromFilter(rules: FilterRule[], match: FilterMatch, search: string): RuleDefinition {
-  const conditions = rules
-    .filter((r) => r.op === "empty" || r.op === "not_empty" || r.value.trim() !== "")
-    .map((r) => ({ ...r, id: Math.random().toString(36).slice(2) }));
-  if (search.trim()) conditions.push({ ...newRule("name", "text"), op: "contains", value: search.trim() });
-  return { match, conditions, actions: [newAction()] };
+export function definitionFromFilter(rules: FilterRule[], match: FilterMatch, search: string, place: FilterRule[] = []): RuleDefinition {
+  const fresh = (r: FilterRule) => ({ ...r, id: Math.random().toString(36).slice(2) });
+  const own = rules.filter((r) => r.op === "empty" || r.op === "not_empty" || r.value.trim() !== "").map(fresh);
+  if (search.trim()) own.push({ ...newRule("name", "text"), op: "contains", value: search.trim() });
+  if (match === "any" && own.length > 1) return { match, conditions: own, actions: [newAction()] };
+  return { match: "all", conditions: [...place.map(fresh), ...own], actions: [newAction()] };
+}
+
+/**
+ * The filter's conditions added to a rule's own, skipping any it already has.
+ * A rule with no conditions yet takes the filter's all/any too.
+ */
+export function withFilterConditions(def: RuleDefinition, filter: RuleDefinition): RuleDefinition {
+  const same = (a: FilterRule, b: FilterRule) => a.column === b.column && a.op === b.op && a.value === b.value && a.item === b.item;
+  const added = filter.conditions.filter((c) => !def.conditions.some((d) => same(c, d)));
+  if (added.length === 0) return def;
+  return {
+    ...def,
+    match: def.conditions.length === 0 ? filter.match : def.match,
+    conditions: [...def.conditions, ...added],
+  };
 }
 
 /** The slots a rule's patterns can fill: from every "matches pattern" condition. */
@@ -120,6 +148,8 @@ export interface RuleEnv {
   configOf: (property: string) => PropertyConfig;
   /** Values rules have already written (see writeKeys). */
   written: Set<string>;
+  /** Write over values changed by hand since the rule set them, too (Apply Now, asked for). */
+  overHandEdits?: boolean;
 }
 
 /** The record of rule writes as lookup keys: per value, and per property ("hand edits win"). */
@@ -169,13 +199,19 @@ const hasItem = (list: string[], v: string) => list.some((x) => x.localeCompare(
 
 const asText = (v: unknown) => (Array.isArray(v) ? v.map(valueToText).join(", ") : valueToText(v));
 
-/** A column by its header's name: a native one (Created, Source Tags…) or a property. */
+/** A column by its header's name: a native one (Created, Path Tags…) or a property. */
 export function columnByName(name: string): string {
-  const native = Object.entries(NATIVE_LABELS).find(([, label]) => label.toLowerCase() === name.trim().toLowerCase());
+  const wanted = name.trim().toLowerCase();
+  if (FORMER_LABELS[wanted]) return FORMER_LABELS[wanted];
+  const native = Object.entries(NATIVE_LABELS).find(([, label]) => label.toLowerCase() === wanted);
   return native ? native[0] : PROP_PREFIX + name;
 }
 
-function formulaContext(file: FileRecord, slots: Record<string, string>, env: RuleEnv): FormulaContext {
+/** Native columns' former names, so formulas written before a rename still read them. */
+const FORMER_LABELS: Record<string, string> = { "source tags": "tags" };
+
+/** What a formula can read on a file: its name, dates, folders, the rule's slots and any column. */
+export function formulaContext(file: FileRecord, slots: Record<string, string>, env: RuleEnv): FormulaContext {
   const rel = (file.relative_path ?? file.file_path).replace(/\\/g, "/");
   const folders = folderNames(file);
   return {
@@ -212,12 +248,20 @@ export function columnPart(value: unknown, part: string | undefined): string | s
   }
   const text = valueToText(value);
   if (!part || part === "all") return text;
-  const key = dateKey(text);
-  if (!key) return text;
+  const full = dateTimeKey(text);
+  if (!full) return text;
+  const key = full.slice(0, 10);
+  const time = timeOfKey(full);
   const [y, m, d] = key.split("-").map(Number);
   switch (part) {
     case "date":
       return key;
+    case "dateTime":
+      return full;
+    case "time":
+      return time ? time.slice(0, 5) : null;
+    case "hour":
+      return time ? time.slice(0, 2) : null;
     case "year":
       return String(y);
     case "month":
@@ -235,6 +279,72 @@ export function columnPart(value: unknown, part: string | undefined): string | s
   }
 }
 
+// ── From files with the same … ───────────────────────────────────────────────
+
+/** A column's header name, for messages. */
+function columnLabel(column: string): string {
+  return column.startsWith(PROP_PREFIX) ? column.slice(PROP_PREFIX.length) : NATIVE_LABELS[column] ?? column;
+}
+
+/** The columns a "same" action matches on, in order, without blanks. */
+export function sameColumns(action: RuleAction): string[] {
+  return [action.value, ...(action.also ?? [])].filter(Boolean);
+}
+
+/** What a file shares with others for a "same" action, or null if any of the columns is empty. */
+function sameKey(file: FileRecord, columns: string[], env: RuleEnv): string | null {
+  const parts: string[] = [];
+  for (const column of columns) {
+    const items = listValues(env.valueOf(file, column)).map((v) => v.trim().toLowerCase()).filter(Boolean);
+    if (items.length === 0) return null;
+    parts.push(items.sort().join("\u0001"));
+  }
+  return parts.join("\u0002");
+}
+
+/** The values files sharing a key have for the property, each with how many files have it. */
+type SameLookup = Map<string, Map<string, { value: unknown; count: number }>>;
+
+/**
+ * The property's values on files that have one, by what they share. Read as
+ * stored (implied values included), not as earlier writes in the same run leave them.
+ */
+export function sameLookup(action: RuleAction, files: FileRecord[], env: RuleEnv): SameLookup {
+  const lookup: SameLookup = new Map();
+  const columns = sameColumns(action);
+  if (!action.property || columns.length === 0) return lookup;
+  for (const file of files) {
+    const value = env.valueOf(file, PROP_PREFIX + action.property);
+    if (isEmpty(value)) continue;
+    const key = sameKey(file, columns, env);
+    if (key == null) continue;
+    let values = lookup.get(key);
+    if (!values) lookup.set(key, (values = new Map()));
+    // Values the same but for case or order are one value
+    const id = listValues(value).map((v) => v.toLowerCase()).sort().join("\u0001");
+    const seen = values.get(id);
+    if (seen) seen.count++;
+    else values.set(id, { value, count: 1 });
+  }
+  return lookup;
+}
+
+/** The value files sharing this file's values agree on, or why there's none. */
+function sameValue(action: RuleAction, file: FileRecord, env: RuleEnv, lookup: SameLookup): { value: unknown } | { problem: string } | null {
+  const columns = sameColumns(action);
+  const key = sameKey(file, columns, env);
+  const values = key == null ? undefined : lookup.get(key);
+  if (!values || values.size === 0) return null;
+  const found = [...values.values()];
+  if (found.length === 1) return { value: found[0].value };
+  const shared = columns.map((c) => `${columnLabel(c)} ${asText(env.valueOf(file, c))}`).join(", ");
+  const counts = found
+    .sort((a, b) => b.count - a.count)
+    .map((f, i) => `${i === 0 ? `${action.property} ` : ""}${asText(f.value)} in ${f.count} ${f.count === 1 ? "file" : "files"}`)
+    .join(", ");
+  return { problem: `${shared} is on ${counts}` };
+}
+
 /** An action's value for one file, or why there's none. */
 function actionValue(
   action: RuleAction,
@@ -242,9 +352,15 @@ function actionValue(
   config: PropertyConfig,
   slots: Record<string, string>,
   file: FileRecord,
-  env: RuleEnv
+  env: RuleEnv,
+  lookup?: SameLookup
 ): { value: unknown } | { problem: string } | null {
   let text: string;
+  if (action.mode === "same") {
+    const found = sameValue(action, file, env, lookup ?? new Map());
+    if (!found || "problem" in found) return found;
+    return { value: coerceValue(found.value, type, config) };
+  }
   if (action.mode === "column") {
     if (!action.value) return null;
     const part = columnPart(env.valueOf(file, action.value), action.part);
@@ -287,6 +403,25 @@ function actionValue(
   return { value };
 }
 
+/** Why an action gave nothing for a file whose property is empty. */
+function nothingReason(action: RuleAction, slots: Record<string, string>): string {
+  switch (action.mode) {
+    case "slot":
+      return action.value in slots ? `{${action.value}} is empty` : "choose a slot";
+    case "formula":
+      return action.value.trim() ? "the formula gives nothing" : "type a formula";
+    case "column":
+      return action.value ? `${columnLabel(action.value)} is empty` : "choose a property to copy";
+    case "same": {
+      const columns = sameColumns(action);
+      if (columns.length === 0) return "choose a property to match on";
+      return `no file with the same ${columns.map(columnLabel).join(" and ")} has a ${action.property}`;
+    }
+    default:
+      return "type a value";
+  }
+}
+
 /** A slot named after a date format ({YYMMDD}) is read as that format. */
 export function formatForSlot(slot: string): string {
   return DATE_FORMATS.find((f) => f.toLowerCase() === slot.trim().toLowerCase()) ?? "";
@@ -316,6 +451,12 @@ export function planRule(
     }
     return m;
   };
+
+  // Every file teaches, whether or not it meets the conditions
+  const lookups = new Map<string, SameLookup>();
+  for (const action of def.actions) {
+    if (action.mode === "same") lookups.set(action.id, sameLookup(action, files, env));
+  }
 
   for (const file of files) {
     const results = def.conditions.map((c) => matchesRule(env.valueOf(file, c.column), env.kindOf(c.column), c));
@@ -354,8 +495,9 @@ export function planRule(
       continue;
     }
     for (const action of def.actions) {
-      if (action.mode === "column" && action.value && !sources.some((x) => x.column === action.value)) {
-        sources.push({ column: action.value, text: asText(env.valueOf(file, action.value)) });
+      const read = action.mode === "column" ? [action.value] : action.mode === "same" ? sameColumns(action) : [];
+      for (const column of read) {
+        if (column && !sources.some((x) => x.column === column)) sources.push({ column, text: asText(env.valueOf(file, column)) });
       }
     }
 
@@ -370,27 +512,35 @@ export function planRule(
         problems.push(`there's no property “${action.property}”`);
         continue;
       }
-      const result = actionValue(action, type, env.configOf(action.property), slots, file, env);
-      if (!result) continue;
+      const result = actionValue(action, type, env.configOf(action.property), slots, file, env, lookups.get(action.id));
+      if (!result) {
+        // Nothing to write and nothing there: say why, rather than show it as already set
+        if (isEmpty(m[action.property])) problems.push(nothingReason(action, slots));
+        continue;
+      }
       if ("problem" in result) {
         problems.push(result.problem);
         continue;
       }
       const key = action.property;
       const current = m[key] ?? null;
-      const wroteKey = env.written.has(`${ruleId}|${file.file_id}|${key}`);
+      const prefix = `${ruleId}|${file.file_id}|${key}`;
+      /** A value (or list item) this rule wrote here before. */
+      const wrote = (v: unknown) => env.written.has(`${prefix}|${JSON.stringify(v)}`);
       if (type === "array" && !action.overwrite) {
         // A Multi-select gains the values it doesn't have, except ones taken off by hand
         const items = listValues(result.value);
         const have = listValues(current);
+        // Items this rule added that it no longer gives (the rule was changed): it takes them back
+        const keep = have.filter((h) => hasItem(items, h) || !wrote(h));
         const add: string[] = [];
         for (const item of items) {
           if (hasItem(have, item)) continue;
-          if (env.written.has(`${ruleId}|${file.file_id}|${key}|${JSON.stringify(item)}`)) edited = true;
+          if (wrote(item) && !env.overHandEdits) edited = true;
           else add.push(item);
         }
-        if (add.length === 0) continue;
-        const next = [...have, ...add];
+        if (add.length === 0 && keep.length === have.length) continue;
+        const next = [...keep, ...add];
         changes.push({ property: key, from: current, to: next });
         edits.push({ file_id: file.file_id, key, value: next });
         for (const item of add) writes.push({ rule_id: ruleId, file_id: file.file_id, key, value: JSON.stringify(item) });
@@ -398,12 +548,15 @@ export function planRule(
         continue;
       }
       if (same(current, result.value)) continue;
-      if (wroteKey) {
+      // Still what this rule wrote: the rule may change it (its definition was edited)
+      const own = !isEmpty(current) && wrote(current);
+      const handEdited = env.written.has(prefix) && !own;
+      if (handEdited && !env.overHandEdits) {
         // Written before and changed since: the hand edit stands
         edited = true;
         continue;
       }
-      if (!isEmpty(current) && !action.overwrite) continue;
+      if (!isEmpty(current) && !own && !handEdited && !action.overwrite) continue;
       changes.push({ property: key, from: current, to: result.value });
       edits.push({ file_id: file.file_id, key, value: result.value });
       writes.push({ rule_id: ruleId, file_id: file.file_id, key, value: JSON.stringify(result.value) });

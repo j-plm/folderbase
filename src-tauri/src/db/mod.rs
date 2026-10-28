@@ -236,6 +236,11 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
+    // The sidebar's order of locations, set by dragging (0 for all: by name)
+    let _ = sqlx::query("ALTER TABLE locations ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
     // Type options for a property (number format, currency), as JSON.
     let _ = sqlx::query("ALTER TABLE properties ADD COLUMN config TEXT")
         .execute(pool)
@@ -316,6 +321,10 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
         source_tags_and_multi_select_mappings(pool).await?;
         sqlx::query("PRAGMA user_version = 1").execute(pool).await?;
     }
+    if version < 2 {
+        date_taken_as_date(pool).await?;
+        sqlx::query("PRAGMA user_version = 2").execute(pool).await?;
+    }
 
     // Every library has its Tags property (hand-added tags)
     let libraries: Vec<String> = sqlx::query_scalar("SELECT library FROM locations")
@@ -327,6 +336,24 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
             .map_err(|e| sqlx::Error::Protocol(e))?;
     }
 
+    Ok(())
+}
+
+/// Version 2: Date Taken is a Date holding its time ("2023-06-15T12:00:00").
+/// Earlier builds stored EXIF's "2023-06-15 12:00:00", which wasn't recognised
+/// as a date, so the property was registered as a Select.
+async fn date_taken_as_date(pool: &DbPool) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE properties SET value_type = 'date' WHERE name = 'date_taken'")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "UPDATE files SET metadata = json_set(metadata, '$.date_taken', \
+         replace(json_extract(metadata, '$.date_taken'), ' ', 'T')) \
+         WHERE json_extract(metadata, '$.date_taken') GLOB \
+         '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]'",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

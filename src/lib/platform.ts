@@ -16,6 +16,8 @@ export const labels = {
       ? "Delete"
       : "Move to Trash",
   newFolder: "New Folder",
+  /** How to name a toggle-click in hints ("⌘-click to select several"). */
+  toggleClick: platform === "macos" ? "⌘-click" : "Ctrl-click",
 } as const;
 
 export const breadcrumbSeparator = platform === "windows" ? "\\" : "/";

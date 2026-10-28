@@ -6,8 +6,13 @@ use uuid::Uuid;
 
 #[tauri::command]
 pub async fn get_locations(db: State<'_, DbPool>) -> Result<Vec<Location>, String> {
-    sqlx::query_as::<_, Location>("SELECT * FROM locations ORDER BY name")
-        .fetch_all(db.inner())
+    get_locations_impl(db.inner()).await
+}
+
+/// The locations in the sidebar's order: as dragged, else by name.
+pub async fn get_locations_impl(pool: &DbPool) -> Result<Vec<Location>, String> {
+    sqlx::query_as::<_, Location>("SELECT * FROM locations ORDER BY position, name")
+        .fetch_all(pool)
         .await
         .map_err(|e| e.to_string())
 }
@@ -25,9 +30,10 @@ pub async fn add_location(
     let library = name.to_lowercase().replace(' ', "_");
     let added_at = Utc::now().to_rfc3339();
 
+    // A new location goes last
     sqlx::query(
-        "INSERT INTO locations (location_id, name, root_path, library, added_at) \
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO locations (location_id, name, root_path, library, added_at, position) \
+         VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM locations))",
     )
     .bind(&location_id)
     .bind(&name)
@@ -75,6 +81,25 @@ pub async fn rename_location_impl(location_id: &str, name: &str, pool: &DbPool) 
         .fetch_one(pool)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Puts the locations in this order (the sidebar's, after a drag).
+#[tauri::command]
+pub async fn reorder_locations(location_ids: Vec<String>, db: State<'_, DbPool>) -> Result<(), String> {
+    reorder_locations_impl(&location_ids, db.inner()).await
+}
+
+pub async fn reorder_locations_impl(location_ids: &[String], pool: &DbPool) -> Result<(), String> {
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for (position, id) in location_ids.iter().enumerate() {
+        sqlx::query("UPDATE locations SET position = ? WHERE location_id = ?")
+            .bind(position as i64)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

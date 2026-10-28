@@ -1,13 +1,27 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type React from "react";
 import { useNavigation } from "../../contexts/NavigationContext";
 import { listen } from "@tauri-apps/api/event";
-import { getLocations, clearDatabase, deleteLocation, ingestDirectory, renameLocation } from "../../lib/commands";
+import {
+  getLocations,
+  getLocationViews,
+  clearDatabase,
+  deleteLocation,
+  ingestDirectory,
+  renameLocation,
+  reorderLocations,
+} from "../../lib/commands";
 import type { Location } from "../../lib/commands";
 import AddLocationModal from "./AddLocationModal";
 import Dialog, { DialogButton } from "../shared/Dialog";
+import RenameField from "../shared/RenameField";
 import { SymbolIcon } from "../../lib/fileIcons";
 import { showContextMenu } from "../../lib/nativeMenu";
+import { useOptionalLocationViews } from "../../contexts/LocationViewsContext";
+import { DEFAULT_VIEW_NAME, type StoredView } from "../../lib/tableViews";
+import { DefaultBadge } from "./ViewsButton";
+import { useDragReorder } from "../../hooks/useDragReorder";
+import { moveColumnId } from "../../lib/columns";
 
 const MIN_WIDTH = 150;
 const MAX_WIDTH = 400;
@@ -21,8 +35,18 @@ function loadWidth(): number {
 }
 
 export default function Sidebar() {
-  const { activeLocationId, setActiveLocation, openStructureMapping } = useNavigation();
+  const { activeLocationId, setActiveLocation, openDiskFolders } = useNavigation();
   const [width, setWidth] = useState(loadWidth);
+  /** The selected location's saved views, listed under it. */
+  const locationViews = useOptionalLocationViews();
+  /** Its views are folded away; selecting a location shows its views again. */
+  const [viewsFolded, setViewsFolded] = useState(false);
+  /** How many views each location has (the selected one's come live from its views). */
+  const [viewCounts, setViewCounts] = useState<Record<string, number>>({});
+  useEffect(() => setViewsFolded(false), [activeLocationId]);
+  /** The view whose name is being edited in place. */
+  const [renamingViewId, setRenamingViewId] = useState<string | null>(null);
+  const [deletingView, setDeletingView] = useState<StoredView | null>(null);
 
   function startResize(e: React.MouseEvent) {
     e.preventDefault();
@@ -59,7 +83,7 @@ export default function Sidebar() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   /** Locations being indexed (a refresh, or a newly added location). */
   const [refreshing, setRefreshing] = useState<Set<string>>(() => new Set());
-  const [refreshError, setRefreshError] = useState<{ id: string; message: string } | null>(null);
+  const [refreshError, setRefreshError] = useState<{ id: string; message: string; action?: string } | null>(null);
 
   function setRefreshingFor(id: string, on: boolean) {
     setRefreshing((prev) => {
@@ -103,7 +127,7 @@ export default function Sidebar() {
     e.preventDefault();
     showContextMenu(
       [
-        { type: "item", text: "Map Structure…", action: () => openStructureMapping(loc.location_id) },
+        { type: "item", text: "Map Disk Folders…", action: () => openDiskFolders(loc.location_id) },
         { type: "item", text: "Refresh", enabled: !refreshing.has(loc.location_id), action: () => refreshLocation(loc.location_id) },
         { type: "separator" },
         { type: "item", text: "Rename", action: () => setRenamingId(loc.location_id) },
@@ -113,17 +137,50 @@ export default function Sidebar() {
     );
   }
 
+  function showViewMenu(e: React.MouseEvent, view: StoredView) {
+    e.preventDefault();
+    if (!locationViews) return;
+    const edited = view.view_id === locationViews.active?.view_id && locationViews.edited;
+    showContextMenu(
+      [
+        { type: "item", text: "Save Changes", enabled: edited, action: () => void locationViews.saveChanges() },
+        { type: "item", text: "Revert Changes", enabled: edited, action: () => void locationViews.revert() },
+        { type: "separator" },
+        {
+          type: "item",
+          text: "Set as Default",
+          enabled: !view.is_default,
+          action: () =>
+            locationViews
+              .setDefault(view.view_id)
+              .catch((e) => setRefreshError({ id: view.location_id, message: String(e), action: "set the default view" })),
+        },
+        { type: "item", text: "Rename", action: () => setRenamingViewId(view.view_id) },
+        // The default can't go: another is made default first
+        { type: "item", text: "Delete View…", enabled: !view.is_default, action: () => setDeletingView(view) },
+      ],
+      { event: e }
+    );
+  }
+
+  function commitViewRename(view: StoredView, text: string) {
+    setRenamingViewId(null);
+    const name = text.trim();
+    if (!name || name === view.name || !locationViews) return;
+    locationViews
+      .rename(view.view_id, name)
+      .catch((e) => setRefreshError({ id: view.location_id, message: String(e), action: "rename the view" }));
+  }
+
   async function commitRename(loc: Location, text: string) {
     setRenamingId(null);
     const name = text.trim();
     if (!name || name === loc.name) return;
     try {
       const renamed = await renameLocation(loc.location_id, name);
-      setLocations((locs) =>
-        locs.map((l) => (l.location_id === renamed.location_id ? renamed : l)).sort((a, b) => a.name.localeCompare(b.name))
-      );
+      setLocations((locs) => locs.map((l) => (l.location_id === renamed.location_id ? renamed : l)));
     } catch (e) {
-      setRefreshError({ id: loc.location_id, message: String(e) });
+      setRefreshError({ id: loc.location_id, message: String(e), action: "rename" });
     }
   }
 
@@ -140,6 +197,26 @@ export default function Sidebar() {
     loadLocations();
   }, []);
 
+  // Counted again on leaving a location, whose views may have changed while it was open
+  useEffect(() => {
+    let stale = false;
+    Promise.all(locations.map((l) => getLocationViews(l.location_id).then((vs) => [l.location_id, vs.length] as const)))
+      .then((counts) => {
+        if (!stale) setViewCounts(Object.fromEntries(counts));
+      })
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
+  }, [locations, activeLocationId]);
+
+  const countOf = (locationId: string) =>
+    locationId === activeLocationId && locationViews?.active?.location_id === locationId
+      ? locationViews.views.length
+      : (viewCounts[locationId] ?? 1);
+  // Room for disclosure triangles only once some location has views besides its default
+  const gutter = locations.some((l) => countOf(l.location_id) > 1) ? "pl-5" : "pl-2";
+
   useEffect(() => {
     function onLocationAdded() {
       loadLocations();
@@ -147,6 +224,34 @@ export default function Sidebar() {
     window.addEventListener("location-added", onLocationAdded);
     return () => window.removeEventListener("location-added", onLocationAdded);
   }, []);
+
+  // Drag to reorder: the locations, and the selected location's views (its default among them)
+  const locationDrag = useDragReorder(locations.length, (from, gap) => {
+    const ids = moveColumnId(
+      locations.map((l) => l.location_id),
+      locations[from].location_id,
+      gap
+    );
+    const byId = new Map(locations.map((l) => [l.location_id, l]));
+    setLocations(ids.map((id) => byId.get(id)!));
+    reorderLocations(ids).catch((e) => {
+      setRefreshError({ id: locations[from].location_id, message: String(e), action: "reorder the locations" });
+      void loadLocations();
+    });
+  });
+  const allViews = locationViews?.views ?? [];
+  const viewDrag = useDragReorder(allViews.length, (from, gap) => {
+    if (!locationViews) return;
+    const ids = moveColumnId(
+      allViews.map((v) => v.view_id),
+      allViews[from].view_id,
+      gap
+    );
+    locationViews.reorder(ids).catch((e) => {
+      setRefreshError({ id: allViews[from].location_id, message: String(e), action: "reorder the views" });
+      void locationViews.reload();
+    });
+  });
 
   const removing = locations.find((l) => l.location_id === confirmDeleteId) ?? null;
 
@@ -190,6 +295,7 @@ export default function Sidebar() {
     // re-renders on every repaint underneath it, and little shows through anyway.
     <div
       data-tauri-drag-region
+      data-keys-to-browse
       style={{ width: width + PANEL_MARGIN, padding: `${PANEL_MARGIN}px 0 ${PANEL_MARGIN}px ${PANEL_MARGIN}px` }}
       className="absolute left-0 top-0 bottom-0 z-40 flex text-sm"
     >
@@ -209,42 +315,78 @@ export default function Sidebar() {
           {locations.length === 0 && (
             <p className="text-neutral-500 text-xs px-2 py-1">No locations</p>
           )}
-          {locations.map((loc) => {
+          {locations.map((loc, locIndex) => {
             const isActive = loc.location_id === activeLocationId;
+            const views =
+              isActive && locationViews?.active?.location_id === loc.location_id ? locationViews.views : null;
+            // A location with only its default view has nothing to show under it
+            const hasViews = countOf(loc.location_id) > 1;
+            const viewsShown = hasViews && !!views && !viewsFolded;
+            // With its views showing, the selected view is highlighted rather than the location
+            const isSelected = isActive && !viewsShown;
             const isRefreshing = refreshing.has(loc.location_id);
-            const error = refreshError?.id === loc.location_id ? refreshError.message : null;
+            const error = refreshError?.id === loc.location_id ? refreshError : null;
             return (
-              <div key={loc.location_id} className="flex flex-col">
+              <div
+                key={loc.location_id}
+                ref={locationDrag.itemRef(locIndex)}
+                className={`relative flex flex-col ${locationDrag.drag?.from === locIndex ? "opacity-50" : ""}`}
+              >
+                {locationDrag.lineAt(locIndex) && <DropLine edge="top" />}
+                {locationDrag.lineAt(locIndex, true) && <DropLine edge="bottom" />}
                 <div className="group relative flex items-center" onContextMenu={(e) => showLocationMenu(e, loc)}>
                   {renamingId === loc.location_id ? (
                     // A plain row while renaming: a text field can't sit inside a button
-                    <div className={`flex items-center gap-2 w-full px-2 h-7 rounded-md ${isActive ? "bg-neutral-700" : ""}`}>
+                    <div className={`flex items-center gap-2 w-full ${gutter} pr-2 h-7 rounded-md ${isSelected ? "bg-neutral-700" : ""}`}>
                       <SymbolIcon name="folder" size={17} className={isActive ? "text-blue-500" : "text-neutral-400"} />
                       <RenameField
                         initial={loc.name}
+                        label="Location name"
                         onCommit={(text) => void commitRename(loc, text)}
                         onCancel={() => setRenamingId(null)}
                       />
                     </div>
                   ) : (
                     <button
-                      onClick={() => setActiveLocation(loc.location_id)}
-                      className={`flex items-center gap-2 w-full text-left px-2 h-7 rounded-md pr-7 group-hover:pr-12 ${
-                        isActive ? "bg-neutral-700 text-blue-500" : "text-neutral-100"
+                      // Clicking the selected location again folds its views away, or shows them
+                      onClick={() => (isActive ? setViewsFolded(viewsShown) : setActiveLocation(loc.location_id))}
+                      onMouseDown={(e) => locationDrag.onMouseDown(e, locIndex)}
+                      className={`flex items-center gap-2 w-full text-left ${gutter} h-7 rounded-md pr-7 group-hover:pr-12 ${
+                        isSelected ? "bg-neutral-700 text-blue-500" : "text-neutral-100"
                       }`}
                     >
                       <SymbolIcon name="folder" size={17} className={isActive ? "text-blue-500" : "text-neutral-400"} />
                       <span className="truncate text-body">{loc.name}</span>
                     </button>
                   )}
+                  {/* Disclosure for the location's saved views */}
+                  {hasViews && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (isActive) setViewsFolded(viewsShown);
+                        else setActiveLocation(loc.location_id);
+                      }}
+                      aria-label={viewsShown ? `Hide views of ${loc.name}` : `Show views of ${loc.name}`}
+                      aria-expanded={viewsShown}
+                      className="absolute left-0.5 w-4 h-5 flex items-center justify-center text-neutral-500 hover:text-neutral-300"
+                    >
+                      <SymbolIcon
+                        name="chevron.right"
+                        size={9}
+                        fallback="›"
+                        className={`transition-transform ${viewsShown ? "rotate-90" : ""}`}
+                      />
+                    </button>
+                  )}
                   <div className={`absolute right-1 flex items-center ${renamingId === loc.location_id ? "hidden" : ""}`}>
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        openStructureMapping(loc.location_id);
+                        openDiskFolders(loc.location_id);
                       }}
-                      title="Map Structure…"
-                      aria-label={`Map structure of ${loc.name}`}
+                      title="Map Disk Folders…"
+                      aria-label={`Map disk folders of ${loc.name}`}
                       className="w-5 h-5 flex items-center justify-center rounded text-neutral-500 hover:text-neutral-200 opacity-0 group-hover:opacity-100"
                     >
                       <SymbolIcon name="map" size={12} fallback="⌖" />
@@ -271,9 +413,54 @@ export default function Sidebar() {
                     </button>
                   </div>
                 </div>
+                {viewsShown &&
+                  views.map((view, dragIndex) => {
+                    const selected = view.view_id === locationViews?.active?.view_id;
+                    const rowClass = `relative flex items-center gap-2 w-full text-left pl-[42px] pr-2 h-7 rounded-md ${
+                      selected ? "bg-neutral-700 text-blue-500" : "text-neutral-100"
+                    } ${viewDrag.drag?.from === dragIndex ? "opacity-50" : ""}`;
+                    const icon = (
+                      <SymbolIcon
+                        name="rectangle.stack"
+                        size={14}
+                        fallback="▤"
+                        className={selected ? "text-blue-500" : "text-neutral-400"}
+                      />
+                    );
+                    return renamingViewId === view.view_id ? (
+                      <div key={view.view_id} className={rowClass}>
+                        {icon}
+                        <RenameField
+                          initial={view.name}
+                          label="View name"
+                          onCommit={(text) => commitViewRename(view, text)}
+                          onCancel={() => setRenamingViewId(null)}
+                        />
+                      </div>
+                    ) : (
+                      <button
+                        key={view.view_id}
+                        ref={viewDrag.itemRef(dragIndex)}
+                        onClick={() => void locationViews?.select(view.view_id)}
+                        onMouseDown={(e) => viewDrag.onMouseDown(e, dragIndex)}
+                        onContextMenu={(e) => showViewMenu(e, view)}
+                        className={rowClass}
+                      >
+                        {viewDrag.lineAt(dragIndex) && <DropLine edge="top" />}
+                        {viewDrag.lineAt(dragIndex, true) && <DropLine edge="bottom" />}
+                        {icon}
+                        <span className="truncate text-body">{view.name}</span>
+                        {selected && locationViews?.edited && (
+                          <span className="shrink-0 text-xs text-neutral-500">Edited</span>
+                        )}
+                        {/* Once renamed, the view the location opens with is marked */}
+                        {view.is_default && view.name !== DEFAULT_VIEW_NAME && <DefaultBadge />}
+                      </button>
+                    );
+                  })}
                 {error && (
-                  <p className="px-2 pb-1 text-[11px] text-red-500 truncate" title={error}>
-                    Couldn't refresh: {error}
+                  <p className="px-2 pb-1 text-[11px] text-red-500 truncate" title={error.message}>
+                    Couldn't {error.action ?? "refresh"}: {error.message}
                   </p>
                 )}
               </div>
@@ -320,6 +507,31 @@ export default function Sidebar() {
           }
         />
       )}
+      {deletingView && (
+        <Dialog
+          title={`Delete “${deletingView.name}”?`}
+          message="The view is removed. Files and their values aren't changed."
+          onCancel={() => setDeletingView(null)}
+          footer={
+            <>
+              <span className="flex-1" />
+              <DialogButton onClick={() => setDeletingView(null)}>Cancel</DialogButton>
+              <DialogButton
+                variant="destructive"
+                onClick={() => {
+                  const view = deletingView;
+                  setDeletingView(null);
+                  locationViews
+                    ?.remove(view.view_id)
+                    .catch((e) => setRefreshError({ id: view.location_id, message: String(e), action: "delete the view" }));
+                }}
+              >
+                Delete
+              </DialogButton>
+            </>
+          }
+        />
+      )}
       {removing && (
         <Dialog
           title={`Remove “${removing.name}” from Folderbase?`}
@@ -349,38 +561,13 @@ export default function Sidebar() {
   );
 }
 
-/** A location's name edited in place, as in Finder: Return or clicking away renames, Escape cancels. */
-function RenameField({ initial, onCommit, onCancel }: { initial: string; onCommit: (text: string) => void; onCancel: () => void }) {
-  const [text, setText] = useState(initial);
-  const done = useRef(false);
-  function finish(commit: boolean) {
-    if (done.current) return;
-    done.current = true;
-    if (commit) onCommit(text);
-    else onCancel();
-  }
+/** Where a dragged location or view will land, as in Finder's sidebar. */
+function DropLine({ edge }: { edge: "top" | "bottom" }) {
   return (
-    <input
-      autoFocus
-      value={text}
-      aria-label="Location name"
-      onChange={(e) => setText(e.target.value)}
-      onFocus={(e) => e.currentTarget.select()}
-      onBlur={() => finish(true)}
-      onKeyDown={(e) => {
-        e.stopPropagation();
-        if (e.key === "Enter") {
-          e.preventDefault();
-          finish(true);
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          finish(false);
-        }
-      }}
-      // Clicks in the field edit it rather than selecting the location
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-      className="flex-1 min-w-0 h-5 px-1 -mx-1 rounded-[3px] bg-neutral-900 text-body text-neutral-100 outline outline-2 outline-blue-500"
+    <div
+      aria-hidden
+      className="pointer-events-none absolute left-1 right-1 z-10 h-[2px] rounded-full bg-blue-500"
+      style={{ [edge]: -1.5 }}
     />
   );
 }

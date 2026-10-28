@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { coerceValue, dateKey, defaultCurrency, editText, formatValue, parseInput, parseNumber, uniqueName, valueToText } from "./propertyTypes";
+import { coerceValue, dateConfig, dateKey, dateTimeKey, defaultCurrency, editText, formatValue, parseInput, parseNumber, uniqueName, valueToText } from "./propertyTypes";
 
 describe("parseNumber", () => {
   it("reads separators, currency symbols and percentages", () => {
@@ -26,9 +26,12 @@ describe("parseInput", () => {
   it("keeps text that isn't a number as typed", () => {
     expect(parseInput("tbc", "number")).toBe("tbc");
   });
-  it("normalises dates to YYYY-MM-DD", () => {
+  it("normalises dates to YYYY-MM-DD, keeping a time when there is one", () => {
     expect(parseInput("2024-03-01", "date")).toBe("2024-03-01");
-    expect(parseInput("2024:03:01 10:00:00", "date")).toBe("2024-03-01");
+    expect(parseInput("2024:03:01 10:00:00", "date")).toBe("2024-03-01T10:00:00");
+    expect(parseInput("2024-03-01T10:15", "date")).toBe("2024-03-01T10:15:00");
+    expect(parseInput("1 March 2024 10:15", "date")).toBe("2024-03-01T10:15:00");
+    expect(parseInput("1 March 2024", "date")).toBe("2024-03-01");
   });
   it("splits multi-select text on commas, dropping blanks and repeats", () => {
     expect(parseInput("Apollo, Hermes,,Apollo", "array")).toEqual(["Apollo", "Hermes"]);
@@ -66,6 +69,18 @@ describe("formatting", () => {
     expect(dateKey("2024-03-01T10:00:00Z")).toBe("2024-03-01");
     expect(dateKey("2024:03:01 10:00:00")).toBe("2024-03-01");
     expect(dateKey("March")).toBeNull();
+  });
+  it("keeps a date's time: clock time as written, a moment in local time", () => {
+    expect(dateTimeKey("2024-03-01")).toBe("2024-03-01");
+    expect(dateTimeKey("2024:03:01 10:00:00")).toBe("2024-03-01T10:00:00");
+    expect(dateTimeKey("2024-03-01T10:15")).toBe("2024-03-01T10:15:00");
+    const moment = new Date("2024-03-01T23:30:00Z");
+    expect(dateTimeKey("2024-03-01T23:30:00+00:00")).toBe(dateTimeKey(
+      `${moment.getFullYear()}-${String(moment.getMonth() + 1).padStart(2, "0")}-${String(moment.getDate()).padStart(2, "0")}T${String(moment.getHours()).padStart(2, "0")}:30:00`
+    ));
+    expect(dateTimeKey("2024-03-01T23:30:00.123Z")).toBe(dateTimeKey("2024-03-01T23:30:00Z"));
+    // Keys sort as text: a day alone before the same day with a time
+    expect(["2024-03-01T09:00:00", "2024-03-01", "2024-02-28T23:00:00"].sort()).toEqual(["2024-02-28T23:00:00", "2024-03-01", "2024-03-01T09:00:00"]);
   });
 });
 
@@ -109,5 +124,21 @@ describe("date formats", () => {
     const { formatDate, formatValue } = await import("./propertyTypes");
     expect(formatDate("2025-03-01", undefined)).toBe(formatDate("2025-03-01", "medium"));
     expect(formatValue("2025-03-01", "date", { dateFormat: "iso" })).toBe("2025-03-01");
+  });
+
+  it("shows a date's time, as Finder does, unless Show Time is off", async () => {
+    const { formatDate, formatDatePattern, formatValue } = await import("./propertyTypes");
+    const time = new Date(2025, 2, 1, 10, 15).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    expect(formatValue("2025-03-01T10:15:22", "date", {})).toBe(`${formatDate("2025-03-01", "medium")} at ${time}`);
+    expect(formatValue("2025-03-01T10:15:22", "date", { dateFormat: "iso" })).toBe("2025-03-01 10:15:22");
+    expect(formatValue("2025-03-01T10:15:22", "date", { hideTime: true })).toBe(formatDate("2025-03-01", "medium"));
+    expect(formatValue("2025-03-01T10:15:22", "date", { dateFormat: "custom:YYYYMMDD" })).toBe("20250301");
+    expect(formatDatePattern(new Date(2025, 2, 1, 9, 5, 7), "DD/MM/YYYY HH:mm:ss H")).toBe("01/03/2025 09:05:07 9");
+  });
+
+  it("stores only the Date settings that differ from the defaults", () => {
+    expect(dateConfig({ dateFormat: "medium" })).toBeNull();
+    expect(dateConfig({ dateFormat: "iso", hideTime: false })).toEqual({ dateFormat: "iso" });
+    expect(dateConfig({ hideTime: true })).toEqual({ hideTime: true });
   });
 });

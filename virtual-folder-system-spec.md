@@ -7,12 +7,13 @@
 ## Contents
 
 - [Overview](#overview)
+- [Glossary](#glossary)
 - [Core Concepts](#core-concepts)
   - [1. File Storage](#1-file-storage)
   - [2. The Database](#2-the-database)
   - [3. The Property Registry](#3-the-property-registry)
   - [4. Views and View Persistence](#4-views-and-view-persistence)
-- [Virtual Folder Layer](#virtual-folder-layer)
+- [Virtual Folders](#virtual-folders)
 - [Key UI Features](#key-ui-features)
 - [Storage Management Features](#storage-management-features)
 - [Local Desktop Application](#local-desktop-application)
@@ -28,6 +29,33 @@ A local desktop file management system that decouples physical file storage from
 
 The system is designed to run entirely offline as a native desktop application. No account, server, or internet connection is required.
 
+## Glossary
+
+The names used in the interface. Code may use older or internal names (noted where they differ).
+
+| Term | Meaning |
+|------|---------|
+| **Location** | A real folder on disk added to Folderbase. Its files are indexed; nothing on disk is moved |
+| **Excluded Folders** | Folders inside a location left out of it: never scanned, their files not indexed |
+| **Map Disk Folders** | Reading a location's real folder names into property values (Acme → Client = Acme). The only place "map" is used |
+| **Path Tags** | The real folder names on a file's path, as a list column. **Captured** path tags are ones a property's value already records (shown faded; *Hide Captured Path Tags*) |
+| **Property** / **Value** | A question asked of files (Client), and one answer (Acme). Types include Text, Select and Multi-select |
+| **Tags** | The built-in Multi-select property of hand-added labels |
+| **Conditional property** | A property that applies only when another property has a value ("Applies when Tags has housing"). The code calls the conditions a property's *scope* |
+| **Implied value** | A value shown faded because another value implies it (a Housing value implies the `housing` tag) |
+| **View** | A saved filter, sort, grouping, columns and hierarchy over a location. Each location has a **Default** view (shown as the location itself) and any number of named ones |
+| **Hierarchy** | A view's ordered properties that its files are nested by as virtual folders (Person › Tags). Edited with **Edit Hierarchy**; **Group by Hierarchy** groups the Database view by it |
+| **Level** | One step of a hierarchy: a property (or a file column) whose values become the folders at that depth |
+| **Branch** | A different hierarchy inside one folder value (inside Finance: Finance Type) |
+| **Rules** | Automations that set values on files that meet conditions |
+| **View modes** | Icons, List, Columns and Database |
+
+Naming rules:
+
+- **"Folder" means something you see and open**, real or virtual. Configuration is never called a "folder structure": a view's arrangement is its *hierarchy*
+- **Features that read the real disk say "disk" or "path"** (Map Disk Folders, Path Tags), so they're never confused with virtual folders
+- **Internal names stay out of the interface**: library, place, pins, draft and scope are code words
+
 ---
 
 ## Core Concepts
@@ -41,7 +69,7 @@ Files are stored in one or more directories on the local machine — referred to
 - The system does not require or enforce any particular physical layout
 - Files are referenced internally by a unique ID; their physical path is tracked but not semantically meaningful to the virtual layer
 
-Over time, as the virtual interface becomes the primary means of navigation, the physical structure becomes increasingly irrelevant. Users may choose to **flatten** the root directory at any point — consolidating all files into a single flat folder — with no impact on the virtual layer or user experience. This is an optional housekeeping operation, not a requirement.
+Over time, as the virtual interface becomes the primary means of navigation, the physical structure becomes increasingly irrelevant. Users may choose to **flatten** the root directory at any point — consolidating all files into a single flat folder — with no impact on virtual folders or the user experience. This is an optional housekeeping operation, not a requirement.
 
 ### 2. The Database
 
@@ -124,7 +152,7 @@ value          TEXT               e.g. "Rig-A", "Front", "Apollo"
 |-----------|--------------|-----------|---------|
 | Text | `free_text` | JSON string | Free text input |
 | Number | `number` | JSON number | Numeric input; `config.format` is `generic`, `currency` (with `config.currency`, an ISO 4217 code) or `percent` (stored as a fraction, 0.25 = 25%) |
-| Date | `date` | ISO date string (`YYYY-MM-DD`) | Date picker. **Date Format** (header menu) sets how it shows: Short, Medium (the default), Long and Full follow the system's date styles; ISO 8601; Relative ("yesterday", "in 3 days" within a week, else Medium); or Custom… with a pattern (`DD/MM/YYYY`, `D MMM YY`, `dddd D MMMM`; other words in [brackets]), previewed as it's typed. Stored as `config.dateFormat`; only the display changes |
+| Date | `date` | ISO date string (`YYYY-MM-DD`), or with a time `YYYY-MM-DDTHH:MM:SS` | Date picker (date and time when the value has a time). There's no separate Time type: a date holds its time, as Created, Modified and Date Taken do. A time read from a file name or EXIF is the clock time as written, with no time zone, unless its date format ends in "(UTC)" (OneDrive names camera uploads `20250610_094446600_iOS` in UTC: `YYYYMMDD_HHmmssSSS (UTC)`, SSS being milliseconds), when it is converted to local time; Created and Modified are moments, shown and compared in local time. Values sort as their ISO text, to the second, a date alone before the same day with a time. **Date Format** (header menu) sets how it shows: Short, Medium (the default), Long and Full follow the system's date styles, a time following as Finder shows one ("1 Mar 2024 at 10:15"); ISO 8601; Relative ("yesterday", "in 3 days" within a week, else Medium); or Custom… with a pattern (`DD/MM/YYYY`, `D MMM YY`, `dddd D MMMM`, `HH:mm`; other words in [brackets]), previewed as it's typed. **Show Time** (on by default) shows the times values have. Stored as `config.dateFormat` and `config.hideTime`; only the display changes |
 | Dropdown | `enum` | JSON string | One value from the registered list, with "Add value" |
 | Multi-select | `array` | JSON array of strings | Any number of values from the registered list, with "Add value". The type that gives multi-folder presence |
 
@@ -142,60 +170,60 @@ Users do not need to define properties up front via a settings screen. The regis
 
 - The user is at `2024 → Rig-A → Component-B` (current leaf level)
 - They create a new folder named `Front` at this level
-- The system checks the registry: if a property already governs this layer of the view, `Front` is added as a new value for that property. If no property is yet assigned to this layer, the user is prompted to name the property (e.g. `angle`), and both the property and its first value are created together
+- The system checks the registry: if a property already governs this level of the view, `Front` is added as a new value for that property. If no property is yet assigned to this level, the user is prompted to name the property (e.g. `angle`), and both the property and its first value are created together
 - Dragging files into `Front` assigns `"angle": "Front"` to those files via the contextual upload mechanism
 
 This means folder creation at any level of the virtual tree is the primary way the property vocabulary grows. The registry records the result; the user never interacts with it directly as a configuration surface.
 
-#### Tags, Properties and Scoped Properties
+#### Tags, Properties and Conditional Properties
 
-*Built in the database view (registry, implied values, cell states, promotion, removal prompt); the folder-view parts ([Scoped properties in views](#scoped-properties-in-views)) wait for views to return to the UI.*
+*Built in the database view (registry, implied values, cell states, promotion, removal prompt); the folder-view parts ([Conditional properties in views](#conditional-properties-in-views)) wait for views to return to the UI.*
 
 Three roles are kept distinct:
 
 | Role | What it is | Example |
 |------|-----------|---------|
-| **Tag** | A flat label: "this is about X". Hand-added tags are values of the built-in **Tags** property; **source tags** are the folder names on a file's path | `housing` |
+| **Tag** | A flat label: "this is about X". Hand-added tags are values of the built-in **Tags** property; **path tags** are the real folder names on a file's path | `housing` |
 | **Property** | A question that can be asked of a file | *Housing*: "what kind of housing document?" |
 | **Value** | One answer to a property | `Rent`, `House Insurance` |
 
 A tag is a virtual folder: opening `housing` shows every file with that tag. It is a different presentation of a filter, and properties make that filter richer and multi-level.
 
-##### Independent and scoped properties
+##### Independent and conditional properties
 
 - An **independent** property applies to every file (Client, Year, Kind). Any combination of values is meaningful, so independent properties can be stacked in a view in any order
-- A **scoped** property applies only where a condition holds: *Housing* **applies when** Tags has `housing`. The condition is one or more values of other properties, combined with *any*: *Insurance Type* can apply when Tags has `housing` or `car`. Scoping is a statement about meaning, not about position in a tree
+- A **conditional** property applies only where a condition holds: *Housing* **applies when** Tags has `housing`. The condition is one or more values of other properties, combined with *any*: *Insurance Type* can apply when Tags has `housing` or `car`. A condition is a statement about meaning, not about position in a tree (the code calls a property's conditions its *scope*)
 
 This is the single link between properties. It is what "promoting a tag" creates, and it is how a property can also be a value of another property: *Housing* can be a property in its own right and the property that refines the `Housing` value of *Category*, or of Tags.
 
 Rules:
 
-- **No cycles**: a property cannot apply when another holds a value if that other property is itself scoped to it, directly or through others
+- **No cycles**: a property cannot apply when another holds a value if that other property is itself conditional on it, directly or through others
 - **Several conditions are allowed**: a property may refine values of more than one property, or several values of one. A strict one-parent tree is deliberately not required, because real categories cross over (insurance for a house and for a car)
-- **Widening is lossless**: a scoped property can be made independent ("applies to all files") at any time without changing any file's values, so a wrong first guess is cheap to correct
+- **Widening is lossless**: a conditional property can be made independent ("applies to all files") at any time without changing any file's values, so a wrong first guess is cheap to correct
 - **Same names are linked, never accidental**: creating a property whose name matches an existing value (or the reverse) offers to link the two rather than leaving unrelated things with one name
 
 The link lives in the property registry, not in views, because it is a fact about meaning that holds in every view. Views use it as their default structure and can still be arranged freely.
 
 ##### Implied rules
 
-- **A value implies its condition**: giving a file a *Housing* value adds `housing` to its Tags. The implied tag is shown like a covered tag (faded) rather than stored a second time. Filters, sorting and grouping count implied values as held
+- **A value implies its condition**: giving a file a *Housing* value adds `housing` to its Tags. The implied tag is shown like a captured path tag (faded) rather than stored a second time. Filters, sorting and grouping count implied values as held
   - Only a property with a **single** condition implies it: with several (`housing` or `car`), which one holds is unknown, so nothing is implied
   - A value is implied into a single-value (Select) property only while that property is empty; it never replaces a value
 - **A condition without a value is a real state**: a file tagged `housing` with no *Housing* value yet is "about housing, not yet classified". It sits loose in the `housing` folder, not in any of its child folders, and is listed as incomplete
 - **A tag set by hand is stored**: if the user adds `housing` directly, it is stored, so clearing *Housing* later leaves the file tagged `housing` rather than untagged. A tag that is only implied disappears when the value is cleared
-- **Removing an implying tag asks first**: removing `housing` from a file that has a *Housing* value prompts that this also clears *Housing* (and any properties scoped beneath it), as one undoable change. The picker tells the two apart as the cell does: a value set directly has a ✓; one held only by implication has a faded ✓ and "from House" beside it; one that's both reads "also from House". Opening and closing the picker changes nothing. Clicking an implied value steps through three states: implied (faded ✓) → set directly (✓, so it stays if House is cleared) → unticked (on closing, asks before clearing House) → implied again. Other values tick and untick as usual. In a Select, picking a different value drops an implied one the same way. A property keeps its value if another of its conditions still holds. Bulk edits (paste, fill, Delete) don't prompt: they change only stored values, and implied ones stay shown
+- **Removing an implying tag asks first**: removing `housing` from a file that has a *Housing* value prompts that this also clears *Housing* (and any properties conditional on it), as one undoable change. The picker tells the two apart as the cell does: a value set directly has a ✓; one held only by implication has a faded ✓ and "from House" beside it; one that's both reads "also from House". Opening and closing the picker changes nothing. Clicking an implied value steps through three states: implied (faded ✓) → set directly (✓, so it stays if House is cleared) → unticked (on closing, asks before clearing House) → implied again. Other values tick and untick as usual. In a Select, picking a different value drops an implied one the same way. A property keeps its value if another of its conditions still holds. Bulk edits (paste, fill, Delete) don't prompt: they change only stored values, and implied ones stay shown
 
 ##### Cells and pills
 
-- A scoped property's cell shows three states:
+- A conditional property's cell shows three states:
   - **Has a value**: the value, as usual
   - **Expected**: the condition holds but there is no value, shown as a muted "Choose…" placeholder with a dashed outline
   - **Doesn't apply**: the condition doesn't hold, shown as a greyed "—". Setting a value here anyway adds the implied tag, so the property starts to apply
 - Pills stay single-colour. State is shown by tone and a glyph, not by extra colours:
-  - **Faded**: the tag is covered, because a property's value already records it (as for source tags today)
-  - **Trailing "›"** (`housing ›`): the value opens into a scoped property. This is also what marks it as a folder with more structure inside
-- A scoped property's **header** shows its origin in a muted tone after the name; hovering gives the full condition ("Applies when Tags has Car"). Each condition shows its value, with the property it's in unless that's Tags (the usual source); a value that only repeats the header's name shows its source instead:
+  - **Faded**: the tag is captured, because a property's value already records it (as for path tags)
+  - **Trailing "›"** (`housing ›`): the value opens into a conditional property. This is also what marks it as a folder with more structure inside
+- A conditional property's **header** shows its origin in a muted tone after the name; hovering gives the full condition ("Applies when Tags has Car"). Each condition shows its value, with the property it's in unless that's Tags (the usual source); a value that only repeats the header's name shows its source instead:
   - *Housing ‹ home*: Tags has `home`
   - *Car ‹ Tags*: Tags has `Car` (not "Car ‹ Car")
   - *Insurance Type ‹ Housing: House Insurance*
@@ -216,30 +244,30 @@ Dragging a tag or value pill (the existing 0.5s hold to arm) chooses what it bec
 - Right-click a pill ▸ **Make Property from "housing"…** opens the same dialog
 - The dialog always shows the name, so the outcome can be changed either way with one edit: a name that matches an existing property **links** (no type choice; the title reads "Link "housing" to Housing"), and any other name **creates** a property (type shown)
 - From the pill menu, the new column goes just after the column the tag came from
-- **A source tag** is a folder name, so its folders are mapped into Tags first and the condition is Tags has `housing`; that keeps holding on every refresh, and the source tag shows covered. Folders already mapped to a property make that property's value the condition instead
-- **Scoping an existing property** (the reverse of promotion: property first, tag second): header menu ▸ **Apply Only Where…** opens a list of conditions, each "*Property* has *value*" (Select and Multi-select properties only, combined with *or*), with Add Condition. Properties that depend on this one aren't offered, as they would make a cycle. The dialog says what the scope would do before applying: "Applies to 3 of 5 files: 2 with a value, 1 to fill in. Files given a Housing value also get "housing"". Not offered for the built-in Tags property, which stays a set of flat labels
-- **Widening**: a scoped property's header menu has **Apply to All Files (not just housing)**, which removes its conditions
+- **A path tag** is a folder name, so its folders are mapped into Tags first and the condition is Tags has `housing`; that keeps holding on every refresh, and the path tag shows captured. Folders already mapped to a property make that property's value the condition instead
+- **Making an existing property conditional** (the reverse of promotion: property first, tag second): header menu ▸ **Apply Only Where…** opens a list of conditions, each "*Property* has *value*" (Select and Multi-select properties only, combined with *or*), with Add Condition. Properties that depend on this one aren't offered, as they would make a cycle. The dialog says what the conditions would do before applying: "Applies to 3 of 5 files: 2 with a value, 1 to fill in. Files given a Housing value also get "housing"". Not offered for the built-in Tags property, which stays a set of flat labels
+- **Widening**: a conditional property's header menu has **Apply to All Files (not just housing)**, which removes its conditions
 - **Unlinking one value**: right-click a pill that opens into a property (`housing ›`) ▸ **Unlink "housing" from Housing** removes just that condition; with none left, the property applies to all files
 - **Removing a link keeps what it showed**: values a condition was implying (a faded `housing` on files with a Housing value) are written as stored values when the condition goes, by Unlink, Apply to All Files or Apply Only Where…, so no file loses a tag it was showing. One undo restores both the link and the files
-- **Independent properties never imply tags.** A property only implies values where it has been scoped, by promotion or Apply Only Where…. A tag named after every property with a value would repeat the column headers on most files and bury the tags chosen by hand
+- **Independent properties never imply tags.** A property only implies values where it has been made conditional, by promotion or Apply Only Where…. A tag named after every property with a value would repeat the column headers on most files and bury the tags chosen by hand
 - All of these are undoable (Make Property, Apply Only Where, Apply to All Files)
-- In grouping, a scoped property's files it doesn't apply to form a **Doesn't Apply** group, separate from the "No *Property*" group of files still missing a value
+- In grouping, a conditional property's files it doesn't apply to form a **Doesn't Apply** group, separate from the "No *Property*" group of files still missing a value
 
 ##### Storage
 
 `property_scopes (property_id, condition_property_id, value)`, one row per condition; no rows means the property applies to every file. `set_property_scope` replaces a property's conditions and refuses a cycle. Conditions follow their values: renaming a value or moving it to another property moves its conditions, and deleting a value or property removes them.
 
-##### Scoped properties in views
+##### Conditional properties in views
 
-Because scoping is a condition rather than a position, views can still order levels freely:
+Because a condition is not a position, views can still order levels freely:
 
 | View order | Result |
 |------------|--------|
 | Tags › Housing | `housing/` holds Rent and House Insurance, plus the files tagged `housing` with no value yet. Other tags have no Housing level: it doesn't apply there |
 | Tags › Year › Housing | Housing appears under `housing/2024/`: the condition holds in that branch. The levels need not be adjacent |
-| Housing › Tags | Putting a scoped property first narrows the view to the files it applies to. Inside `Rent/`, Tags still splits by the files' other tags (`tax`, `2024`); `housing` is the same for all of them |
+| Housing › Tags | Putting a conditional property first narrows the view to the files it applies to. Inside `Rent/`, Tags still splits by the files' other tags (`tax`, `2024`); `housing` is the same for all of them |
 
-- **Forks are derived**: a branch's next level only offers properties that apply there, so the Photos/Videos split in [Forking Hierarchies](#forking-hierarchies) follows from *Rig* applying to photos and *Project* to videos, without declaring the fork in the view
+- **Branches are derived**: a branch's next level only offers properties that apply there, so the Photos/Videos split in [Branching Hierarchies](#branching-hierarchies) follows from *Rig* applying to photos and *Project* to videos, without declaring the branch in the view
 - **Dropping into a folder** sets every condition on its path, whatever the view's order: dropping into `housing/Rent` adds the tag and sets *Housing* = Rent
 - **Dragging out of a folder** is the ambiguous direction (which condition should go?), so "Remove from this folder" removes only the deepest level's value and the removal prompt above covers implied tags
 
@@ -251,7 +279,7 @@ Like the rest of the database, the registry can be reconstructed by crawling exi
 
 A **view** is a saved hierarchy configuration defining how files are navigated. Views are first-class records in the database — not configuration files or application preferences — so they travel with the database when it is backed up or moved.
 
-A view is not a flat list of layers. It is a **tree of layer nodes**, where each node defines the property used to group files at that depth, and where any node may fork into multiple independent sub-trees based on the values present at that level. This tree structure is what gets persisted.
+A view's hierarchy is not a flat list of levels. It is a **tree of level nodes**, where each node defines the property used to group files at that depth, and where any node may branch into multiple independent sub-trees based on the values present at that level. This tree structure is what gets persisted.
 
 #### View Schema
 
@@ -274,9 +302,9 @@ fork_value     TEXT  (nullable)   Activates only when parent value matches
 sort_order     INTEGER            Position among siblings
 ```
 
-#### Forking Hierarchies
+#### Branching Hierarchies
 
-At any layer in the view, the hierarchy can split into independent branches based on the value of the current layer. Each branch then defines its own sequence of properties below it. This allows fundamentally different file types to share a common upper structure while diverging into type-appropriate properties lower down.
+At any level in the view, the hierarchy can split into independent branches based on the value of the current level. Each branch then defines its own sequence of properties below it. This allows fundamentally different file types to share a common upper structure while diverging into type-appropriate properties lower down.
 
 Example — a media library that splits by file type:
 
@@ -284,47 +312,47 @@ Example — a media library that splits by file type:
 Library: Media
   └── Year
         └── [any value]
-              └── Type                    ← fork point
+              └── Type                    ← branch point
                     ├── "Photos" branch → Rig → Component → Angle
                     └── "Videos" branch → Project → Scene → Take
 ```
 
-In this configuration, navigating into a Photos folder presents Rig sub-folders; navigating into a Videos folder presents Project sub-folders. Both branches live in the same view, the same database, and the same library. The fork is a structural declaration in the view tree, not a separation of data.
+In this configuration, navigating into a Photos folder presents Rig sub-folders; navigating into a Videos folder presents Project sub-folders. Both branches live in the same view, the same database, and the same library. The branch is a structural declaration in the view tree, not a separation of data.
 
-With [scoped properties](#tags-properties-and-scoped-properties), most forks need no declaration: if *Rig* applies when Type is Photos and *Project* when Type is Videos, each branch only offers the properties that apply to it. Explicit `fork_value` nodes remain for a view that wants a different structure from the registry's.
+With [conditional properties](#tags-properties-and-conditional-properties), most branches need no declaration: if *Rig* applies when Type is Photos and *Project* when Type is Videos, each branch only offers the properties that apply to it. Explicit `fork_value` nodes remain for a view that wants a different structure from the registry's.
 
 #### Completeness and Empty Properties
 
-Because a view's layer tree defines which properties are expected at each branch, the system can determine whether any given file is fully classified within that view. A file is considered **incomplete** in a view if it possesses the properties required to reach some intermediate node but is missing the properties needed to reach the leaf of its branch.
+Because a view's hierarchy defines which properties are expected at each branch, the system can determine whether any given file is fully classified within that view. A file is considered **incomplete** in a view if it possesses the properties required to reach some intermediate node but is missing the properties needed to reach the leaf of its branch.
 
 This completeness model is view-relative — the same file may be complete in a shallow view and incomplete in a deeper one. There is no global notion of a complete file independent of a view.
 
-Scoped properties sharpen this: a level whose property doesn't apply to a file is not missing for that file. Only the **expected** state (the condition holds, no value yet) counts as incomplete.
+Conditional properties sharpen this: a level whose property doesn't apply to a file is not missing for that file. Only the **expected** state (the condition holds, no value yet) counts as incomplete.
 
 ---
 
-## Virtual Folder Layer
+## Virtual Folders
 
 ### Concept
 
-The virtual folder layer is a configurable navigation interface built entirely from database queries. It presents as a familiar folder tree to the user, but no real folders exist — each "folder" is a filtered, grouped view of the database.
+Virtual folders are a configurable navigation interface built entirely from database queries. They present as a familiar folder tree to the user, but no real folders exist — each "folder" is a filtered, grouped view of the database.
 
 Because all files share a single table, views can span multiple libraries freely. A view scoped to photos only is simply a query filtered by `library = 'photos'`. A view spanning photos and documents tagged with the same project is an equally simple query with no additional complexity.
 
-### Layers
+### Levels
 
-A virtual folder view is constructed by stacking **layers**. Each layer corresponds to a database property and acts as a grouping/filtering dimension.
+A view's **hierarchy** is built by stacking **levels**. Each level corresponds to a property and acts as a grouping/filtering dimension.
 
-- **Layer 1**: Groups all files by the chosen property. The result is a set of top-level folders, one per unique value of that property
-- **Layer 2**: Within each Layer 1 folder, further groups by a second property. The result is a set of sub-folders
-- **Layer N**: Additional layers continue to narrow and group the view
-- **Leaf level**: Files appear only at the deepest layer of the configured tree
+- **Level 1**: Groups all files by the chosen property. The result is a set of top-level folders, one per unique value of that property
+- **Level 2**: Within each Level 1 folder, further groups by a second property. The result is a set of sub-folders
+- **Level N**: Additional levels continue to narrow and group the view
+- **Leaf**: Files appear only at the deepest level of the hierarchy
 
-Both core columns (`file_type`, `library`, `timestamp`) and metadata JSON properties (`rig`, `project`, `author`, etc.) can be used as layer dimensions interchangeably. The property registry determines which properties are offered when configuring a new layer.
+Both core columns (`file_type`, `library`, `timestamp`) and metadata JSON properties (`rig`, `project`, `author`, etc.) can be used as levels interchangeably. The property registry determines which properties are offered when adding a level.
 
-Example layer configuration:
+Example hierarchy:
 
-| Layer | Property | Result |
+| Level | Property | Result |
 |-------|----------|--------|
 | 1 | Year | Folders: 2022, 2023, 2024 |
 | 2 | Month | Sub-folders: January, February, … |
@@ -333,12 +361,27 @@ Example layer configuration:
 
 ### Views
 
-A **view** is a saved configuration of layers. Users can define and name multiple views and switch between them freely.
+A **view** is a saved hierarchy of levels, with its filters and sorts. Users can define and name multiple views and switch between them freely.
 
 - Views are non-destructive — switching views never moves or modifies files
 - Views can be exported as configuration files and shared with others
 - Multiple views can be open simultaneously (e.g. as tabs)
 - Views may be scoped to a single library or span multiple libraries
+
+#### Hierarchy of a view
+
+Each saved view of a location (the Default view and named ones, see the Database view's saved views) has a **hierarchy** beside its table: the levels Icons, List and Columns show its files in as folders. The view's filters decide which files are in it, so a filtered view browses as folders too.
+
+- **Levels**: each level takes a property, or one of the file's own columns (Kind, Extension, Created, Modified, Size, Path Tags), and its values are the folders. A Multi-select or Path Tags puts a file in a folder for each value. Files with no value go in a last "No *Property*" folder; files a conditional property doesn't apply to sit beside the folders. Dates make a folder per month. Each level runs ascending or descending
+- **Branches**: what's inside a folder can differ from its siblings, so the structure is a tree, not a list. A branch is kept per folder value and folds back into the level's usual structure once it matches the others
+- **Editing it**: a narrow drawer opened with **Edit Hierarchy** in the toolbar, in any view mode, while the view behind shows each change at once. **Levels** lists the levels in order, each with its type, an order toggle (↑/↓), and a few of the folders it makes (its values, "+N" more); branches show indented under their level ("Inside “housing”"), each a list of levels of its own. There's no Files row: a level's files show in every folder of it, as files do in Finder. The “No Person” chip at the end of a level's folders switches that folder off (dashed and struck through: those files sit loose in the parent folder) and back on. **Properties** shows each property as a pill, in groups: Properties (the library's own, with New Property…), Conditional (those that apply only inside another property's value, each marked with it: “in Car”), Camera (read from the file) and File (Kind, Extension, Created, Modified, Size, Path Tags); a check marks one already a level; search narrows them; hovering one shows the folders it would make and where it applies. Drag a pill between levels to insert it; double-click adds it (a conditional one inside its condition's folder when that's a level, else last); right-click offers Add Under “Car” and Add as Last Level; drag a level to reorder it, into or out of a branch, its branches going with it; drop a property or level **onto a folder chip** to give just that folder a level of its own: a branch, after which the folder carries on as usual. Branches that carry on as usual keep doing so as the levels after them change, and a branch that no longer differs goes. Each level is one line: its name on the left, a few of its folders on the right. A date level (a date property, Created or Modified) chooses what its folders are with its **by Month ▾** pop-up: Year, Quarter, Month, Week (ISO), Day, or the parts that repeat — Quarter of the Year, Month of the Year, Week of the Year, Day of the Week — and for Created and Modified, Finder's own (Today, Previous 7 Days, then years). One date property can make several levels (Year, then Month of the Year), with no extra properties. Right-click a level for Ascending, Descending, Folders By (dates), **Files Without a Value** (in a “No Person” folder, or loose in the parent folder) and, for a Select or Multi-select, **Show All Values** (every registered value is a folder, even with no files yet), and Remove; a branch's heading for Remove Branch; Esc cancels a drag. When the hierarchy is empty and the table is grouped, Use Database Groups starts from the grouping levels
+- **Skip Single Folders**, per level (right-click a level in the editor, or a folder's level submenu; the editor's Skip single folders checkbox sets every level): a folder of that level holding just one folder and no files shows merged with it (“2024 › Tax”) and opens straight through; going up (⌘↑) skips back past such folders. The path bar still shows every level. Off by default, as those levels' values still matter when filing
+- **A level's settings from the folders**: right-clicking a folder in Icons, List or Columns offers a submenu for the level inside it; right-clicking empty space (in Columns, empty space in a column) the level showing there: *Person Folders* ▸ Show “No Person” Folder, Show All Values (Select and Multi-select), Skip Single Folders, By Year/Month/… (dates), Edit Hierarchy…. A change applies to that level, as in the editor. “No Person” covers every file without a value, those a conditional property doesn't apply to as well; a conditional property's level leaves them loose unless switched on
+- **New Folder** (⇧⌘N, the toolbar's New Folder button, or right-clicking empty space in Icons and List), where the folder you're in has a level of a Text, Select or Multi-select property: a folder of that property's, shown only in the folder it was made in (kept in the view as where it was made: the columns and values on the way, so it stays put as levels are added below, and follows renames). A name the property doesn't have yet becomes a new value; its existing values not yet a folder here are suggested. It holds files once they're given the value (by drag, later). Until then its right-click menu offers Remove Empty Folder
+- Changes save as the table's do: straight into the Default view, and as "— Edited" on a named view until saved or reverted. While a view is edited, Save and Revert buttons sit beside the view pop-up in the toolbar (in its overflow submenu when the toolbar is narrow), and File ▸ Save View (⌘S, greyed out when there's nothing to save) saves it. Database grouping and the hierarchy are separate settings
+- Property renames carry into the hierarchy, and value renames carry into branches
+- **The views of a location**: the toolbar's view button opens a list of the location's views, as Notion lists a database's templates. A location starts with one view, named Default, which can be renamed like any other. The **default view** — the one the location opens with, and that clicking the location goes back to — is marked with a Default badge (in the sidebar too, once it's been renamed). Click a view to show it; drag a row (by the handle that shows on hover) to reorder, the default among them; each row's ··· menu (or right-click) offers **Set as Default**, Rename, Duplicate, Save Changes and Revert Changes (while it's edited) and Delete View… (not for the default: another is set as default first). **New View** at the bottom saves what's showing as a new view and puts its name up for editing. The default view saves as it changes; setting another view as default saves any edits it has into it, and the previous default keeps its edits as "— Edited" from then on
+- **Browsing it**: Icons, List and Columns show only the view's files, laid out in its folders. Icons and List show the folder you're in: its folders (in the level's order), then the files sitting in it; double-click or ⌘↓ opens a folder. Columns opens a column per folder. Where you are — the *place* — is a soft filter on the view, never saved into it: every mode shows the same place, each view remembers its own for the session, and a place whose folder has gone shows the deepest one left. The toolbar shows Back/Forward (⌘[ ⌘]) and, as its title, the folder you're in; ⌘↑ goes to the enclosing folder. Finder's path bar runs along the bottom: the location, the view (unless it's the default), then each folder; clicking one goes there. The Database view follows the place too: its rows are every file anywhere under the folder you're in (the place applied before the view's filters, search and grouping), and the path bar shows there as in every mode. Its counts and value lists (Delete from N files, condition coverage, values offered) still cover the whole location. Every folder is a query, so the path bar shows each as a plain folder. Right-clicking a segment shows what sits beside it at the same level, the current one ticked: on the location, the other locations; on a saved view, the location's other saved views (not its Default, which is the location itself); on a folder, the other folders at that level. Choosing one goes there. In the Database view the place also shows at the top of the Filter popover, under In folder: a row per folder on the way (Person is [Josh ▾]), kept apart from the view's own filters and never saved with it. Choosing another folder in a row moves there; removing a row goes up out of that folder; Exit Folder goes to the view's top. The count line says where you are (3 of 55 files in “Josh”). With Group by Hierarchy on, and while the table isn't grouped itself, the folders below the place group it (a file in several folders shows in each). The Group popover's Group by Hierarchy switch turns this on or off per view (off by default), on one line with the view's levels (Tags › Person), which open Edit Hierarchy; a group of the table's own takes its place while there is one. The Group button shows blue while either is grouping the table. With Show Non-Empty Custom Properties on (a per-view setting in the Properties menu, on by default), every custom property the rows shown have a value in appears as a column, so the columns follow the folder or filter you're in; hiding one of those columns turns the setting off and keeps the columns as they are. **New View from Folder**, in a folder's right-click menu (path bar, Icons, List, a folder group in the Database view), saves the folder as a view of its own, named after it: the view's filters plus one per folder on the way (Person is Josh, Project has Apollo, Due within March 2024, Person is empty), with the levels below the folder as its folders. It's offered only when those filters pick exactly the folder's files, so not for Finder's relative date or size folders, nor in a view that matches any of several filters. Save as New View is unchanged: it copies the view, wherever you are in it. As in Finder, the arrow keys (and ⌘A) always move through the files and folders: pressed with focus outside the content (after clicking the sidebar, toolbar or path bar, or once a folder opens), they go to the view showing; text fields, menus, dialogs and side panels keep their keys. Double-clicking a folder's group, or Open in its menu, goes into that folder The saved views are in the toolbar's view list, and listed under the selected location in the sidebar once it has views besides its default (a disclosure triangle shows only then), in the same order
 
 ---
 
@@ -348,7 +391,7 @@ A **view** is a saved configuration of layers. Users can define and name multipl
 
 - The virtual folder tree is navigated identically to a standard OS folder structure
 - Clicking into a folder filters the visible content to match that folder's database query
-- Breadcrumb navigation reflects the current path through the layer hierarchy
+- Breadcrumb navigation reflects the current path through the hierarchy
 
 #### Navigation versus configuration
 
@@ -358,9 +401,9 @@ The app has three distinct activities, and each has its own surface:
 |----------|--------------------|---------|
 | **Setting up a location** | "Which files on disk does Folderbase know about, and what does their existing folder structure already tell us?" | Location setup (see [Setting Up a Location](#setting-up-a-location)), a dedicated, occasional task per drive or folder |
 | **Configuring a view** | "Which properties make up the levels of this folder tree?" | The view editors (local panel and master editor) |
-| **Navigating a view** | "Show me my files organised this way." | Tiles, List, Columns and Database modes |
+| **Navigating a view** | "Show me my files organised this way." | Icons, List, Columns and Database modes |
 
-Tiles, List and Columns are the base navigation of a configured view. They never expose layer or property configuration directly. Editing in them is still meaningful, because in a virtual tree a folder path *is* a set of property values:
+Icons, List and Columns are the base navigation of a configured view. They never expose level or property configuration directly. Editing in them is still meaningful, because in a virtual tree a folder path *is* a set of property values:
 
 - Each level of the tree represents a property; the folder name at that level is a value of it
 - Creating a folder at some level adds a value to that level's property
@@ -372,8 +415,8 @@ The user therefore classifies files simply by filing them, without seeing the pr
 
 At every level of the virtual folder tree, a persistent **"+" folder** appears as the last item in any folder listing. Clicking it creates a new named folder at that level:
 
-- If the current layer already has a property assigned, the new folder name is added as a new value for that property in the registry
-- If no property is yet assigned at this layer, the user is prompted to name the property first, then the folder name becomes its first value
+- If the current level already has a property assigned, the new folder name is added as a new value for that property in the registry
+- If no property is yet assigned at this level, the user is prompted to name the property first, then the folder name becomes its first value
 
 The "+" folder is the primary in-context tool for extending the property vocabulary and building out the folder hierarchy without leaving the navigation interface.
 
@@ -395,7 +438,7 @@ The database view and the folder tree are two presentations of the same underlyi
 #### Preset Views Within the Database View
 
 - **Library view**: all files in the current library, no path filters applied, all registered properties shown as columns. The starting point for bulk editing or auditing
-- **Incomplete files view**: files that are missing one or more properties required to reach the leaf layer of their branch in the current view. This is the primary tool for identifying and completing partially classified files
+- **Incomplete files view**: files that are missing one or more properties required to reach the leaf level of their branch in the current view. This is the primary tool for identifying and completing partially classified files
 
 ### Importing an Existing Folder Structure
 
@@ -405,7 +448,7 @@ On first use, a user points the application at an existing folder on their machi
 - Populates a record in the single database for every file found, extracting standard metadata automatically (timestamps, EXIF, file type, etc.)
 - Assigns a `library` label based on user input or inferred from file types
 - Bootstraps the property registry from metadata keys found across the ingested records
-- Presents the library immediately through the virtual layer
+- Presents the library immediately through virtual folders
 
 The physical folder structure is preserved untouched. The user is not required to restructure anything before use.
 
@@ -413,12 +456,12 @@ The physical folder structure is preserved untouched. The user is not required t
 
 Setup is the ingestion side of the app: bringing a new drive or folder into Folderbase, and treating its existing folder structure as an initial source of metadata. It is a dedicated function, used once per location and revisited rarely, and it lives on its own surface. It is not a control in everyday navigation or in the database view.
 
-**Terminology.** Two verbs are kept apart. A location is **added** (and **removed**): that sets which files Folderbase knows about. A folder is **mapped** (and **unmapped**) to a property value: that says what the folder means. "Map" is used only in the second sense (Map Structure, Map Tag, "Mapped to Client"). "Mount" is not used, because it means attaching a volume to the OS, and a location whose drive is unplugged is described as *offline* or *not connected*.
+**Terminology.** Two verbs are kept apart. A location is **added** (and **removed**): that sets which files Folderbase knows about. A folder is **mapped** (and **unmapped**) to a property value: that says what the folder means. "Map" is used only in the second sense (Map Disk Folders, Map Tag, "Mapped to Client"). "Mount" is not used, because it means attaching a volume to the OS, and a location whose drive is unplugged is described as *offline* or *not connected*.
 
 The flow:
 
-1. **Add the location**: choose a folder on disk; it is crawled and indexed (see above)
-2. **Map the structure**: the location's real folder tree is shown, and the user names what folders represent. Naming a folder level `client`, for example, means each folder at that level (`Acme`, `Globex`) becomes a value of `client` for every file beneath it. Names apply only to the folders the user named; sibling folders added later are not inherited automatically
+1. **Add the location**: choose a folder on disk; it is crawled and indexed (see above). **Excluded Folders** can be chosen as it is added: they are never scanned and their files aren't indexed. They can be changed later in Map Disk Folders
+2. **Map Disk Folders**: the location's real folder tree is shown, and the user names what folders represent. Naming a folder level `client`, for example, means each folder at that level (`Acme`, `Globex`) becomes a value of `client` for every file beneath it. Names apply only to the folders the user named; sibling folders added later are not inherited automatically
 3. **Refresh** to bring the location in line with the disk. Refresh is a full sync:
    - **New files** are added, and the folder mapping is applied to them
    - **Edited files** (size or modified time changed) have their file details and EXIF re-read; the user's own values are kept
@@ -428,7 +471,7 @@ The flow:
    - **Safeguards**: refresh refuses to run when the location's folder is missing or suddenly empty (an unmounted drive or stuck cloud mount looks like that), and never removes records under a subfolder it could not read
    - Mapped values are only filled in where a file has none, so a file moved to a differently mapped folder keeps its existing value
 
-After mapping, the location's files carry property values derived from their paths, and views can be built over those properties like any others. Folder names that are not mapped are kept as unstructured **tags**.
+After mapping, the location's files carry property values derived from their paths, and views can be built over those properties like any others. Folder names that are not mapped are kept as **path tags**.
 
 ### Rules
 
@@ -445,11 +488,11 @@ Preview: 6 match · 6 will change · 0 already set               [Apply Now]
 
 #### Conditions
 
-The **When** section is the database view's filter: any native column or property, combined with *all* or *any*, counting implied values as filters do. Text columns gain **starts with** and **ends with**, and every column gains **matches pattern** (also in the Filter panel): Name, Path, Kind, Created, a property… On a list column (Source Tags, Tags, a Multi-select) a pattern matches when any one item fits, and its slots come from that item, so `Source Tags matches {Year:4} {Client}` reads the folder `2024 Acme`. A choice beside the condition narrows it to one item: for Source Tags *any folder*, *the folder it's in*, *the top folder*, *the 2nd folder*, *the 3rd folder* (for other lists: any, first, 2nd, last item). Pick from an example offers the same choice, shows only that folder of each file, and puts it on the pattern it writes. A pattern is always typed, whatever the column (a Select's value list or a date picker can't hold one). Dates are matched as written in ISO form, so `Created matches {*}-03-{*}` is any March, and `{Year:4}-{Month:2}-{*}` captures both. A period is two conditions: Created is after 2024-12-31, Created is before 2026-01-01.
+The **When** section is the database view's filter: any native column or property, combined with *all* or *any*, counting implied values as filters do. Text columns gain **starts with** and **ends with**, and every column gains **matches pattern** (also in the Filter panel): Name, Path, Kind, Created, a property… On a list column (Path Tags, Tags, a Multi-select) a pattern matches when any one item fits, and its slots come from that item, so `Path Tags matches {Year:4} {Client}` reads the folder `2024 Acme`. A choice beside the condition narrows it to one item: for Path Tags *any folder*, *the folder it's in*, *the top folder*, *the 2nd folder*, *the 3rd folder* (for other lists: any, first, 2nd, last item). Pick from an example follows that choice, showing only that folder of each file. A pattern is always typed, whatever the column (a Select's value list or a date picker can't hold one). Dates are matched as written in ISO form, so `Created matches {*}-03-{*}` is any March, and `{Year:4}-{Month:2}-{*}` captures both. A period is two conditions: Created is after 2024-12-31, Created is before 2026-01-01.
 
 #### Taking values from names, folders and other columns: three levels, one engine
 
-1. **Pick from an example** (the default): the editor shows a matching file's name, or a value of another chosen column (a folder from Source Tags, the Path, a property), as selectable text; a list column offers each of its items. Selecting `AB12` in `Q3_AB12_final.docx` and naming it *Code* generates the pattern `{*}_{Code}_{*}.docx`, tried at once on every matching file in the preview
+1. **Pick from an example** (the default): belongs to a "matches pattern" condition and opens beneath it. It opens by itself when a condition is switched to *matches pattern*, from the row's text-cursor button, or from **Add Pattern from an Example** (a Name pattern). It shows a matching file's value in that condition's column (its name, a folder from Path Tags, the Path, a property) as selectable text; for a list column, the item the row narrows to. Selecting `AB12` in `Q3_AB12_final.docx` and naming it *Code* generates the pattern `{*}_{Code}_{*}.docx`, tried at once on every matching file in the preview
 2. **Pattern** (always visible, editable):
    - `{Code}` captures any text; `{Code:4}` exactly 4 characters
    - `{*}` matches any text without capturing it; `{*:2}` exactly 2 characters
@@ -457,13 +500,15 @@ The **When** section is the database view's filter: any native column or propert
    - Text anywhere: `{*}invoice{*}`; at the start: `invoice{*}`
    - Everything else is matched literally, ignoring case. A pattern without an extension is matched against the name without its extension
    - Patterns come from route and format-string matching (`/users/{id}`; Python's `parse`): they read like the names they describe
-3. **Formula** (full control), Notion-style functions for what a pattern can't say, usable as an action's value: `slice(name, 3, 7)`, `left`, `right`, `before(name, "_")`, `after`, `beforeLast`, `afterLast`, `match(name, "regex")` (first group), `replace(text, "regex", "with")`, `upper`, `lower`, `trim`, `date(text, "YYMMDD")`; for dates `year`, `month`, `day`, `quarter`, `formatDate(created, "MMM YYYY")`; `folder(1)` (the top folder) and `folder(-1)` (the one the file is in); `prop("Client")` for any column by its header's name (a property, or Created, Kind, Source Tags…); joined with `&`. Pattern slots can be used inside formulas: `upper({Code})`. Names available: `name` (without extension), `filename`, `ext`, `path`, `folder`, `created`, `modified`, `kind`, `size`
+3. **Formula** (full control), Notion-style functions for what a pattern can't say, usable as an action's value: `slice(name, 3, 7)`, `left`, `right`, `before(name, "_")`, `after`, `beforeLast`, `afterLast`, `match(name, "regex")` (first group), `replace(text, "regex", "with")`, `upper`, `lower`, `trim`, `date(text, "YYMMDD")` (with a time: `date({Date} & {Time}, "YYYYMMDDHHmmss")`); for dates `year`, `month`, `day`, `quarter`, `time` (10:15), `hour`, `formatDate(created, "MMM YYYY")`; `folder(1)` (the top folder) and `folder(-1)` (the one the file is in); `prop("Client")` for any column by its header's name (a property, or Created, Kind, Path Tags…); joined with `&`. Pattern slots can be used inside formulas: `upper({Code})`. Names available: `name` (without extension), `filename`, `ext`, `path`, `folder`, `created`, `modified`, `kind`, `size`
 
 A file that meets the conditions but doesn't fit the pattern is shown as **no match** in the preview, and nothing is written to it.
 
 #### Actions
 
-**Then set** is a list, so one rule can set several properties. Besides a fixed value, a pattern slot and a formula, a value can come **from property**: another column's value, or part of it. For a list: all of it, the first, 2nd, 3rd or last item (for Source Tags: the folder it's in, the top folder, the 2nd folder…, every folder). For a date: the date, year, month, month's name, year and month, quarter or weekday. So "Year from Created's year", "Client from the folder it's in", "Tags from every folder". The property menu ends with **New Property…**, which makes one in place: named after the slot it takes ({Date} → Date) and typed by how its value is read (a date format → Date, a number → Number, a typed-in value → Select, otherwise Text), both changeable before Create. Each action writes a fixed value, a pattern slot (optionally read as a date with a format such as `YYMMDD`, or as a number), or a formula's result.
+**Then set** is a list, so one rule can set several properties. Besides a fixed value, a pattern slot and a formula, a value can come **from property**: another column's value, or part of it. For a list: all of it, the first, 2nd, 3rd or last item (for Path Tags: the folder it's in, the top folder, the 2nd folder…, every folder). For a date: the date, the date and time, the time (10:15), hour, year, month, month's name, year and month, quarter or weekday. So "Year from Created's year", "Client from the folder it's in", "Tags from every folder". The property menu ends with **New Property…**, which makes one in place: named after the slot it takes ({Date} → Date) and typed by how its value is read (a date format → Date, a number → Number, a typed-in value → Select, otherwise Text), both changeable before Create. Each action writes a fixed value, a pattern slot (optionally read as a date with a format such as `YYMMDD`, or as a number), or a formula's result.
+
+A value can also come **from files with the same** values: "Rig from files with the same Test" learns from the files that have both. Where some files carry Test 1 and Rig A1, a file with Test 1 and no Rig gets A1. **And the Same…** adds more properties to share ("same Test and Project"), so Test 1 in two projects is kept apart. Every file of the open location teaches, whether or not it meets the conditions; the conditions only decide which files are filled. Values are compared ignoring case, and a Multi-select by its items in any order. Where the files disagree (A1 on some, A2 on others, a file's own value included), nothing is written. The preview shows the file as not matched with the counts ("Test 1 is on Rig A1 in 5 files, A2 in 2"), so the odd ones can be put right by hand. A file with any of the shared properties empty neither teaches nor is filled. What is learned isn't kept: it's worked out afresh each run from the values the files hold.
 
 - **Fill only empty values** (the default): a Select, Text, Number or Date property is written only where it's empty; a Multi-select gains the value if it doesn't have it. **Overwrite existing values** is an option per action
 - **Hand edits win**: each value a rule writes is recorded (rule, file, property, value). Once a rule has written a file's value, it never writes that value again, so changing or clearing it by hand sticks. Re-applying over hand edits is an explicit choice in the editor
@@ -489,7 +534,7 @@ New rules start with Keep running off, so nothing is written until Apply Now or 
 - **Pattern Help** (the panel's header) opens a reference beside the editor: pattern syntax and kinds, common patterns (text anywhere, starts with, a test number then a date…), how a picked value is read (date forms), every formula name and function with examples, and **Try a pattern**: a text and a pattern, showing whether it fits and what each slot picks out
 - The rules list is resizable (drag its right edge; remembered). Pick from an example offers every distinct value from the files meeting the other conditions, sorted, with a **Find an example…** box to narrow them, and says how many values from how many files
 - The **preview** is a table: File · Read from (the text each pattern fitted, such as the folder `0014-250701`, or what was there when none did; columns values are copied from) · Picked out (each slot's value) · Result. Buttons above it narrow it to All, Will change, No match, Already set or Changed by hand. It shows 100 rows and adds 100 more each time it's scrolled to the bottom; its columns resize by dragging their headers' edges (double-click resets; remembered), and it scrolls sideways when they don't fit
-- **Make Rule from Filter…** in the Filter panel opens the Rules panel with a new rule preloaded with the current context: every filter rule and its *all/any*, and the search text as "Name contains …" (in folder views, the folder path as conditions). The loaded conditions can be changed like any other
+- **Make Rule from Filter…** in the Filter panel opens the Rules panel with a new rule preloaded with the current context: every filter rule and its *all/any*, and the search text as "Name contains …" and the folder you're in (the In folder rows) as the conditions its folders stand for — "Person is Josh", "Tags has Rent", a month or one of Finder's date or size buckets as a range, "is empty" for a No-value folder. A rule has one *all/any*, so the folder is left out when the filters are *any* of several. The same conditions can be added to any rule from **Add Current Filter** under its When (shown while the view has some the rule doesn't). The loaded conditions can be changed like any other
 - Renaming a property renames it in every rule; folder mapping is conceptually a built-in rule and may later be expressed as one
 
 ### Contextual File Upload
@@ -517,7 +562,7 @@ Example — navigating to `2024 → Rig-A → Component-B → Front` and droppin
 
 ### Virtual Folder Creation
 
-- Creating a folder at an existing layer adds a new value to that layer's property (e.g. adding `Rig-C` to the `rig` property)
+- Creating a folder at an existing level adds a new value to that level's property (e.g. adding `Rig-C` to the `rig` property)
 - Creating a folder at a level with no assigned property prompts the user to name the property dimension, then adds the folder name as its first value
 - Folders created this way immediately appear in the virtual tree and are available as contextual metadata targets for file drops
 
@@ -542,14 +587,14 @@ Example — navigating to `2024 → Rig-A → Component-B → Front` and droppin
 
 ### View Configuration GUI
 
-Views are created and edited through a dedicated **view configuration interface**. This is a graphical tree editor — not a settings form — reflecting the fact that a view is a tree structure that may contain forks, not a simple ordered list of layers.
+Views are created and edited through a dedicated **view configuration interface**. This is a graphical tree editor — not a settings form — reflecting the fact that a view is a tree that may contain branches, not a simple ordered list of levels.
 
 Interactions in the view configuration GUI:
 
-- **Drag to reorder**: layer nodes can be dragged to change their position within a branch
-- **Add a layer**: append a new layer node to any branch, selecting the property from the registry
-- **Add a fork**: at any node, introduce a fork by adding multiple child branches, each keyed to a specific value of the current layer's property
-- **Label branches**: fork branches are labelled by the value that activates them (e.g. `"Photos"`, `"Videos"`)
+- **Drag to reorder**: level nodes can be dragged to change their position within a branch
+- **Add a level**: append a new level node to any branch, selecting the property from the registry
+- **Add a branch**: at any node, split into multiple child branches, each keyed to a specific value of the current layer's property
+- **Label branches**: branches are labelled by the value that activates them (e.g. `"Photos"`, `"Videos"`)
 - **Delete a node**: removing a node collapses its children up or removes the branch, with a confirmation step if files would become unclassified
 - **Rename a view**: update the display name of the view
 - **Duplicate a view**: create a copy as a starting point for a variation
@@ -562,14 +607,14 @@ Changes in the view configuration GUI are non-destructive to file data — they 
 
 ### Flatten Root Directory
 
-Once the virtual layer is established as the primary navigation interface, the physical folder structure within the root becomes redundant. Users can optionally run a **flatten** operation:
+Once virtual folders are established as the primary navigation interface, the physical folder structure within the root becomes redundant. Users can optionally run a **flatten** operation:
 
 - All files are moved into a single flat directory within the root
 - The database is updated to reflect new paths
-- The virtual layer is entirely unaffected
+- Virtual folders are entirely unaffected
 - The operation is not easily reversible — users are warned before proceeding
 
-This is an optional, one-time housekeeping step with no functional benefit to the virtual layer.
+This is an optional, one-time housekeeping step with no functional benefit to virtual folders.
 
 ### Export to Folder Structure
 
@@ -578,7 +623,7 @@ Users can **materialise** any virtual view as a real folder structure on disk. T
 The export operation:
 
 - Takes a selected view (or sub-tree within a view) as input
-- Creates a real folder hierarchy on disk matching that view's layer configuration
+- Creates a real folder hierarchy on disk matching that view's hierarchy
 - Populates each folder with **copies** of the relevant files (originals are untouched)
 - Optionally generates symlinks instead of copies, to avoid duplication
 
@@ -699,12 +744,13 @@ The sidebar to the right of the icon rail changes based on context:
 Locations (drives and folders added to Folderbase) are listed in the sidebar, as Finder lists Locations, and added with **Add Location…** below the list. Opening one shows its files as indexed. Location actions live on the location itself, not in navigation toolbars or the database view (see [Setting Up a Location](#setting-up-a-location)):
 
 - **Refresh**: a refresh button appears when hovering a location, and stays (spinning) while the location is being indexed, including straight after it is added. Also in the location's context menu
-- **Map Structure…**: in the context menu. Opens the structure panel over the location's files in any view mode, switching to the location first. Also in the database view toolbar for now, where it shows whether the location has mappings
+- **Map Disk Folders…**: in the context menu. Opens the Map Disk Folders panel over the location's files in any view mode, switching to the location first. Also in the database view toolbar for now, where it shows whether the location has mappings
 - **Remove Location…**: in the context menu only (no hover control), confirmed in a dialog sheet. Files on disk are untouched
+- **Reordering**: drag a location up or down the list, as in Finder's sidebar; a line shows where it will land. The order is kept (by name until first dragged; a new location goes last). The selected location's saved views drag the same way within it, the default view among them; right-clicking one offers Set as Default, Rename and Delete View… (as in the toolbar's view list)
 
 #### Main Pane
 
-The primary content area. Renders the current view mode (Tiles, List, Columns, or Database) for the active folder context. Responds to navigation actions from both the sidebar and the breadcrumb toolbar.
+The primary content area. Renders the current view mode (Icons, List, Columns, or Database) for the active folder context. Responds to navigation actions from both the sidebar and the breadcrumb toolbar.
 
 ### View-Local Navigation
 
@@ -714,7 +760,7 @@ Once a view is activated from the icon rail, the application behaves like a stan
 
 The view sidebar contains three elements from top to bottom:
 
-- **Sub-view switcher**: if the active view has named sub-views (e.g. "By Rig" and "By Project"), these appear as a compact switcher at the top of the sidebar. Selecting one changes the layer configuration without leaving the view
+- **Sub-view switcher**: if the active view has named sub-views (e.g. "By Rig" and "By Project"), these appear as a compact switcher at the top of the sidebar. Selecting one changes the hierarchy without leaving the view
 - **Starred locations**: user-bookmarked paths within this view, displayed as named shortcuts analogous to Finder favourites or Windows Explorer quick access entries. Clicking one navigates directly to that path
 - **OS-standard items**: Recents, search scope indicator, and any other platform-appropriate navigation items below the starred locations
 
@@ -722,15 +768,15 @@ The view sidebar contains three elements from top to bottom:
 
 The toolbar sits above the main pane and contains:
 
-- **Breadcrumb / address bar**: reflects the current navigation path through the virtual layer hierarchy (e.g. `2024 → Rig-A → Component-B`). Style is platform-adaptive — click-through on macOS, editable on Windows
-- **View mode switcher**: Database | Tiles | List | Columns. Database is the default mode on every platform and sits first; Tiles, List, and Columns follow standard OS explorer behaviour
-- **Group button**: the OS file manager's grouping and sorting menu, shown for Tiles, List and Columns
+- **Breadcrumb / address bar**: reflects the current navigation path through the virtual hierarchy (e.g. `2024 → Rig-A → Component-B`). Style is platform-adaptive — click-through on macOS, editable on Windows
+- **View mode switcher**: Database | Icons | List | Columns. Database is the default mode on every platform and sits first; Icons, List, and Columns follow standard OS explorer behaviour
+- **Group button**: the OS file manager's grouping and sorting menu, shown for Icons, List and Columns
 - **Selection count**: when two or more files are selected, "3 of 1,204 selected" appears beside the location name, in every view mode. Columns counts within the active column, as Finder does. The database view shows it in its own file count line instead ("1,492 files" becomes "3 of 1,492 selected"), counting files whether rows or cells across several rows are selected
-- **Edit Structure toggle**: opens or closes the local view editor panel (see View Editor section)
+- **Edit Hierarchy toggle**: opens or closes the active view's hierarchy (see [Hierarchy of a view](#hierarchy-of-a-view))
 
 ### View Modes
 
-#### Tiles, List, and Columns
+#### Icons, List, and Columns
 
 These three modes replicate standard OS explorer behaviour exactly. Folder items, file thumbnails, selection, drag-and-drop, and context menus all behave as the user would expect from their native OS. No virtual-folder-specific chrome is introduced into these modes beyond the breadcrumb path.
 
@@ -760,8 +806,8 @@ Properties are of two kinds, and they behave differently:
 #### Adding and managing properties
 
 - A **"+" button** sits at the right end of the header row. Clicking it opens a native menu of types: Text, Number, Currency, Percentage, Date, Dropdown, Multi-select. Choosing one immediately adds a column of that type, registered for the current library. The new column is named after its type ("Text"; "Text 2", "Text 3"… if the name is taken), and its header name is open for editing with the text selected, so the user can type a name straight away or press Return to keep the default
-- **Right-clicking a header** opens the column menu: Sort Ascending, Sort Descending, Filter by this column, and for custom columns Rename (edits the name in place in the header, as does double-clicking a custom column's header), Property Type and Delete, and for Multi-select properties and Source Tags **Wrap Values**, followed by Freeze Name and the show/hide property list. Deleting a property asks for confirmation, because it removes the property's values from every file
-- **The property list** (in the header menu, the toolbar's Properties menu, and a **"…" button** to the right of the header's "+", as in Notion) starts with bulk controls: Show All Properties; Show / Hide All Native Properties (the file's own fields, Source Tags and values read from the file; Name always stays); Show / Hide All Custom Properties (every editable property); then **Hide Empty Custom Properties** (hides every shown custom property with no value in the rows currently shown) and **Show Non-Empty Custom Properties** (shows every hidden custom property that has a value in them). Native properties are never affected by these two. "Currently shown" means after search and filters. Like the Show All commands, these are one-off actions, not live modes: the table never changes its properties by itself when the filters change, and any property can still be shown or hidden afterwards. Below them come the native properties (Name, Extension, Path, Kind, Size, Created, Modified, Source Tags), then a **More Info** submenu holding the values read from the file (Camera Make, Camera Model, Date Taken, Focal Length, ISO, Width, Height, Latitude, Longitude, with Show All and Hide All), named and grouped as in Finder's Get Info, then the custom properties. The list ends with Size All Properties to Fit.
+- **Right-clicking a header** opens the column menu: Sort Ascending, Sort Descending, Filter by this column, and for custom columns Rename (edits the name in place in the header, as does double-clicking a custom column's header), Property Type and Delete, and for Multi-select properties and Path Tags **Wrap Values**, followed by Freeze Name and the show/hide property list. Deleting a property asks for confirmation, because it removes the property's values from every file
+- **The property list** (in the header menu, the toolbar's Properties menu, and a **"…" button** to the right of the header's "+", as in Notion) starts with bulk controls: Show All Properties; Show / Hide All Native Properties (the file's own fields, Path Tags and values read from the file; Name always stays); Show / Hide All Custom Properties (every editable property); then **Hide Empty Custom Properties** (hides every shown custom property with no value in the rows currently shown) and **Show Non-Empty Custom Properties** (shows every hidden custom property that has a value in them). Native properties are never affected by these two. "Currently shown" means after search and filters. Like the Show All commands, these are one-off actions, not live modes: the table never changes its properties by itself when the filters change, and any property can still be shown or hidden afterwards. Below them come the native properties (Name, Extension, Path, Kind, Size, Created, Modified, Path Tags), then a **More Info** submenu holding the values read from the file (Camera Make, Camera Model, Date Taken, Focal Length, ISO, Width, Height, Latitude, Longitude, with Show All and Hide All), named and grouped as in Finder's Get Info, then the custom properties. The list ends with Size All Properties to Fit.
 
   The property list, and the header menu that contains it, is a menu-styled panel rather than a native menu, because native menus close on every click. Ticking a property toggles it in place and the panel stays open, submenus included; it closes once the pointer has left it, on a click elsewhere, or with Escape. Commands (Show All, Rename…, Size All Properties to Fit) run and close, as in a native menu
 
@@ -780,7 +826,7 @@ Selection follows spreadsheet conventions:
 
 - **Header click** cycles that column through ascending, descending and unsorted
 - Separate **Filter**, **Sort** and **Group** buttons, side by side to the left of the search field, each open a panel for detailed control:
-  - **Filter**: a list of rules (column, condition, value), combined with *all* or *any*. Conditions depend on the column type: contains / is / is not / is empty / is not empty for text; = ≠ > < ≥ ≤ for numbers; is / before / after for dates; has any of / has none of for Dropdown and Multi-select, and for the native Extension and Kind columns, whose values are picked from those the files have
+  - **Filter**: a list of rules (column, condition, value), combined with *all* or *any*. Conditions depend on the column type: contains / is / is not / is empty / is not empty for text; = ≠ > < ≥ ≤ for numbers; is / before / after for dates (a time counts only when both sides have one, so "is 1 March" is the whole day); has any of / has none of for Dropdown and Multi-select, and for the native Extension and Kind columns, whose values are picked from those the files have
   - **Sort**: an ordered list of sort keys (then by…), each ascending or descending
   - **Group**: an ordered list of grouping levels (Group by… then by…), each ascending or descending, with Collapse All and Expand All. Also a header's context menu ▸ Group by *Property*, which adds or removes that level
 - Sort keys and grouping levels are reordered by dragging each row's handle
@@ -800,7 +846,7 @@ Edit ▸ Undo and Redo in the menu bar do the same, and name the change they wil
 
 #### Wrapping Multi-select values
 
-Multi-select and Source Tags cells show every value, wrapping the pills onto further lines, and the row grows to fit the tallest wrapped cell; rows with nothing to wrap keep the standard 20pt height. Wrapping is on by default for each Multi-select property and for Source Tags, and can be turned off for each with Wrap Values in its header menu, which keeps the values on one line, showing the first few and a "+N" count.
+Multi-select and Path Tags cells show every value, wrapping the pills onto further lines, and the row grows to fit the tallest wrapped cell; rows with nothing to wrap keep the standard 20pt height. Wrapping is on by default for each Multi-select property and for Path Tags, and can be turned off for each with Wrap Values in its header menu, which keeps the values on one line, showing the first few and a "+N" count.
 
 #### Frozen Name column
 
@@ -819,7 +865,7 @@ The view editor is the interface for arranging and restructuring the virtual fol
 
 #### Local View Editor (Panel)
 
-Accessed via the Edit Structure toggle in the toolbar. Opens as a drawer or side panel alongside the main pane without obscuring it.
+Accessed via the Edit Hierarchy toggle in the toolbar. Opens as a drawer or side panel alongside the main pane without obscuring it.
 
 - **Default scope**: shows the view tree from the current navigation node downward (sub-tree view). This is the everyday interaction surface — "I'm here in the hierarchy, I want to adjust what's below me"
 - **Full tree toggle**: a control within the panel switches to showing the complete view tree with the current node highlighted. Useful when restructuring requires understanding the broader context
@@ -830,15 +876,15 @@ Accessed via the Edit Structure toggle in the toolbar. Opens as a drawer or side
 Accessed from the icon rail (dedicated entry point at the bottom). Opens as a full-window overlay or dedicated window, replacing the main pane.
 
 - **Scope**: the complete hierarchy of all views and all branches, with no filtering by current context
-- **Use cases**: creating new views, restructuring top-level branches, managing forks across the full hierarchy, renaming or duplicating views
+- **Use cases**: creating new views, restructuring top-level branches, managing branches across the full hierarchy, renaming or duplicating views
 - **Admin surface**: intended for less frequent, higher-impact structural decisions. Not the everyday editing interface
 
 #### View Editor Interactions (Both Contexts)
 
-- **Drag to reorder**: layer nodes can be dragged to change their position within a branch
-- **Add a layer**: append a new layer node to any branch, selecting the property from the registry
-- **Add a fork**: at any node, split into multiple child branches each keyed to a specific property value
-- **Label branches**: fork branches are labelled by the activating value
+- **Drag to reorder**: level nodes can be dragged to change their position within a branch
+- **Add a level**: append a new level node to any branch, selecting the property from the registry
+- **Add a branch**: at any node, split into multiple child branches each keyed to a specific property value
+- **Label branches**: branches are labelled by the activating value
 - **Delete a node**: collapses children up or removes the branch; confirmation required if files would become unclassified
 - **Rename / duplicate view**: available in both contexts, primary in the master editor
 
@@ -857,15 +903,15 @@ App Window
 │   ├── Sub-view switcher               [top of sidebar, if sub-views exist]
 │   ├── Starred locations within view
 │   ├── OS-standard items (Recents, etc.)
-│   └── Locations                       [added drives/folders; Map Structure, Refresh, Remove via context menu]
+│   └── Locations                       [added drives/folders; Map Disk Folders, Refresh, Remove via context menu]
 │
 ├── Toolbar
 │   ├── Breadcrumb / address bar        [platform-adaptive]
-│   ├── View mode switcher              [Database | Tiles | List | Columns]
-│   └── [Edit Structure toggle]         [opens local view editor panel]
+│   ├── View mode switcher              [Database | Icons | List | Columns]
+│   └── [Edit Hierarchy toggle]         [opens local view editor panel]
 │
 └── Main Pane
-    ├── Tiles / List / Columns          [standard OS explorer modes]
+    ├── Icons / List / Columns          [standard OS explorer modes]
     └── Database view                   [editable metadata table]
 
 [Local View Editor — panel/drawer, toggled from toolbar]
@@ -888,3 +934,4 @@ App Window
 - **Registry health tools**: Tooling to detect orphaned property values, inconsistently cased keys, and other data hygiene issues
 - **Conditional property values**: Whether valid values for a property should be constrained by the parent context. Requires UX design to determine how unrecognised or cross-context values are surfaced. To be designed.
 - **Cross-branch value visibility**: When a value exists in the registry but has no files under the current branch, how should the folder tree present it? Options include hiding entirely, greying with a disclosure toggle, or an "uncategorised" group. To be designed.
+- **Drag files out to other apps**: Dragging the selection from any view mode (Icons, List, Columns, Database rows) into Finder, Mail, chat apps and so on, as from Finder itself. This needs a native drag session carrying the file URLs, because the web view can't drag real files out. It could use `tauri-plugin-drag` (drag-rs, cross-platform) or `NSView.beginDraggingSession` through objc2 (macOS only, and could use Quick Look thumbnails as the drag image). The drag offers **copy** (and perhaps alias) but never move, so a drop onto a Finder folder on the same volume can't move the file out from under the database. This must be designed together with filing by drag (see Multi-folder Presence), because the web view stops getting mouse events once a native drag starts. One option is to run the in-app drag as usual and hand off to a native drag when the pointer leaves the window. The other is to always drag natively and resolve drops inside the app from the drop position (`onDragDropEvent`), though Option-drag is harder to detect that way. To be designed.

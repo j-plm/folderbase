@@ -257,7 +257,7 @@ export default function MasterViewEditor() {
               onRefresh={refreshLocal}
             />
           ) : (
-            <p className="text-xs text-neutral-500 px-4 py-2 italic">Select a view to edit its structure.</p>
+            <p className="text-xs text-neutral-500 px-4 py-2 italic">Select a view to edit its hierarchy.</p>
           )}
         </div>
       </div>

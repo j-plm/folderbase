@@ -15,6 +15,8 @@ export interface BrowserNode {
   file?: FileRecord;
   /** Present for folders (possibly empty). */
   children?: BrowserNode[];
+  /** A virtual folder's place in its level's order, which it keeps whatever the arrangement. */
+  order?: number;
 }
 
 export function isFolder(node: BrowserNode): boolean {
@@ -82,7 +84,9 @@ export interface NodeGroup {
 export function arrangeColumn(nodes: BrowserNode[], arrangement: Arrangement): NodeGroup[] {
   const folders = nodes
     .filter(isFolder)
-    .sort((a, b) => compareSortValues(a.name, b.name, "asc"));
+    .sort((a, b) =>
+      a.order != null && b.order != null ? a.order - b.order : compareSortValues(a.name, b.name, "asc")
+    );
   const files = nodes.filter((n) => !isFolder(n) && n.file);
   const byId = new Map(files.map((n) => [n.file!.file_id, n]));
 

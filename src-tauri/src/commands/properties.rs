@@ -297,6 +297,7 @@ pub async fn delete_property(
     {
         let mut conn = db.inner().acquire().await.map_err(|e| e.to_string())?;
         crate::commands::scopes::drop_property_scopes(&mut conn, &property_id).await?;
+        crate::commands::rules::forget_property_in_rules(&mut conn, prop.library.as_deref(), &prop.name).await?;
     }
 
     // Folder mappings to it go too, or the next refresh would bring its values back

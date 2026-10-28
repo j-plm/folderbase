@@ -25,7 +25,7 @@ A local desktop file management app that decouples physical file storage from lo
 src/
   components/
     shell/        # Icon rail, sidebar, toolbar, main pane
-    views/        # Tiles, List, Columns, Database view modes
+    views/        # Icons, List, Columns, Database view modes (Icons is TilesView in code)
     editor/       # Local and master view editor tree components
   lib/
     commands.ts   # All invoke() calls — the only place the frontend talks to Rust
@@ -62,9 +62,10 @@ Core constraint: files on disk are never moved or renamed by virtual folder oper
 - Functional components and hooks only — no class components
 - All `invoke()` calls go through `src/lib/commands.ts` — components never call `invoke` directly
 - State management: React context + useReducer — do not introduce an external state library unless complexity demands it
-- No component should compute virtual folder membership — components receive folder contents as data from Rust commands and render them
+- No component should compute virtual folder membership — it comes from `src/lib/folderTree.ts` (pure and tested, reading values through `src/lib/fileValues.ts` exactly as the Database view's filters do), and components only render what it returns
 - Platform-specific behaviour (sidebar label, breadcrumb style, trash verb) lives in `platform.ts` — never branch on `navigator.platform` inline in a component
 - **Always use the OS defaults** (see "Native Fidelity Standard" in the spec): system font and sizes, the OS palette (Tailwind's neutral/blue/… scales are remapped to Finder colours in `index.css` — don't hardcode colours), native file/folder icons via `FileIcon`/`FolderIcon`, SF Symbols via `SymbolIcon` (never hand-drawn SVG glyphs, except as fallbacks), native menus via `showContextMenu`. Match metrics against the native file manager rather than guessing
+- **Terminology**: use the spec's [Glossary](virtual-folder-system-spec.md#glossary) in every UI string, menu, tooltip and doc. Key terms: **Location**; **Excluded Folders**; **Map Disk Folders** (real folder names → property values); **Path Tags** (real folder names on a file's path; *captured* when a property records them) and **Tags** (the hand-added property); **Property** / **Value**; **Conditional property** ("Applies when …"; *scope* in code); **View** (Default and named); **Hierarchy** of a view, made of **Levels** and **Branches** (*Edit Hierarchy*, *Group by Hierarchy*; stored as `folders` / `root` / `branches`); **Rules**; view modes **Icons**, List, Columns, Database. "Folder" means something you see and open — configuration is never a "folder structure"; disk-reading features say "disk" or "path"; internal names (library, place, pins, draft, scope) stay out of the UI
 
 ---
 

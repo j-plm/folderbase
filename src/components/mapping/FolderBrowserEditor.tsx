@@ -12,15 +12,28 @@ import type { FolderTreeNode, PathMappingNode } from "../../lib/commands";
 import { useOverwriteConfirm } from "../shared/OverwriteDialog";
 import Dialog, { DialogButton } from "../shared/Dialog";
 import { showContextMenu } from "../../lib/nativeMenu";
-import { clickSelection, levelTargets, type FolderGroup, type Level, type LevelRendererProps } from "./levels";
-import MappingColumns from "./MappingColumns";
-import MappingTiles from "./MappingTiles";
+import {
+  InheritNameButton,
+  LevelNameInput,
+  clickSelection,
+  levelCaption,
+  levelKey,
+  levelName,
+  levelNodes,
+  levelPlaceholder,
+  levelTargets,
+  type FolderGroup,
+  type Level,
+  type LevelLayoutProps,
+} from "./levels";
+import LevelColumns from "./LevelColumns";
+import LevelTiles from "./LevelTiles";
 
 type Mode = "tiles" | "columns";
 
 const MODE_KEY = "mapping-editor-mode";
 const MODES: { mode: Mode; label: string }[] = [
-  { mode: "tiles", label: "Tiles" },
+  { mode: "tiles", label: "Icons" },
   { mode: "columns", label: "Columns" },
 ];
 
@@ -65,7 +78,7 @@ function loadMode(): Mode {
 
 /**
  * Maps folder levels to property names. Owns the levels, selection and
- * per-folder names; Tiles and Columns are two renderings of the same state.
+ * per-folder names; Icons and Columns are two renderings of the same state.
  */
 export default function FolderBrowserEditor({ locationId, rootNode, initialMappings }: Props) {
   const [mode, setMode] = useState<Mode>(loadMode);
@@ -246,16 +259,35 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
     }
   }
 
-  const rendererProps: LevelRendererProps = {
+  const rendererProps: LevelLayoutProps<FolderTreeNode> = {
     levels,
-    labels,
-    savedLevel,
+    heading: (levelIndex, layout) => {
+      const level = levels[levelIndex];
+      return (
+        <>
+          <LevelNameInput
+            key={levelKey(level)}
+            value={levelName(levelTargets(level).targets, labels).value}
+            placeholder={levelPlaceholder(level, labels)}
+            onCommit={(name) => commitLevelName(levelIndex, name)}
+            className={layout === "tiles" ? "flex-1 text-[15px] text-neutral-400" : "flex-1 text-[13px] text-neutral-100"}
+          />
+          <InheritNameButton onClick={() => inheritParentName(levelIndex)} />
+        </>
+      );
+    },
+    headingText: (levelIndex) => levelName(levelNodes(levels[levelIndex]), labels).value,
+    caption: (levelIndex) => levelCaption(levels[levelIndex], savedLevel === levelIndex, folderName),
     folderName,
     onToggle: toggleSelection,
-    onCommit: commitLevelName,
-    onInherit: inheritParentName,
-    excluded,
     onFolderMenu: folderMenu,
+    note: (node) => {
+      if (excluded.has(node.folder_path)) return { text: "Excluded", title: "Excluded from this location" };
+      const name = labels[node.folder_path];
+      return name ? { text: name, title: `Mapped to ${name}` } : undefined;
+    },
+    dimmed: (node) => excluded.has(node.folder_path),
+    hasChildren: (node) => node.children.length > 0 && !excluded.has(node.folder_path),
   };
 
   return (
@@ -293,9 +325,9 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
             No subfolders here.
           </div>
         ) : mode === "tiles" ? (
-          <MappingTiles {...rendererProps} />
+          <LevelTiles {...rendererProps} />
         ) : (
-          <MappingColumns {...rendererProps} />
+          <LevelColumns {...rendererProps} />
         )}
       </div>
       {dialog}

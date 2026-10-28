@@ -1,38 +1,55 @@
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
+import type { ReactNode } from "react";
 import type { FolderTreeNode } from "../../lib/commands";
 import { SymbolIcon } from "../../lib/fileIcons";
 
-/** Children of one selected parent, shown together within a level. */
-export interface FolderGroup {
-  parentPath: string;
-  nodes: FolderTreeNode[];
+/**
+ * A folder in a level: a real folder (Map Disk Folders) or a virtual one (a view's
+ * hierarchy). `folder_path` identifies it; `folder_name` is what shows.
+ */
+export interface LevelNode {
+  folder_path: string;
+  folder_name: string;
 }
 
-/** One mapped level: the children of every folder selected in the level above. */
-export interface Level {
-  groups: FolderGroup[];
+/** Children of one selected parent, shown together within a level. */
+export interface FolderGroup<N extends LevelNode = FolderTreeNode> {
+  parentPath: string;
+  nodes: N[];
+}
+
+/** One level: the children of every folder selected in the level above. */
+export interface Level<N extends LevelNode = FolderTreeNode> {
+  groups: FolderGroup<N>[];
   selected: string[];
 }
 
-/** What a mode renderer needs to draw the levels; all state lives in the editor. */
-export interface LevelRendererProps {
-  levels: Level[];
-  labels: Record<string, string>;
-  savedLevel: number | null;
+/** What LevelTiles and LevelColumns need to draw the levels; all state lives in the editor. */
+export interface LevelLayoutProps<N extends LevelNode> {
+  levels: Level<N>[];
+  /** A level's heading (its name or property control), laid out for tiles or columns. */
+  heading: (levelIndex: number, layout: "tiles" | "columns") => ReactNode;
+  /** The heading's text, so a column can be fitted to it. */
+  headingText: (levelIndex: number) => string;
+  /** A level's caption under the heading. */
+  caption: (levelIndex: number) => string;
+  /** A group's parent, named above its folders when a level holds several groups. */
   folderName: (path: string) => string;
   /** Click on a folder: toggles it, or with Shift selects everything from the last click to it. */
   onToggle: (levelIndex: number, folderPath: string, shiftKey: boolean) => void;
-  onCommit: (levelIndex: number, name: string) => void;
-  /** Names each target folder after the folder it sits in. */
-  onInherit: (levelIndex: number) => void;
-  /** Folders left out of the location (shown dimmed). */
-  excluded: Set<string>;
-  /** Right-click on a folder: exclude it from the location, or include it again. */
-  onFolderMenu: (e: React.MouseEvent, levelIndex: number, node: FolderTreeNode) => void;
+  onFolderMenu: (e: React.MouseEvent, levelIndex: number, node: N) => void;
+  /** A note beside or under a folder ("Client", "Excluded", "12"). */
+  note: (node: N) => FolderNoteText | undefined;
+  /** Shown faded (an excluded folder). */
+  dimmed: (node: N) => boolean;
+  /** Whether selecting it opens more folders (the chevron in Columns). */
+  hasChildren: (node: N) => boolean;
+  /** What a group with no folders shows instead. */
+  emptyGroup?: (group: FolderGroup<N>) => ReactNode;
 }
 
-export function levelNodes(level: Level): FolderTreeNode[] {
+export function levelNodes<N extends LevelNode>(level: Level<N>): N[] {
   return level.groups.flatMap((g) => g.nodes);
 }
 
@@ -41,7 +58,12 @@ export function levelNodes(level: Level): FolderTreeNode[] {
  * plain click toggles one folder; a shift-click adds every folder between `anchor`
  * (the last one clicked) and this one. Without an anchor in this level, it's a plain click.
  */
-export function clickSelection(level: Level, folderPath: string, anchor: string | null, shiftKey: boolean): string[] {
+export function clickSelection<N extends LevelNode>(
+  level: Level<N>,
+  folderPath: string,
+  anchor: string | null,
+  shiftKey: boolean
+): string[] {
   const order = levelNodes(level).map((n) => n.folder_path);
   const from = anchor ? order.indexOf(anchor) : -1;
   const to = order.indexOf(folderPath);
@@ -58,7 +80,7 @@ export function clickSelection(level: Level, folderPath: string, anchor: string 
  * The folders naming a level applies to: the selected ones when some (but not
  * all) are selected, otherwise every folder in the level.
  */
-export function levelTargets(level: Level): { targets: FolderTreeNode[]; partial: boolean } {
+export function levelTargets<N extends LevelNode>(level: Level<N>): { targets: N[]; partial: boolean } {
   const nodes = levelNodes(level);
   const selected = nodes.filter((n) => level.selected.includes(n.folder_path));
   const partial = selected.length > 0 && selected.length < nodes.length;
@@ -92,7 +114,7 @@ export function levelPlaceholder(level: Level, labels: Record<string, string>): 
 }
 
 /** "3 folders in Houses, Scans", "2 of 3 folders in Houses", or "Saved" right after a commit. */
-export function levelCaption(level: Level, saved: boolean, folderName: (path: string) => string) {
+export function levelCaption<N extends LevelNode>(level: Level<N>, saved: boolean, folderName: (path: string) => string) {
   if (saved) return "Saved";
   const count = levelNodes(level).length;
   const { targets, partial } = levelTargets(level);
@@ -102,7 +124,7 @@ export function levelCaption(level: Level, saved: boolean, folderName: (path: st
 }
 
 /** Remount key for a level's name input: changes when its folders change, discarding any draft. */
-export function levelKey(level: Level): string {
+export function levelKey<N extends LevelNode>(level: Level<N>): string {
   return levelNodes(level).map((n) => n.folder_path).join("|");
 }
 
@@ -173,12 +195,17 @@ export function InheritNameButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-/** A mapped folder's property name, shown beside or under the folder. */
-export function MappedLabel({ name, className = "" }: { name: string | undefined; className?: string }) {
-  if (!name) return null;
+export interface FolderNoteText {
+  text: string;
+  title: string;
+}
+
+/** A folder's note ("Mapped to Client", a file count), shown beside or under the folder. */
+export function FolderNote({ note, className = "" }: { note: FolderNoteText | undefined; className?: string }) {
+  if (!note) return null;
   return (
-    <span title={`Mapped to ${name}`} className={`shrink-0 truncate text-[11px] opacity-60 ${className}`}>
-      {name}
+    <span title={note.title} className={`shrink-0 truncate text-[11px] opacity-60 ${className}`}>
+      {note.text}
     </span>
   );
 }

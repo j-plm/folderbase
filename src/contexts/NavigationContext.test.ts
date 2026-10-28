@@ -8,9 +8,10 @@ const base = {
   viewMode: "tiles" as const,
   views: [],
   viewNodes: [],
-  editStructure: false,
+  editHierarchy: false,
   masterEditorOpen: false,
-  structureLocationId: null,
+  diskFoldersLocationId: null,
+  rulesOpen: false,
 };
 
 describe("navigationReducer", () => {
@@ -35,31 +36,57 @@ describe("navigationReducer", () => {
     expect(s.path).toEqual([]);
   });
 
-  it("openStructureMapping switches to the location and opens the panel", () => {
+  it("openDiskFolders switches to the location and opens the panel", () => {
     const s = navigationReducer(
       { ...base, activeLocationId: "a", activeViewId: "v", path: ["x"] },
-      { type: "OPEN_STRUCTURE", locationId: "b" }
+      { type: "OPEN_DISK_FOLDERS", locationId: "b" }
     );
     expect(s.activeLocationId).toBe("b");
     expect(s.activeViewId).toBeNull();
     expect(s.path).toEqual([]);
-    expect(s.structureLocationId).toBe("b");
+    expect(s.diskFoldersLocationId).toBe("b");
   });
 
-  it("openStructureMapping on the active location keeps the path", () => {
+  it("openDiskFolders on the active location keeps the path", () => {
     const s = navigationReducer(
       { ...base, activeLocationId: "a", path: ["x"] },
-      { type: "OPEN_STRUCTURE", locationId: "a" }
+      { type: "OPEN_DISK_FOLDERS", locationId: "a" }
     );
     expect(s.path).toEqual(["x"]);
-    expect(s.structureLocationId).toBe("a");
+    expect(s.diskFoldersLocationId).toBe("a");
   });
 
-  it("switching location closes Map Structure", () => {
+  it("switching location closes Map Disk Folders", () => {
     const s = navigationReducer(
-      { ...base, activeLocationId: "a", structureLocationId: "a" },
+      { ...base, activeLocationId: "a", diskFoldersLocationId: "a" },
       { type: "SET_LOCATION", locationId: "b" }
     );
-    expect(s.structureLocationId).toBeNull();
+    expect(s.diskFoldersLocationId).toBeNull();
+  });
+
+  it("opening one side panel closes the others", () => {
+    const hierarchy = navigationReducer(
+      { ...base, activeLocationId: "a", diskFoldersLocationId: "a", rulesOpen: true },
+      { type: "SET_EDIT_HIERARCHY", value: true }
+    );
+    expect(hierarchy).toMatchObject({ editHierarchy: true, diskFoldersLocationId: null, rulesOpen: false });
+
+    const disk = navigationReducer({ ...hierarchy }, { type: "OPEN_DISK_FOLDERS", locationId: "a" });
+    expect(disk).toMatchObject({ editHierarchy: false, diskFoldersLocationId: "a", rulesOpen: false });
+
+    const rules = navigationReducer({ ...disk }, { type: "SET_RULES_OPEN", open: true });
+    expect(rules).toMatchObject({ editHierarchy: false, diskFoldersLocationId: null, rulesOpen: true });
+  });
+
+  it("closing a side panel leaves the others as they are", () => {
+    const s = navigationReducer({ ...base, diskFoldersLocationId: "a" }, { type: "SET_EDIT_HIERARCHY", value: false });
+    expect(s.diskFoldersLocationId).toBe("a");
+  });
+
+  it("Rules closes on leaving the Database view or the location", () => {
+    const open = { ...base, viewMode: "database" as const, rulesOpen: true };
+    expect(navigationReducer(open, { type: "SET_VIEW_MODE", mode: "list" }).rulesOpen).toBe(false);
+    expect(navigationReducer(open, { type: "SET_VIEW_MODE", mode: "database" }).rulesOpen).toBe(true);
+    expect(navigationReducer(open, { type: "SET_LOCATION", locationId: "b" }).rulesOpen).toBe(false);
   });
 });
