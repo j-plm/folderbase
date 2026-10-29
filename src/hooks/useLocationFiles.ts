@@ -12,16 +12,17 @@ interface IndexingProgress {
 export function useLocationFiles(locationId: string | null): {
   files: FileRecord[];
   loading: boolean;
-  refresh: () => Promise<void>;
+  /** Reloads the files, resolving to them (none if they couldn't be read). */
+  refresh: () => Promise<FileRecord[]>;
   reindex: () => Promise<void>;
 } {
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [loading, setLoading] = useState(false);
 
-  const fetchFiles = useCallback(async () => {
+  const fetchFiles = useCallback(async (): Promise<FileRecord[]> => {
     if (!locationId) {
       setFiles([]);
-      return;
+      return [];
     }
     setLoading(true);
     try {
@@ -47,8 +48,9 @@ export function useLocationFiles(locationId: string | null): {
         return { ...f, metadata, tags };
       });
       setFiles(parsed);
+      return parsed;
     } catch {
-      // ignore
+      return [];
     } finally {
       setLoading(false);
     }

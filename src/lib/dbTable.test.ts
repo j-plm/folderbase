@@ -53,6 +53,18 @@ describe("applyFilters", () => {
   it("no rules keeps every row", () => {
     expect(applyFilters(rows, [], "all", get, kind)).toBe(rows);
   });
+  it("groups join by their own And/Or", () => {
+    // a is x And (n is 1 Or n is 2)
+    const grouped = [rule("is", "x", "a"), { id: "g", match: "any" as const, items: [rule("eq", "1", "n"), rule("eq", "2", "n")] }];
+    expect(applyFilters(rows, grouped, "all", get, kind)).toEqual([{ a: "x", n: 1 }]);
+    // a is y Or (a is x And n > 2)
+    const either = [rule("is", "y", "a"), { id: "g", match: "all" as const, items: [rule("is", "x", "a"), rule("gt", "2", "n")] }];
+    expect(applyFilters(rows, either, "any", get, kind)).toEqual([{ a: "y", n: 2 }, { a: "x", n: 3 }]);
+  });
+  it("leaves out filters still waiting for a value, so an Or isn't opened up", () => {
+    expect(applyFilters(rows, [rule("is", "y", "a"), rule("is", "", "a")], "any", get, kind)).toEqual([{ a: "y", n: 2 }]);
+    expect(applyFilters(rows, [{ id: "g", match: "any" as const, items: [rule("is", "", "a")] }], "all", get, kind)).toHaveLength(3);
+  });
 });
 
 describe("multiSort", () => {

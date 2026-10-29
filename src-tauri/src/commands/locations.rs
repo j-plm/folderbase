@@ -18,28 +18,32 @@ pub async fn get_locations_impl(pool: &DbPool) -> Result<Vec<Location>, String> 
 }
 
 /// Adds a location. `excluded` folders (absolute paths under `root_path`) are
-/// left out from the start, so the first index never scans them.
+/// left out from the start, so the first index never scans them. `added_folder`
+/// (relative to the root) is where files dropped in from outside will be copied.
 #[tauri::command]
 pub async fn add_location(
     root_path: String,
     name: String,
     excluded: Option<Vec<String>>,
+    added_folder: Option<String>,
     db: State<'_, DbPool>,
 ) -> Result<Location, String> {
+    let added_folder = crate::commands::import::added_folder_setting(added_folder.as_deref())?;
     let location_id = Uuid::new_v4().to_string();
     let library = name.to_lowercase().replace(' ', "_");
     let added_at = Utc::now().to_rfc3339();
 
     // A new location goes last
     sqlx::query(
-        "INSERT INTO locations (location_id, name, root_path, library, added_at, position) \
-         VALUES (?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM locations))",
+        "INSERT INTO locations (location_id, name, root_path, library, added_at, added_folder, position) \
+         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(position), -1) + 1 FROM locations))",
     )
     .bind(&location_id)
     .bind(&name)
     .bind(&root_path)
     .bind(&library)
     .bind(&added_at)
+    .bind(&added_folder)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;

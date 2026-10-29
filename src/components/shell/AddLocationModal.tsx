@@ -4,6 +4,7 @@ import { useNavigation } from "../../contexts/NavigationContext";
 import Dialog, { DialogButton, DialogField, dialogTextField } from "../shared/Dialog";
 import { FolderIcon, SymbolIcon } from "../../lib/fileIcons";
 import FolderChecklist from "./FolderChecklist";
+import { HOLDING_FOLDER } from "../../lib/fileDrag";
 
 interface Props {
   onClose: () => void;
@@ -17,6 +18,8 @@ export default function AddLocationModal({ onClose }: Props) {
   const [error, setError] = useState("");
   /** Folders to leave out before the first index, so they're never scanned. */
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  /** Where files dropped in from other apps will be copied, inside the location. */
+  const [addedFolder, setAddedFolder] = useState(HOLDING_FOLDER);
 
   function setExcludedMany(paths: string[], exclude: boolean) {
     setExcluded((prev) => {
@@ -45,7 +48,7 @@ export default function AddLocationModal({ onClose }: Props) {
     try {
       // Only the outermost excluded folders matter: what's inside them is never reached
       const outermost = [...excluded].filter((p) => ![...excluded].some((o) => o !== p && (p.startsWith(`${o}/`) || p.startsWith(`${o}\\`))));
-      const location = await addLocation(rootPath, name.trim(), outermost);
+      const location = await addLocation(rootPath, name.trim(), outermost, addedFolder.trim() || null);
       onClose();
       setActiveLocation(location.location_id);
       // fire-and-forget background indexing
@@ -96,6 +99,15 @@ export default function AddLocationModal({ onClose }: Props) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             disabled={!rootPath}
+            className={`${dialogTextField} disabled:opacity-50`}
+          />
+        </DialogField>
+        <DialogField label="Added files:">
+          <input
+            value={addedFolder}
+            onChange={(e) => setAddedFolder(e.target.value)}
+            disabled={!rootPath}
+            title="Files dropped in from other apps are copied into this folder inside the location. It's made when the first one arrives."
             className={`${dialogTextField} disabled:opacity-50`}
           />
         </DialogField>

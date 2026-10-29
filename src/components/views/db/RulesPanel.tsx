@@ -3,7 +3,9 @@ import ColumnOptions from "../../shared/ColumnOptions";
 import type React from "react";
 import { popoverField, popoverSelect } from "../../shared/Popover";
 import { SymbolIcon } from "../../../lib/fileIcons";
-import { listItems, matchesRule, newRule, type FilterMatch, type FilterRule } from "../../../lib/dbTable";
+import { showContextMenu, type MenuEntry } from "../../../lib/nativeMenu";
+import { evalFilters, listItems, matchesRule, newRule, type FilterItem, type FilterRule } from "../../../lib/dbTable";
+import { filterRules, mapRules, removeItem, updateRule } from "../../../lib/filterTree";
 import { dropIndexAt, moveColumnId } from "../../../lib/columns";
 import { baseName, fileName } from "../../../lib/fileColumns";
 import { formulaProblem } from "../../../lib/formula";
@@ -25,7 +27,7 @@ import {
   type RulePlan,
   type StoredRule,
 } from "../../../lib/rules";
-import { AddButton, ConditionRows, RemoveButton, type FilterColumn } from "./FilterSortPopover";
+import { AddButton, ConditionTree, RemoveButton, newFilterGroup, type FilterColumn } from "./FilterSortPopover";
 import RulesHelp, { FormulaHelp, PatternHelp } from "./RulesHelp";
 import Dialog, { DialogButton } from "../../shared/Dialog";
 
@@ -97,9 +99,10 @@ interface Props {
 
 const NEW = "__new";
 
-/** The narrowest the panel can be dragged; the table beside it always keeps at least TABLE_MIN_WIDTH. */
-export const RULES_PANEL_MIN_WIDTH = 520;
-const TABLE_MIN_WIDTH = 280;
+/** The narrowest the panel can be dragged; the table beside it always keeps at least RULES_TABLE_MIN_WIDTH. */
+export const RULES_PANEL_MIN_WIDTH = 400;
+/** The strip of table the panel always leaves showing, however wide it's dragged. */
+export const RULES_TABLE_MIN_WIDTH = 120;
 
 interface Editing {
   rule_id: string;
@@ -131,6 +134,12 @@ export default function RulesPanel(props: Props) {
   const [overHandEdits, setOverHandEdits] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [listWidth, setListWidth] = useState(() => loadSize("rules-list-width", 230));
+  /** The list of rules beside the editor; hidden, a pop-up in the header picks the rule (more room in a slim panel). */
+  const [listShown, setListShownState] = useState(() => loadSize("rules-list-shown", true));
+  function setListShown(shown: boolean) {
+    setListShownState(shown);
+    saveSize("rules-list-shown", shown);
+  }
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Mouse events, not pointer events: after a native menu closes WebKit can still
@@ -139,7 +148,7 @@ export default function RulesPanel(props: Props) {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = panelRef.current?.offsetWidth ?? props.width;
-    const max = (panelRef.current?.parentElement?.clientWidth ?? window.innerWidth) - TABLE_MIN_WIDTH;
+    const max = (panelRef.current?.parentElement?.clientWidth ?? window.innerWidth) - RULES_TABLE_MIN_WIDTH;
     let latest = startWidth;
     const onMove = (ev: MouseEvent) => {
       latest = Math.round(Math.min(max, Math.max(RULES_PANEL_MIN_WIDTH, startWidth + startX - ev.clientX)));
@@ -203,6 +212,22 @@ export default function RulesPanel(props: Props) {
   }
 
   /** Switching rules saves the one being edited first. */
+  /** The rules as a menu, while the list is hidden: choosing one edits it. */
+  function showRulePicker() {
+    const entries: MenuEntry[] = rules.map((r) => {
+      const n = counts.get(r.rule_id);
+      return {
+        type: "check",
+        text: `${r.name}${n != null ? ` — ${n.toLocaleString()} ${n === 1 ? "file" : "files"}` : ""}${r.enabled ? "" : " (off)"}`,
+        checked: selected === r.rule_id,
+        action: () => void select(r.rule_id),
+      };
+    });
+    if (entries.length > 0) entries.push({ type: "separator" });
+    entries.push({ type: "item", text: "New Rule", action: () => startNew() });
+    void showContextMenu(entries);
+  }
+
   async function select(id: string) {
     if (editing?.dirty) await save();
     const rule = rules.find((r) => r.rule_id === id);
@@ -258,7 +283,7 @@ export default function RulesPanel(props: Props) {
   return (
     <div
       ref={panelRef}
-      style={{ width: props.width, maxWidth: `calc(100% - ${TABLE_MIN_WIDTH}px)` }}
+      style={{ width: props.width, maxWidth: `calc(100% - ${RULES_TABLE_MIN_WIDTH}px)` }}
       className="absolute right-0 top-0 h-full flex flex-col bg-neutral-900 border-l border-neutral-700/60 shadow-2xl z-50 text-body"
     >
       {/* Drag the left edge to resize */}
@@ -267,8 +292,28 @@ export default function RulesPanel(props: Props) {
         className="absolute left-0 top-0 h-full w-1.5 -translate-x-1/2 cursor-col-resize z-10"
         aria-hidden
       />
-      <div className="flex items-center justify-between px-5 py-3 border-b border-neutral-700/60 shrink-0">
-        <h2 className="text-sm font-medium text-neutral-100">Rules</h2>
+      <div className="flex items-center gap-1 px-3 py-3 border-b border-neutral-700/60 shrink-0">
+        <button
+          onClick={() => setListShown(!listShown)}
+          title={listShown ? "Hide Rules List" : "Show Rules List"}
+          aria-label={listShown ? "Hide Rules List" : "Show Rules List"}
+          aria-pressed={listShown}
+          className={`p-1.5 rounded-[6px] hover:bg-neutral-800 hover:text-neutral-200 ${listShown ? "text-neutral-200" : "text-neutral-400"}`}
+        >
+          <SymbolIcon name="sidebar.left" size={13} fallback="▤" />
+        </button>
+        <h2 className="ml-1 shrink-0 text-sm font-medium text-neutral-100">Rules</h2>
+        {!listShown && (
+          <button
+            onClick={showRulePicker}
+            title="Choose a Rule"
+            className="flex items-center gap-1 min-w-0 h-6 px-2 ml-1 rounded-[6px] text-sm text-neutral-300 hover:bg-neutral-800"
+          >
+            <span className="text-neutral-500">›</span>
+            <span className="truncate">{editing ? editing.name : "No rule selected"}</span>
+            <SymbolIcon name="chevron.up.chevron.down" size={9} fallback="⌃" className="shrink-0 text-neutral-400" />
+          </button>
+        )}
         <span className="flex-1" />
         <button
           onClick={() => setHelpOpen((o) => !o)}
@@ -288,28 +333,32 @@ export default function RulesPanel(props: Props) {
       </div>
 
       <div className="relative flex flex-1 min-h-0">
-        <RuleList
-          width={listWidth}
-          rules={rules}
-          counts={counts}
-          selected={selected}
-          newSelected={selected === NEW}
-          onSelect={(id) => void select(id)}
-          onNew={() => startNew()}
-          onToggle={(rule) => setEnabled(rule.rule_id, !rule.enabled)}
-          onReorder={props.onReorder}
-        />
-        {/* Drag to make the list of rules wider or narrower */}
-        <div
-          onMouseDown={(e) =>
-            dragWidth(e, listWidth, 140, 480, 1, (w, done) => {
-              setListWidth(w);
-              if (done) saveSize("rules-list-width", w);
-            })
-          }
-          className="w-1.5 -mx-[3px] shrink-0 cursor-col-resize z-10"
-          aria-hidden
-        />
+        {listShown && (
+          <>
+            <RuleList
+              width={listWidth}
+              rules={rules}
+              counts={counts}
+              selected={selected}
+              newSelected={selected === NEW}
+              onSelect={(id) => void select(id)}
+              onNew={() => startNew()}
+              onToggle={(rule) => setEnabled(rule.rule_id, !rule.enabled)}
+              onReorder={props.onReorder}
+            />
+            {/* Drag to make the list of rules wider or narrower */}
+            <div
+              onMouseDown={(e) =>
+                dragWidth(e, listWidth, 140, 480, 1, (w, done) => {
+                  setListWidth(w);
+                  if (done) saveSize("rules-list-width", w);
+                })
+              }
+              className="w-1.5 -mx-[3px] shrink-0 cursor-col-resize z-10"
+              aria-hidden
+            />
+          </>
+        )}
 
         <div className="flex-1 min-w-0 overflow-y-auto">
           {!editing ? (
@@ -340,7 +389,7 @@ export default function RulesPanel(props: Props) {
       </div>
 
       {editing && (
-        <div className="flex items-center gap-2 px-5 py-3 border-t border-neutral-700/60 shrink-0">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-2 px-5 py-3 border-t border-neutral-700/60 shrink-0">
           <button
             type="button"
             // A saved rule asks first; an unsaved new one just goes
@@ -354,23 +403,25 @@ export default function RulesPanel(props: Props) {
             Include values changed by hand
           </label>
           {error && <span className="text-red-500 text-xs truncate">{error}</span>}
-          <span className="flex-1" />
-          <button
-            type="button"
-            disabled={!editing.dirty}
-            onClick={() => void save()}
-            className="h-6 min-w-[74px] px-3 rounded-[6px] text-sm bg-neutral-700/70 text-neutral-100 disabled:text-neutral-500"
-          >
-            Save
-          </button>
-          <button
-            type="button"
-            disabled={busy || !plan || plan.edits.length === 0}
-            onClick={() => void applyNow()}
-            className="h-6 min-w-[74px] px-3 rounded-[6px] text-sm bg-blue-500 text-white disabled:bg-neutral-700/70 disabled:text-neutral-500"
-          >
-            {plan && plan.edits.length > 0 ? `Apply Now (${plan.counts.change})` : "Apply Now"}
-          </button>
+          {/* Kept together at the right, on a line of their own when the panel is narrow */}
+          <span className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              disabled={!editing.dirty}
+              onClick={() => void save()}
+              className="h-6 min-w-[74px] px-3 rounded-[6px] text-sm bg-neutral-700/70 text-neutral-100 disabled:text-neutral-500"
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              disabled={busy || !plan || plan.edits.length === 0}
+              onClick={() => void applyNow()}
+              className="h-6 min-w-[74px] px-3 rounded-[6px] text-sm bg-blue-500 text-white disabled:bg-neutral-700/70 disabled:text-neutral-500"
+            >
+              {plan && plan.edits.length > 0 ? `Apply Now (${plan.counts.change})` : "Apply Now"}
+            </button>
+          </span>
         </div>
       )}
 
@@ -539,9 +590,12 @@ function RuleEditor({
   const [help, setHelp] = useState<string | null>(null);
   const toggleHelp = (id: string) => setHelp(help === id ? null : id);
 
-  function changeConditions(conditions: FilterRule[]) {
+  function changeConditions(conditions: FilterItem[]) {
     // A condition just turned into an empty pattern: open its example, as there's nothing to go on yet
-    const turned = conditions.find((c) => c.op === "matches" && !c.value.trim() && def.conditions.find((o) => o.id === c.id)?.op !== "matches");
+    const before = filterRules(def.conditions);
+    const turned = filterRules(conditions).find(
+      (c) => c.op === "matches" && !c.value.trim() && before.find((o) => o.id === c.id)?.op !== "matches"
+    );
     if (turned) setPicking(turned.id);
     onChangeDef({ conditions });
   }
@@ -573,26 +627,16 @@ function RuleEditor({
 
       {/* When */}
       <section className="flex flex-col gap-2">
-        <div className="flex items-center gap-2">
-          <p className={sectionTitle}>When</p>
-          {def.conditions.length > 1 && (
-            <select
-              value={def.match}
-              onChange={(e) => onChangeDef({ match: e.target.value as FilterMatch })}
-              className={popoverSelect}
-            >
-              <option value="all">all of these hold</option>
-              <option value="any">any of these holds</option>
-            </select>
-          )}
-        </div>
+        <p className={sectionTitle}>When</p>
         {def.conditions.length === 0 && <p className="text-neutral-500">Every file. Add a condition to narrow it down.</p>}
-        <ConditionRows
+        <ConditionTree
           columns={columns}
-          rules={def.conditions}
+          items={def.conditions}
+          match={def.match}
           onChange={changeConditions}
+          onMatchChange={(match) => onChangeDef({ match })}
           valuesFor={valuesFor}
-          removeLabel="Remove condition"
+          noun="Condition"
           rowAction={(rule) =>
             rule.op === "matches" && (
               <>
@@ -627,7 +671,7 @@ function RuleEditor({
                     condition={rule}
                     files={files}
                     env={env}
-                    onUse={(value) => onChangeDef({ conditions: def.conditions.map((c) => (c.id === rule.id ? { ...c, value } : c)) })}
+                    onUse={(value) => onChangeDef({ conditions: updateRule(def.conditions, rule.id, { value }) })}
                     onClose={() => setHelp(null)}
                   />
                 )}
@@ -635,10 +679,15 @@ function RuleEditor({
             )
           }
         />
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           {first && (
             <AddButton onClick={() => onChangeDef({ conditions: [...def.conditions, newRule(first.id, first.kind)] })}>
               Add Condition
+            </AddButton>
+          )}
+          {first && (
+            <AddButton onClick={() => onChangeDef({ conditions: [...def.conditions, newFilterGroup(def.match, first)] })}>
+              Add Condition Group
             </AddButton>
           )}
           {withFilter !== def && (
@@ -849,8 +898,9 @@ function ActionRow({
   const problem = action.mode === "formula" && action.value.trim() ? formulaProblem(action.value) : null;
   const listId = `rule-values-${action.id}`;
   return (
-    <div className="flex flex-col gap-0.5">
-      <div className="flex items-center gap-1.5">
+    <div className="@container flex flex-col gap-0.5">
+      {/* Narrow: what it's set from wraps onto a line of its own */}
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
         <select
           value={creating ? NEW_PROPERTY : action.property}
           onChange={(e) => {
@@ -863,7 +913,7 @@ function ActionRow({
               onChange({ property: e.target.value });
             }
           }}
-          className={`${popoverSelect} w-[130px]`}
+          className={`${popoverSelect} w-[130px] min-w-0 @max-[30rem]:grow`}
         >
           <option value="">Property…</option>
           {properties.map((p) => (
@@ -877,7 +927,7 @@ function ActionRow({
         <select
           value={action.mode}
           onChange={(e) => onChange({ mode: e.target.value as ActionMode, value: "", also: undefined })}
-          className={`${popoverSelect} w-[118px]`}
+          className={`${popoverSelect} w-[118px] min-w-0 @max-[30rem]:grow`}
         >
           <option value="fixed">to</option>
           <option value="slot">from pattern</option>
@@ -886,7 +936,7 @@ function ActionRow({
           <option value="same">from files with the same</option>
         </select>
         {action.mode === "same" ? (
-          <select value={action.value} onChange={(e) => onChange({ value: e.target.value })} className={`${popoverSelect} flex-1 min-w-0`}>
+          <select value={action.value} onChange={(e) => onChange({ value: e.target.value })} className={`${popoverSelect} flex-1 min-w-[140px]`}>
             <option value="">Choose a property…</option>
             <ColumnOptions columns={sameChoices} />
           </select>
@@ -898,7 +948,7 @@ function ActionRow({
                 const kind = columns.find((c) => c.id === e.target.value)?.kind;
                 onChange({ value: e.target.value, part: partsFor(e.target.value, kind)[0]?.[0] });
               }}
-              className={`${popoverSelect} flex-1 min-w-0`}
+              className={`${popoverSelect} flex-1 min-w-[140px]`}
             >
               <option value="">Choose a column…</option>
               <ColumnOptions columns={columns} />
@@ -907,7 +957,7 @@ function ActionRow({
               <select
                 value={action.part ?? ""}
                 onChange={(e) => onChange({ part: e.target.value })}
-                className={`${popoverSelect} w-[140px]`}
+                className={`${popoverSelect} shrink-0`}
               >
                 {partsFor(action.value, sourceKind).map(([id, label]) => (
                   <option key={id} value={id}>
@@ -922,7 +972,7 @@ function ActionRow({
             value={action.value}
             // A slot named after a date format ({YYMMDD}) is read as one
             onChange={(e) => onChange({ value: e.target.value, ...(formatForSlot(e.target.value) ? { format: formatForSlot(e.target.value) } : {}) })}
-            className={`${popoverSelect} flex-1 min-w-0`}
+            className={`${popoverSelect} flex-1 min-w-[100px]`}
           >
             <option value="">{slots.length ? "Choose a slot…" : "Add a pattern first"}</option>
             {slots.map((s) => (
@@ -942,7 +992,7 @@ function ActionRow({
               onChange={(e) => onChange({ value: e.target.value })}
               placeholder="Value"
               spellCheck={false}
-              className={`${popoverField} flex-1 min-w-0`}
+              className={`${popoverField} flex-1 min-w-[140px]`}
             />
             {action.property && (
               <datalist id={listId}>
@@ -958,7 +1008,8 @@ function ActionRow({
             value={action.format ?? ""}
             onChange={(e) => onChange({ format: e.target.value })}
             title="How to read the text before writing it"
-            className={`${popoverSelect} w-[104px]`}
+            // As wide as its longest choice ("as YYYY-MM-DD"), so the chosen one always shows whole
+            className={`${popoverSelect} shrink-0`}
           >
             <option value="">as it is</option>
             <option value="number">as a number</option>
@@ -1137,13 +1188,12 @@ function ExamplePicker({
 
   // Examples: every distinct text from the files meeting the conditions other than this column's pattern
   const { allExamples, fromFiles } = useMemo(() => {
-    const others = def.conditions.filter((c) => !isPattern(c));
+    const others = removeItem(def.conditions, condition.id);
     const out: { text: string; label: string }[] = [];
     const seen = new Set<string>();
     let fromFiles = 0;
     for (const f of files) {
-      const results = others.map((c) => matchesRule(env.valueOf(f, c.column), env.kindOf(c.column), c));
-      if (others.length > 0 && !(def.match === "any" ? results.some(Boolean) : results.every(Boolean))) continue;
+      if (evalFilters(others, def.match, (c) => matchesRule(env.valueOf(f, c.column), env.kindOf(c.column), c)) === false) continue;
       fromFiles++;
       for (const text of textsOf(f)) {
         if (seen.has(text)) continue;
@@ -1154,7 +1204,7 @@ function ExamplePicker({
     out.sort((a, b) => a.text.localeCompare(b.text, undefined, { numeric: true }));
     return { allExamples: out, fromFiles };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [def.conditions, def.match, files, env, source, item]);
+  }, [def.conditions, def.match, files, env, source, item, condition.id]);
   // Typed into the search box: narrows the examples offered
   const [find, setFind] = useState("");
   const examples = useMemo(() => {
@@ -1169,7 +1219,7 @@ function ExamplePicker({
 
   /** Rewrites the condition's pattern from the picks; with none left, the pattern they made is cleared. */
   function apply(name: string, next: ExampleSlot[]) {
-    const conditions = def.conditions.map((c) => {
+    const conditions = mapRules(def.conditions, (c) => {
       if (!isPattern(c)) return c;
       if (next.length > 0) return { ...c, value: examplePattern(name, next) };
       return c.value === examplePattern(name, slots) ? { ...c, value: "" } : c;

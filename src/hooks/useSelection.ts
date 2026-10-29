@@ -6,6 +6,7 @@ import {
   DOUBLE_CLICK_MS,
   EMPTY_SELECTION,
   clickSelect,
+  singleSelection,
   moveSelection,
   moveSelectionTo,
   openTargets,
@@ -150,6 +151,17 @@ export function useSelection(
 
   return {
     isSelected: (id: string | undefined) => id != null && selected.has(id),
+    /**
+     * What a drag or right-click on `id` acts on, in display order: the
+     * selection if `id` is in it, otherwise just `id`, which becomes the
+     * selection (as in Finder).
+     */
+    targetIds: (id: string): string[] => {
+      if (selected.has(id)) return order.filter((x) => selected.has(x));
+      setState(singleSelection(id));
+      cursor.current = id;
+      return [id];
+    },
     onItemClick,
     onItemDoubleClick,
     /** Clicking empty space deselects everything. */

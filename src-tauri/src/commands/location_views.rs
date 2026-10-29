@@ -325,13 +325,19 @@ fn for_each_folder_level(level: &mut Value, visit: &mut impl FnMut(&mut Value)) 
     }
 }
 
-/// A column id, or an object naming one (`column` in filters and folder levels, `key` in sorts and groups).
+/// A column id, or an object naming one (`column` in filters and folder levels,
+/// `key` in sorts and groups), or a group of filters naming them in its `items`.
 fn rename_item(item: &mut Value, old_column: &str, new_column: &str) -> bool {
     if item.as_str() == Some(old_column) {
         *item = Value::String(new_column.to_string());
         return true;
     }
     let mut changed = false;
+    if let Some(items) = item.get_mut("items").and_then(Value::as_array_mut) {
+        for inner in items {
+            changed |= rename_item(inner, old_column, new_column);
+        }
+    }
     if let Some(obj) = item.as_object_mut() {
         for field in ["column", "key"] {
             if let Some(v) = obj.get_mut(field) {
@@ -353,7 +359,11 @@ mod tests {
     #[test]
     fn renames_columns_and_property_lists() {
         let mut def = json!({ "table": {
-            "filters": [{ "column": "prop:Client", "op": "is", "value": "prop:Client" }, { "column": "name" }],
+            "filters": [
+                { "column": "prop:Client", "op": "is", "value": "prop:Client" },
+                { "column": "name" },
+                { "id": "g", "match": "any", "items": [{ "column": "prop:Client", "op": "empty", "value": "" }] }
+            ],
             "sorts": [{ "key": "prop:Client", "direction": "asc" }],
             "groups": [{ "key": "prop:Client", "direction": "asc" }],
             "columnOrder": ["name", "prop:Client"],
@@ -367,6 +377,8 @@ mod tests {
         // A filter's value is the user's text, not a column
         assert_eq!(t["filters"][0]["value"], "prop:Client");
         assert_eq!(t["filters"][1]["column"], "name");
+        // Filters in a group too
+        assert_eq!(t["filters"][2]["items"][0]["column"], "prop:Customer");
         assert_eq!(t["sorts"][0]["key"], "prop:Customer");
         assert_eq!(t["groups"][0]["key"], "prop:Customer");
         assert_eq!(t["columnOrder"], json!(["name", "prop:Customer"]));

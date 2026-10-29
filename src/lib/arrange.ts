@@ -5,7 +5,21 @@ import { compareSortValues, type SortDirection } from "./columns";
 import { fileExtension } from "./fileIcons";
 
 export type SortKey = "name" | "kind" | "modified" | "created" | "size";
-export type GroupBy = "none" | SortKey;
+/** Finder's groups, or a property's ("prop:Client"). */
+export type GroupBy = "none" | SortKey | `prop:${string}`;
+
+export const isPropertyGroup = (groupBy: GroupBy): groupBy is `prop:${string}` => groupBy.startsWith("prop:");
+
+/**
+ * How to group by a property, as the Database view does: by its value (a
+ * Multi-select's combination of values), in the value's order, files without
+ * one last.
+ */
+export interface PropertyGrouping {
+  keyOf: (file: FileRecord, column: string) => { label: string; rank: number | string } | null;
+  /** The group of files without a value ("No Client"). */
+  emptyLabel: (column: string) => string;
+}
 
 export interface Arrangement {
   sort: { key: SortKey; direction: SortDirection };
@@ -195,6 +209,8 @@ export function sortFiles(files: FileRecord[], sort: Arrangement["sort"]): FileR
 
 export interface FileGroup {
   label: string;
+  /** Grouped by a property: the value the group stands for ("" for the No-value group). */
+  value?: string;
   files: FileRecord[];
 }
 
@@ -277,20 +293,27 @@ export function nameGroup(file: FileRecord): [string, number] {
 
 /**
  * Splits files into Finder-style groups, in Finder's group order, each group
- * sorted by `sort`. With groupBy "none" there is a single unlabelled group.
+ * sorted by `sort`. With groupBy "none" there is a single unlabelled group,
+ * as there is for a property without `byProperty`.
  */
 export function groupFiles(
   files: FileRecord[],
   arrangement: Arrangement,
-  now: Date = new Date()
+  now: Date = new Date(),
+  byProperty?: PropertyGrouping
 ): FileGroup[] {
   const sorted = sortFiles(files, arrangement.sort);
-  if (arrangement.groupBy === "none") return [{ label: "", files: sorted }];
+  const { groupBy } = arrangement;
+  if (groupBy === "none") return [{ label: "", files: sorted }];
+  if (isPropertyGroup(groupBy)) {
+    if (!byProperty) return [{ label: "", files: sorted }];
+    return groupByProperty(sorted, groupBy, byProperty);
+  }
 
   const groups = new Map<string, { rank: number; files: FileRecord[] }>();
   for (const file of sorted) {
     let key: [string, number];
-    switch (arrangement.groupBy) {
+    switch (groupBy) {
       case "kind": {
         const category = kindCategory(file);
         key = [category, KIND_CATEGORIES.indexOf(category)];
@@ -318,4 +341,29 @@ export function groupFiles(
   return [...groups.entries()]
     .sort(([, a], [, b]) => a.rank - b.rank)
     .map(([label, g]) => ({ label, files: g.files }));
+}
+
+function groupByProperty(sorted: FileRecord[], column: string, { keyOf, emptyLabel }: PropertyGrouping): FileGroup[] {
+  const groups = new Map<string, { rank: number | string; files: FileRecord[] }>();
+  const empty: FileRecord[] = [];
+  for (const file of sorted) {
+    const key = keyOf(file, column);
+    if (!key) {
+      empty.push(file);
+      continue;
+    }
+    const group = groups.get(key.label) ?? { rank: key.rank, files: [] };
+    group.files.push(file);
+    groups.set(key.label, group);
+  }
+  const rankOrder = (a: number | string, b: number | string) =>
+    typeof a === "number" && typeof b === "number"
+      ? a - b
+      : String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: "base" });
+  return [
+    ...[...groups.entries()]
+      .sort(([, a], [, b]) => rankOrder(a.rank, b.rank))
+      .map(([label, g]) => ({ label, value: label, files: g.files })),
+    ...(empty.length > 0 ? [{ label: emptyLabel(column), value: "", files: empty }] : []),
+  ];
 }

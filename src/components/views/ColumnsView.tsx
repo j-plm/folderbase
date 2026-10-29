@@ -3,6 +3,8 @@ import { fileNode, type BrowserNode } from "../../lib/columnBrowser";
 import { folderItemId, placeSteps, type FolderTree } from "../../lib/folderTree";
 import ColumnBrowser from "./columns/ColumnBrowser";
 import type { MenuEntry } from "../../lib/nativeMenu";
+import type { DragItem } from "../../lib/filing";
+import { useFileDrag } from "../../contexts/FileDragContext";
 
 interface Props {
   /** The view's files as its folders. */
@@ -16,6 +18,8 @@ interface Props {
   opens?: (path: string[]) => string[];
   /** Empty space in a column showing the folder at `path`: New Folder and its level's settings. */
   placeMenu?: (path: string[]) => MenuEntry[];
+  /** A right-click on files: the menu for those (the selection in their column, or the file clicked). */
+  fileMenu?: (items: DragItem[]) => MenuEntry[];
 }
 
 /**
@@ -25,7 +29,8 @@ interface Props {
  */
 const AS_IS = (path: string[]) => path;
 
-export default function ColumnsView({ tree, place, onPlace, folderMenu, opens = AS_IS, placeMenu }: Props) {
+export default function ColumnsView({ tree, place, onPlace, folderMenu, opens = AS_IS, placeMenu, fileMenu }: Props) {
+  const drag = useFileDrag();
   /** Each folder node's place (the folder it opens into), for opening and its menu; nodes of an old tree drop out by themselves. */
   const paths = useMemo(() => new WeakMap<BrowserNode, string[]>(), []);
   const root = useMemo(() => {
@@ -87,19 +92,34 @@ export default function ColumnsView({ tree, place, onPlace, folderMenu, opens = 
     [root, paths]
   );
 
+  /** Rows as what a drag or menu acts on: folders as themselves, files from the column's folder. */
+  const itemsOf = (nodes: BrowserNode[], parent: BrowserNode | null): DragItem[] => {
+    const from = parent ? (paths.get(parent) ?? []) : [];
+    return nodes.flatMap((n): DragItem[] => {
+      const path = paths.get(n);
+      if (path) return [{ kind: "folder", path }];
+      return n.file ? [{ kind: "file", file: n.file, from }] : [];
+    });
+  };
+
   return (
     <ColumnBrowser
       root={root}
       folderPath={folderPath}
       onFolderPathChange={(ids) => onPlace(placeOf(ids))}
-      nodeMenu={(node) => {
+      nodeMenu={(node, parent, nodes) => {
         const path = paths.get(node);
-        return path && folderMenu ? folderMenu(path) : null;
+        if (path) return folderMenu ? folderMenu(path) : null;
+        return fileMenu ? fileMenu(itemsOf(nodes, parent)) : null;
       }}
       columnMenu={(parent) => {
         const path = parent ? paths.get(parent) : [];
         return path && placeMenu ? placeMenu(path) : [];
       }}
+      // Filing by drag: folders take drops, as does each column's empty space (the folder it shows)
+      rowDropPath={(node) => paths.get(node) ?? null}
+      columnDropPath={(parent) => (parent ? (paths.get(parent) ?? null) : [])}
+      onRowsPress={(e, parent, nodes) => drag?.press(e, () => itemsOf(nodes(), parent))}
     />
   );
 }

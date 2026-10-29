@@ -54,3 +54,12 @@ export function isOpenShortcut(e: ModifierEvent): boolean {
  */
 export const menuMetrics =
   platform === "macos" ? { item: 24, separator: 11, padding: 5 } : null;
+
+/**
+ * Pixels per point in the positions of files dragged in from another app
+ * (Tauri's drag-and-drop events). On macOS they're already points, though
+ * typed as physical pixels; elsewhere they're physical pixels.
+ */
+export function dropPositionScale(): number {
+  return platform === "macos" ? 1 : window.devicePixelRatio;
+}

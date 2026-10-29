@@ -32,7 +32,7 @@ import { middleTruncate } from "../../../lib/tileLabel";
 import { measureText, uiFont } from "../../../lib/textMeasure";
 import { useReportSelection } from "../../../lib/selectionStatus";
 import { showContextMenu, withLead, type MenuEntry } from "../../../lib/nativeMenu";
-import { arrangementMenu, useArrangement } from "../../../contexts/ArrangementContext";
+import { arrangementMenu, useArrangedBy, useArrangement, useGroupProperties } from "../../../contexts/ArrangementContext";
 
 const sameIds = (a: string[], b: string[]) => a.length === b.length && a.every((id, i) => id === b[i]);
 
@@ -83,19 +83,29 @@ export default function ColumnBrowser({
   onFolderPathChange,
   nodeMenu,
   columnMenu,
+  onRowsPress,
+  rowDropPath,
+  columnDropPath,
 }: {
   root: BrowserNode[];
   /** The folders open (their ids), followed when it changes elsewhere (Back, Enclosing Folder). */
   folderPath?: string[];
   /** The folders open changed here. */
   onFolderPathChange?: (ids: string[]) => void;
-  /** A row's own right-click menu (null: the column's arrangement menu). */
-  nodeMenu?: (node: BrowserNode) => MenuEntry[] | null;
+  /** A row's own right-click menu, given the column's folder and what it acts on (null: the column's arrangement menu). */
+  nodeMenu?: (node: BrowserNode, parent: BrowserNode | null, nodes: BrowserNode[]) => MenuEntry[] | null;
   /** A column's empty-space menu, before the arrangement items, by the folder it shows (null: the first column). */
   columnMenu?: (parent: BrowserNode | null) => MenuEntry[];
+  /** A press on a row, in the column showing `parent`: `nodes` is what a drag from it carries (the selection there, or the row). */
+  onRowsPress?: (e: React.PointerEvent, parent: BrowserNode | null, nodes: () => BrowserNode[]) => void;
+  /** Where a row takes what's dropped on it (null: it doesn't). */
+  rowDropPath?: (node: BrowserNode) => string[] | null;
+  /** Where a column's empty space takes a drop, by the folder it shows (null: the first column). */
+  columnDropPath?: (parent: BrowserNode | null) => string[] | null;
 }) {
   const arrangementCtx = useArrangement();
-  const { arrangement } = arrangementCtx;
+  const { arrangement, byProperty } = useArrangedBy();
+  const groupProperties = useGroupProperties();
   const [path, setPath] = useState<string[]>(() => folderPath ?? []);
   const [sel, setSel] = useState<SelectionState>(EMPTY_SELECTION);
   const multi = sel.selected.length > 1;
@@ -108,10 +118,10 @@ export default function ColumnBrowser({
   // With several items selected, the last one clicked doesn't open a column
   const { columns, selected } = resolveColumns(root, multi ? path.slice(0, -1) : path);
   const arranged = useMemo(
-    () => columns.map((c) => arrangeColumn(c, arrangement)),
+    () => columns.map((c) => arrangeColumn(c, arrangement, byProperty)),
     // `columns` is derived from root + path, which are the real inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [root, path, multi, arrangement]
+    [root, path, multi, arrangement, byProperty]
   );
   const ordered = arranged.map((groups) => groups.flatMap((g) => g.nodes));
   const colWidths = inheritWidths(widths, widths.length - 1, columns.length, DEFAULT_WIDTH);
@@ -283,23 +293,32 @@ export default function ColumnBrowser({
       onKeyDown={handleKeyDown}
       onContextMenu={(e) => {
         e.preventDefault();
-        showContextMenu(arrangementMenu(arrangementCtx));
+        showContextMenu(arrangementMenu(arrangementCtx, groupProperties));
       }}
       style={{ paddingLeft: "var(--sidebar-inset)", scrollPaddingLeft: "var(--sidebar-inset)" }}
       className="flex-1 flex min-h-0 overflow-x-auto overflow-y-hidden outline-none"
     >
-      {arranged.map((groups, depth) => (
+      {arranged.map((groups, depth) => {
+        const parent = depth === 0 ? null : (selected[depth - 1] ?? null);
+        const dropPath = columnDropPath?.(parent);
+        /** What a drag or right-click on a row acts on: the selection here if the row's in it, else the row. */
+        const targetsOf = (node: BrowserNode) =>
+          depth === activeDepth && multi && sel.selected.includes(node.id)
+            ? ordered[depth].filter((n) => sel.selected.includes(n.id))
+            : [node];
+        return (
         <div
           key={depth}
+          {...(dropPath ? { "data-drop-path": JSON.stringify(dropPath), "data-drop-kind": "area" } : {})}
           style={{ width: colWidths[depth] }}
           onClick={() => navigateTo(selectAt(path, depth, null), depth)}
           // Empty space in a column: what its folders are (their level's settings), then the arrangement
           onContextMenu={(e) => {
-            const lead = columnMenu?.(depth === 0 ? null : (selected[depth - 1] ?? null)) ?? [];
+            const lead = columnMenu?.(parent) ?? [];
             if (lead.length === 0) return;
             e.preventDefault();
             e.stopPropagation();
-            showContextMenu(withLead(lead, arrangementMenu(arrangementCtx)), { event: e });
+            showContextMenu(withLead(lead, arrangementMenu(arrangementCtx, groupProperties)), { event: e });
           }}
           className="relative shrink-0 h-full border-r border-neutral-700/60"
         >
@@ -312,8 +331,10 @@ export default function ColumnBrowser({
             revealId={path[depth]}
             onRowClick={(e, node) => handleRowClick(e, depth, node)}
             onRowDoubleClick={(e, node) => handleRowDoubleClick(e, depth, node)}
+            onRowPointerDown={(e, node) => onRowsPress?.(e, parent, () => targetsOf(node))}
+            dropPathOf={rowDropPath}
             onRowMenu={(e, node) => {
-              const entries = nodeMenu?.(node);
+              const entries = nodeMenu?.(node, parent, targetsOf(node));
               if (!entries) return;
               e.preventDefault();
               e.stopPropagation();
@@ -332,7 +353,8 @@ export default function ColumnBrowser({
             className="absolute top-0 -right-[3px] z-20 h-full w-[6px] cursor-col-resize"
           />
         </div>
-      ))}
+        );
+      })}
 
       {previewNode?.file && <PreviewColumn node={previewNode} />}
       {/* Room to scroll the last column out from behind an open side panel */}
@@ -360,6 +382,8 @@ function ColumnList({
   onRowClick,
   onRowDoubleClick,
   onRowMenu,
+  onRowPointerDown,
+  dropPathOf,
 }: {
   groups: NodeGroup[];
   width: number;
@@ -372,6 +396,9 @@ function ColumnList({
   onRowClick: (e: React.MouseEvent, node: BrowserNode) => void;
   onRowDoubleClick: (e: React.MouseEvent, node: BrowserNode) => void;
   onRowMenu: (e: React.MouseEvent, node: BrowserNode) => void;
+  onRowPointerDown: (e: React.PointerEvent, node: BrowserNode) => void;
+  /** Where a row takes a drop (null: it doesn't). */
+  dropPathOf?: (node: BrowserNode) => string[] | null;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const items = useMemo(
@@ -462,6 +489,11 @@ function ColumnList({
               <div
                 key={v.key}
                 data-node={node.id}
+                data-drop-path={(() => {
+                  const path = dropPathOf?.(node);
+                  return path ? JSON.stringify(path) : undefined;
+                })()}
+                onPointerDown={(e) => onRowPointerDown(e, node)}
                 onClick={(e) => onRowClick(e, node)}
                 onDoubleClick={(e) => onRowDoubleClick(e, node)}
                 onContextMenu={(e) => onRowMenu(e, node)}

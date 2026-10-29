@@ -27,6 +27,8 @@ pub struct Location {
     pub library: String,
     pub added_at: String,
     pub last_indexed: Option<String>,
+    /// Where files dropped in from outside are copied, relative to the root (None: "Added Files").
+    pub added_folder: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow)]

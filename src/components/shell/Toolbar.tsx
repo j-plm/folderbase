@@ -4,7 +4,7 @@ import OverflowBar from "./OverflowBar";
 import ViewsButton, { viewsSubmenu } from "./ViewsButton";
 import { useOptionalLocationViews } from "../../contexts/LocationViewsContext";
 import { useBrowse } from "../../contexts/BrowseContext";
-import { arrangementMenu, useArrangement } from "../../contexts/ArrangementContext";
+import { arrangementMenu, propertyGroupEntries, useArrangement, useGroupProperties } from "../../contexts/ArrangementContext";
 import { GROUP_OPTIONS, SORT_OPTIONS } from "../../lib/arrange";
 import { showContextMenu, type MenuEntry } from "../../lib/nativeMenu";
 import { SymbolIcon } from "../../lib/fileIcons";
@@ -22,6 +22,7 @@ export default function Toolbar() {
   const { viewMode, setViewMode, activeLocationId, editHierarchy, setEditHierarchy } = useNavigation();
   const arrangementCtx = useArrangement();
   const { arrangement, setGroupBy, setSortKey } = arrangementCtx;
+  const groupProperties = useGroupProperties();
   const selectedLabel = selectionLabel(useSelectionStatus());
   const locationViews = useOptionalLocationViews();
   useSaveViewShortcut(locationViews);
@@ -43,6 +44,7 @@ export default function Toolbar() {
       };
       return o.key === "none" ? [item, { type: "separator" }] : [item];
     }),
+    ...propertyGroupEntries(arrangementCtx, groupProperties),
     { type: "separator" },
     {
       type: "submenu",
@@ -115,7 +117,7 @@ export default function Toolbar() {
                       <SymbolIcon name="chevron.down" size={9} />
                     </button>
                   ),
-                  menu: arrangementMenu(arrangementCtx),
+                  menu: arrangementMenu(arrangementCtx, groupProperties),
                 },
               ]),
           // New Folder, where the folder you're in has a level that takes a typed value

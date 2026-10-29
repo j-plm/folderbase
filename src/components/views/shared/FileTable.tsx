@@ -14,12 +14,16 @@ import {
   kindLabel,
   type SortKey,
 } from "../../../lib/arrange";
-import { arrangementMenu, useArrangement } from "../../../contexts/ArrangementContext";
+import { arrangementMenu, useArrangedBy, useArrangement, useGroupProperties } from "../../../contexts/ArrangementContext";
+import { ARRANGED_GROUPS } from "../../../lib/fileDrag";
 import { showContextMenu, withLead, type MenuEntry } from "../../../lib/nativeMenu";
 import { measureText, uiFont } from "../../../lib/textMeasure";
 import { useColumnLayout } from "../../../hooks/useColumnLayout";
 import type { FileRecord } from "../../../types";
 import TableHeader from "./TableHeader";
+import { useFileDrag } from "../../../contexts/FileDragContext";
+import type { DragItem } from "../../../lib/filing";
+import { dragItemsFor } from "../../../lib/fileDrag";
 
 // Finder's list view column order.
 const COLUMNS: ColumnDef[] = [
@@ -63,7 +67,8 @@ const GROUP_HEADING_HEIGHT = 56;
  * in the group (for joined selections).
  */
 type ListItem =
-  | { kind: "heading"; label: string }
+  /** `value`: grouped by a property, the value the group stands for. */
+  | { kind: "heading"; label: string; value?: string }
   | { kind: "row"; id: string; file?: FileRecord; folder?: FolderEntry; stripe: boolean; prev?: string; next?: string };
 
 interface Props {
@@ -78,14 +83,33 @@ interface Props {
   folderMenu?: (value: string) => MenuEntry[];
   /** Entries before the arrangement items when empty space is right-clicked (New Folder). */
   backgroundMenu?: () => MenuEntry[];
+  /** The folder showing (its path), for filing by drag: what's dragged comes from here, and drops on empty space go here. */
+  place?: string[];
+  /** Where a folder (by its value) takes what's dropped on it. */
+  folderPath?: (value: string) => string[];
+  /** A right-click on files: the menu for those (the selection, or the file clicked). */
+  fileMenu?: (items: DragItem[]) => MenuEntry[];
 }
 
 const NO_FOLDERS: FolderEntry[] = [];
 
 /** Finder-style list of files: fitted, resizable, sortable columns. */
-export default function FileTable({ files, storageKey, folders = NO_FOLDERS, onOpenFolder, folderMenu, backgroundMenu }: Props) {
+export default function FileTable({
+  files,
+  storageKey,
+  folders = NO_FOLDERS,
+  onOpenFolder,
+  folderMenu,
+  backgroundMenu,
+  place,
+  folderPath,
+  fileMenu,
+}: Props) {
+  const drag = useFileDrag();
   const arrangementCtx = useArrangement();
   const { arrangement, toggleSortKey } = arrangementCtx;
+  const { arrangement: arranged, byProperty, groupsTakeDrops } = useArrangedBy();
+  const groupProperties = useGroupProperties();
   const layout = useColumnLayout(COLUMNS, storageKey, (key) => {
     const font = uiFont(13);
     const extra = key === "name" ? NAME_ICON_WIDTH : 0;
@@ -93,18 +117,18 @@ export default function FileTable({ files, storageKey, folders = NO_FOLDERS, onO
     return [...folderText.map((t) => measureText(t, font) + extra), ...files.map((f) => measureText(cellText(f, key), font) + extra)];
   }, INSET);
 
-  const fileGroups = useMemo(() => groupFiles(files, arrangement), [files, arrangement]);
+  const fileGroups = useMemo(() => groupFiles(files, arranged, undefined, byProperty), [files, arranged, byProperty]);
   const shown = useMemo(() => fileGroups.flatMap((g) => g.files), [fileGroups]);
   // The folders come first, in their level's order; with the files grouped, under their own heading
   const items = useMemo(() => {
-    const groups: { label: string | null; rows: { id: string; file?: FileRecord; folder?: FolderEntry }[] }[] =
-      fileGroups.map((g) => ({ label: g.label, rows: g.files.map((file) => ({ id: file.file_id, file })) }));
+    const groups: { label: string | null; value?: string; rows: { id: string; file?: FileRecord; folder?: FolderEntry }[] }[] =
+      fileGroups.map((g) => ({ label: g.label, value: g.value, rows: g.files.map((file) => ({ id: file.file_id, file })) }));
     if (folders.length > 0) {
       const grouped = groups.some((g) => g.label);
       groups.unshift({ label: grouped ? "Folders" : null, rows: folders.map((f) => ({ id: folderItemId(f.value), folder: f })) });
     }
     return groups.flatMap((g): ListItem[] => [
-      ...(g.label ? [{ kind: "heading" as const, label: g.label }] : []),
+      ...(g.label ? [{ kind: "heading" as const, label: g.label, value: g.value }] : []),
       ...g.rows.map((row, i) => ({
         kind: "row" as const,
         ...row,
@@ -140,6 +164,16 @@ export default function FileTable({ files, storageKey, folders = NO_FOLDERS, onO
     },
   });
 
+  /** The rows a drag or right-click on `id` acts on: files from here, folders as themselves. */
+  function itemsAt(id: string): DragItem[] {
+    if (!place || !folderPath) return [];
+    return dragItemsFor(selection.targetIds(id), files, place, (fid) => {
+      const value = valueOfFolder.get(fid);
+      return value == null ? null : folderPath(value);
+    });
+  }
+  const pressRow = (e: React.PointerEvent, id: string) => drag?.press(e, () => itemsAt(id));
+
   function handleHeaderMenu(e: React.MouseEvent) {
     e.preventDefault();
     showContextMenu([{ type: "item", text: "Size All Columns to Fit", action: layout.fitAll }]);
@@ -150,6 +184,7 @@ export default function FileTable({ files, storageKey, folders = NO_FOLDERS, onO
   return (
     <div
       ref={layout.setContainer}
+      {...(place && folderPath ? { "data-drop-path": JSON.stringify(place), "data-drop-kind": "area" } : {})}
       tabIndex={0}
       data-browse-keys
       onKeyDown={selection.onKeyDown}
@@ -174,7 +209,7 @@ export default function FileTable({ files, storageKey, folders = NO_FOLDERS, onO
         style={{ paddingLeft: INSET, paddingRight: INSET }}
         onContextMenu={(e) => {
           e.preventDefault();
-          showContextMenu(withLead(backgroundMenu?.() ?? [], arrangementMenu(arrangementCtx)));
+          showContextMenu(withLead(backgroundMenu?.() ?? [], arrangementMenu(arrangementCtx, groupProperties)));
         }}
       >
         <div style={{ height: virtualizer.getTotalSize(), width: layout.contentWidth, position: "relative" }}>
@@ -190,7 +225,15 @@ export default function FileTable({ files, storageKey, folders = NO_FOLDERS, onO
             };
             if (item.kind === "heading") {
               return (
-                <div key={v.key} style={place} className="flex items-end px-3 pb-1.5 text-[13px] font-medium text-neutral-500">
+                <div
+                  key={v.key}
+                  style={place}
+                  // Grouped by a property of one value: dropping on the heading gives files its value
+                  {...(groupsTakeDrops && item.value != null
+                    ? { "data-drop-path": JSON.stringify([item.value]), "data-drop-source": ARRANGED_GROUPS }
+                    : {})}
+                  className="flex items-end px-3 pb-1.5 text-[13px] font-medium text-neutral-500"
+                >
                   {item.label}
                 </div>
               );
@@ -204,13 +247,16 @@ export default function FileTable({ files, storageKey, folders = NO_FOLDERS, onO
               <div
                 key={v.key}
                 data-file-id={file?.file_id}
+                data-drop-path={folder && folderPath ? JSON.stringify(folderPath(folder.value)) : undefined}
+                onPointerDown={(e) => pressRow(e, item.id)}
                 onClick={(e) => selection.onItemClick(e, item.id)}
                 onDoubleClick={(e) => selection.onItemDoubleClick(e, item.id)}
                 onContextMenu={(e) => {
-                  if (!folder || !folderMenu) return;
+                  const entries = folder ? folderMenu?.(folder.value) : fileMenu?.(itemsAt(item.id));
+                  if (!entries || entries.length === 0) return;
                   e.preventDefault();
                   e.stopPropagation();
-                  showContextMenu(folderMenu(folder.value), { event: e });
+                  showContextMenu(entries, { event: e });
                 }}
                 style={place}
                 className={`flex items-center rounded-md text-body cursor-default ${

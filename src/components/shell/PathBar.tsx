@@ -10,6 +10,8 @@ export interface PathSegment {
   /** What sits beside it, shown on a right-click; the entry keyed `menuKey` opens under the pointer. */
   menu?: () => MenuEntry[] | Promise<MenuEntry[]>;
   menuKey?: string;
+  /** The folder it stands for, which takes what's dragged onto it. */
+  dropPath?: string[];
 }
 
 /**
@@ -31,6 +33,7 @@ export default function PathBar({ segments }: { segments: PathSegment[] }) {
         <span key={i} className="flex items-center min-w-0 shrink last:shrink-0">
           {i > 0 && <SymbolIcon name="chevron.right" size={9} fallback="›" className="shrink-0 mx-1.5 text-neutral-500" />}
           <span
+            data-drop-path={segment.dropPath ? JSON.stringify(segment.dropPath) : undefined}
             onClick={segment.onOpen}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -40,7 +43,7 @@ export default function PathBar({ segments }: { segments: PathSegment[] }) {
                 .catch(() => {});
             }}
             title={segment.label}
-            className="flex items-center gap-[5px] min-w-0"
+            className="flex items-center gap-[5px] min-w-0 px-1 -mx-1 rounded-[4px]"
           >
             <span className="shrink-0 flex">{segment.icon}</span>
             <span className="truncate">{segment.label}</span>

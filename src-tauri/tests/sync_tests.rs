@@ -194,3 +194,98 @@ async fn local_files_are_not_online_only() {
     assert!(fp.is_some());
     std::fs::remove_dir_all(&root).unwrap();
 }
+
+// ── files dropped in from outside ────────────────────────────────────────────
+
+#[tokio::test]
+async fn import_copies_outside_files_into_the_holding_folder_and_indexes_them() {
+    use folderbase_lib::commands::import::import_files_impl;
+    let pool = setup_db().await;
+    let root = temp_root();
+    write(&root, "Clients/a.txt", b"a");
+    let location = add_location(&pool, &root).await;
+    sync(&pool, &location).await;
+
+    let outside = temp_root();
+    write(&outside, "report.txt", b"report");
+    write(&outside, "a.txt", b"another a");
+    let paths = vec![
+        outside.join("report.txt").to_string_lossy().into_owned(),
+        root.join("Clients/a.txt").to_string_lossy().into_owned(),
+    ];
+    let imported = import_files_impl(&location, &paths, &pool).await.unwrap();
+    let filed = imported.files;
+
+    // The outside file is copied (the original kept); the one already inside stays put
+    let copy = root.join("Added Files/report.txt");
+    assert_eq!(filed, vec![copy.to_string_lossy().into_owned(), root.join("Clients/a.txt").to_string_lossy().into_owned()]);
+    assert!(copy.exists() && outside.join("report.txt").exists());
+    assert_eq!(count(&pool, &location).await, 2);
+    assert!(metadata_at(&pool, "Added Files/report.txt").await.is_some());
+
+    // Dropping the same name again keeps both
+    let again = import_files_impl(&location, &paths[..1], &pool).await.unwrap();
+    let second = root.join("Added Files/report 2.txt").to_string_lossy().into_owned();
+    assert_eq!(again.files, vec![second.clone()]);
+    assert_eq!(again.copies, vec![second.clone()]);
+    assert_eq!(count(&pool, &location).await, 3);
+
+    // Undone: the copy goes (deleted here, the Trash in the app) and so does its record
+    use folderbase_lib::commands::import::trash_added_files_impl;
+    trash_added_files_impl(&location, &again.folder, &again.copies, &pool, |p| std::fs::remove_file(p).map_err(|e| e.to_string())).await.unwrap();
+    assert!(!Path::new(&second).exists());
+    assert_eq!(count(&pool, &location).await, 2);
+}
+
+#[tokio::test]
+async fn undoing_the_last_drop_takes_the_empty_added_files_folder_away() {
+    use folderbase_lib::commands::import::{import_files_impl, trash_added_files_impl};
+    let pool = setup_db().await;
+    let root = temp_root();
+    let location = add_location(&pool, &root).await;
+    let outside = temp_root();
+    write(&outside, "a.txt", b"a");
+    let imported = import_files_impl(&location, &[outside.join("a.txt").to_string_lossy().into_owned()], &pool).await.unwrap();
+    assert!(root.join("Added Files").is_dir());
+    trash_added_files_impl(&location, &imported.folder, &imported.copies, &pool, |p| std::fs::remove_file(p).map_err(|e| e.to_string())).await.unwrap();
+    assert!(!root.join("Added Files").exists());
+    // Only an Added Files folder inside the location is accepted
+    assert!(trash_added_files_impl(&location, &outside.to_string_lossy(), &[], &pool, |_| Ok(())).await.is_err());
+}
+
+#[tokio::test]
+async fn changing_the_added_files_folder_can_move_what_is_there_keeping_values() {
+    use folderbase_lib::commands::import::{import_files_impl, set_added_folder_impl};
+    let pool = setup_db().await;
+    let root = temp_root();
+    let location = add_location(&pool, &root).await;
+    let outside = temp_root();
+    write(&outside, "report.txt", b"report");
+    import_files_impl(&location, &[outside.join("report.txt").to_string_lossy().into_owned()], &pool).await.unwrap();
+    set_custom(&pool, "Added Files/report.txt", r#"{"Client":"Acme"}"#).await;
+
+    let loc = set_added_folder_impl(&location, "Inbox/New", true, &pool).await.unwrap();
+    assert_eq!(loc.added_folder.as_deref(), Some("Inbox/New"));
+    assert!(root.join("Inbox/New/report.txt").exists());
+    assert!(!root.join("Added Files").exists());
+    assert_eq!(metadata_at(&pool, "Inbox/New/report.txt").await.unwrap()["Client"], "Acme");
+
+    // Later drops go there
+    write(&outside, "b.txt", b"b");
+    let next = import_files_impl(&location, &[outside.join("b.txt").to_string_lossy().into_owned()], &pool).await.unwrap();
+    assert_eq!(next.folder, root.join("Inbox/New").to_string_lossy());
+
+    // An absolute path inside the location is taken as relative; one outside it isn't
+    let loc = set_added_folder_impl(&location, &root.join("Drops").to_string_lossy(), false, &pool).await.unwrap();
+    assert_eq!(loc.added_folder.as_deref(), Some("Drops"));
+    assert!(set_added_folder_impl(&location, &outside.to_string_lossy(), false, &pool).await.is_err());
+    // Without moving, the files stay where they are
+    assert!(root.join("Inbox/New/report.txt").exists());
+}
+
+#[tokio::test]
+async fn import_into_a_missing_location_is_an_error() {
+    use folderbase_lib::commands::import::import_files_impl;
+    let pool = setup_db().await;
+    assert!(import_files_impl("nope", &[], &pool).await.is_err());
+}

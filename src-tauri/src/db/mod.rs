@@ -241,6 +241,11 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
+    // Where files dropped in from outside are copied, relative to the root (NULL: "Added Files")
+    let _ = sqlx::query("ALTER TABLE locations ADD COLUMN added_folder TEXT")
+        .execute(pool)
+        .await;
+
     // Type options for a property (number format, currency), as JSON.
     let _ = sqlx::query("ALTER TABLE properties ADD COLUMN config TEXT")
         .execute(pool)

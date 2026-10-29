@@ -24,14 +24,17 @@ import {
   type PlaceStep,
 } from "../lib/folderTree";
 import { createPropertyValue } from "../lib/commands";
+import { newGroup } from "../lib/filterTree";
 import { PROP_PREFIX, propName } from "../lib/fileColumns";
-import { uniqueViewName, type FolderPin } from "../lib/tableViews";
+import { uniqueViewName, type FolderLevel, type FolderPin } from "../lib/tableViews";
 import type { FileRecord } from "../types";
 import { useLocationViews } from "./LocationViewsContext";
 import { useNavigation } from "./NavigationContext";
 import { setLevel, setSkipSingleEverywhere, skipsSingleEverywhere, slotAt } from "../lib/hierarchy";
 import { dateUnitsFor, defaultDateUnit, isDateColumn } from "../lib/dateFolders";
 import type { MenuEntry } from "../lib/nativeMenu";
+import type { DropContext } from "../lib/filing";
+import type { PropertyGrouping } from "../lib/arrange";
 
 /** A place in one of the location's views, as Back and Forward return to it. */
 interface Visit {
@@ -46,12 +49,22 @@ export interface BrowseValue {
   files: FileRecord[];
   /** The location's name (null while loading). */
   locationName: string | null;
+  /** Where files dropped in from outside are copied, relative to the location ("Added Files"). */
+  addedFolder: string;
+  /** The location's properties as columns ("prop:Client"), for Group By in Icons, List and Columns. */
+  groupProperties: string[];
+  /** How those group files, as the Database view groups them. */
+  grouping: PropertyGrouping;
   loading: boolean;
-  refresh: () => Promise<void>;
+  refresh: () => Promise<FileRecord[]>;
   /** The files the active view's filters let through (null until they can be worked out). */
   shown: FileRecord[] | null;
   /** Those files as the view's folders (null with `shown`). */
   tree: FolderTree | null;
+  /** What filing by drag works out a drop against (null until the folders are). */
+  dropContext: DropContext | null;
+  /** The same for another hierarchy over the view's files (the Database view's groups). */
+  dropContextWith: (root: FolderLevel | null) => DropContext | null;
   /** Where you are in the view's folders: a path of folder values ([] is the view's top). */
   place: string[];
   /** Each folder on the way there, named. */
@@ -118,7 +131,7 @@ export function BrowseProvider({ locationId, children }: { locationId: string; c
   // The library's rules run over the location's files whenever they load or change
   useRuleRunner(locationId, files, refresh);
 
-  const { locationName, typeOf, scopes, loaded, reload, valuesOf, propertyIdOf } = useFolderSource(locationId);
+  const { locationName, addedFolder, typeOf, scopes, loaded, reload, valuesOf, propertyIdOf, properties } = useFolderSource(locationId);
   // The files reload after edits, which can add properties or scopes the filters and folders read
   useEffect(() => {
     reload().catch(() => {});
@@ -126,6 +139,12 @@ export function BrowseProvider({ locationId, children }: { locationId: string; c
   const reader = useMemo(
     () => valueReader({ typeOf, scopes, implied: impliedByFile(files, scopes, (p) => typeOf(p) === "array") }),
     [files, typeOf, scopes]
+  );
+
+  const groupProperties = useMemo(() => properties.map((p) => `${PROP_PREFIX}${p}`), [properties]);
+  const grouping = useMemo(
+    (): PropertyGrouping => ({ keyOf: reader.groupKey, emptyLabel: (column) => `No ${folderColumnLabel(column)}` }),
+    [reader]
   );
 
   const table = definition?.table;
@@ -151,11 +170,11 @@ export function BrowseProvider({ locationId, children }: { locationId: string; c
   const viewFromFolder = useCallback(
     (path: string[]) => {
       if (!table || !tree || path.length === 0) return null;
-      // The view's filters must all hold, with the folder's added
-      if (table.match === "any" && table.filters.length > 1) return null;
+      // The view's filters must hold, with the folder's added (filters joined by Or, as a group)
       const rules = placeFilterRules(root, path, reader);
       if (!rules) return null;
-      const filters = [...table.filters, ...rules];
+      const own = table.match === "any" && table.filters.length > 1 ? [newGroup("any", table.filters)] : table.filters;
+      const filters = [...own, ...rules];
       const expected = new Set(tree.filesAt(path).map((f) => f.file_id));
       const picked = viewFiles(files, filters, "all", reader);
       if (picked.length !== expected.size || picked.some((f) => !expected.has(f.file_id))) return null;
@@ -171,6 +190,23 @@ export function BrowseProvider({ locationId, children }: { locationId: string; c
       return { label, create: () => create(name, def) };
     },
     [table, tree, root, pins, reader, files, views, create]
+  );
+
+  // Filing by drag reads the folders, filters and properties as the view does
+  const topLabel = active && !active.is_default ? active.name : (locationName ?? "");
+  const dropContext = useMemo(
+    (): DropContext | null =>
+      tree && table
+        ? { tree, root, typeOf, scopes, filters: table.filters, match: table.match, label: folderColumnLabel, topLabel }
+        : null,
+    [tree, table, root, typeOf, scopes, topLabel]
+  );
+  const dropContextWith = useCallback(
+    (other: FolderLevel | null): DropContext | null =>
+      dropContext && shown
+        ? { ...dropContext, root: other, tree: folderTree(shown, other, reader, typeOf, folderColumnLabel) }
+        : null,
+    [dropContext, shown, reader, typeOf]
   );
 
   // ── Place and history ──────────────────────────────────────────────────
@@ -413,10 +449,15 @@ export function BrowseProvider({ locationId, children }: { locationId: string; c
     () => ({
       files,
       locationName,
+      addedFolder,
+      groupProperties,
+      grouping,
       loading,
       refresh,
       shown,
       tree,
+      dropContext,
+      dropContextWith,
       place,
       steps,
       filters,
@@ -441,7 +482,7 @@ export function BrowseProvider({ locationId, children }: { locationId: string; c
       canBack: history.index > 0,
       canForward: history.index < history.visits.length - 1,
     }),
-    [files, locationName, loading, refresh, shown, tree, place, steps, filters, levelNames, viewFromFolder, newFolderHere, makeFolder, isEmptyMadeFolder, removeMadeFolder, newFolderOpen, levelMenu, skipSingle, setSkipSingle, opens, groupsFor, go, enter, up, back, forward, history]
+    [files, locationName, addedFolder, groupProperties, grouping, loading, refresh, shown, tree, dropContext, dropContextWith, place, steps, filters, levelNames, viewFromFolder, newFolderHere, makeFolder, isEmptyMadeFolder, removeMadeFolder, newFolderOpen, levelMenu, skipSingle, setSkipSingle, opens, groupsFor, go, enter, up, back, forward, history]
   );
   return <BrowseContext.Provider value={value}>{children}</BrowseContext.Provider>;
 }

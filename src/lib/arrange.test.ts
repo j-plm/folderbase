@@ -59,6 +59,33 @@ describe("sortFiles", () => {
 });
 
 describe("groupFiles", () => {
+  const byProperty = {
+    keyOf: (f: FileRecord, column: string) => {
+      const v = (f.metadata as Record<string, unknown> | null)?.[column.slice(5)];
+      return typeof v === "string" ? { label: v, rank: v } : null;
+    },
+    emptyLabel: (column: string) => `No ${column.slice(5)}`,
+  };
+
+  it("groups by a property's value, in the value's order, files without one last", () => {
+    const groups = groupFiles(
+      [file("/a", { metadata: { Client: "Globex" } }), file("/b", { metadata: {} }), file("/c", { metadata: { Client: "Acme" } })],
+      { sort: byName, groupBy: "prop:Client" },
+      new Date(),
+      byProperty
+    );
+    expect(groups.map((g) => [g.label, g.value, g.files.map((f) => f.file_path)])).toEqual([
+      ["Acme", "Acme", ["/c"]],
+      ["Globex", "Globex", ["/a"]],
+      ["No Client", "", ["/b"]],
+    ]);
+  });
+
+  it("doesn't group by a property it can't read", () => {
+    const groups = groupFiles([file("/a"), file("/b")], { sort: byName, groupBy: "prop:Client" });
+    expect(groups).toEqual([{ label: "", files: [expect.anything(), expect.anything()] }]);
+  });
+
   it("returns one unlabelled group when not grouping", () => {
     const groups = groupFiles([file("/b"), file("/a")], { sort: byName, groupBy: "none" });
     expect(groups).toHaveLength(1);

@@ -8,11 +8,14 @@ import { gridNeighbor, type ArrowKey } from "../../lib/selection";
 import type { FileRecord } from "../../types";
 import { fileName, groupFiles } from "../../lib/arrange";
 import { showContextMenu, withLead, type MenuEntry } from "../../lib/nativeMenu";
-import { arrangementMenu, useArrangement } from "../../contexts/ArrangementContext";
+import { arrangementMenu, useArrangedBy, useArrangement, useGroupProperties } from "../../contexts/ArrangementContext";
 import { twoLineLabel } from "../../lib/tileLabel";
 import { measureText, uiFont } from "../../lib/textMeasure";
 import { FolderIcon } from "../../lib/fileIcons";
 import { folderItemId as folderId, type FolderEntry } from "../../lib/folderTree";
+import { useFileDrag } from "../../contexts/FileDragContext";
+import type { DragItem } from "../../lib/filing";
+import { ARRANGED_GROUPS, dragItemsFor } from "../../lib/fileDrag";
 
 interface Props {
   files: FileRecord[];
@@ -24,6 +27,12 @@ interface Props {
   folderMenu?: (value: string) => MenuEntry[];
   /** Entries before the arrangement items when empty space is right-clicked (New Folder). */
   backgroundMenu?: () => MenuEntry[];
+  /** The folder showing (its path), for filing by drag: what's dragged comes from here, and drops on empty space go here. */
+  place?: string[];
+  /** Where a folder (by its value) takes what's dropped on it. */
+  folderPath?: (value: string) => string[];
+  /** A right-click on files: the menu for those (the selection, or the file clicked). */
+  fileMenu?: (items: DragItem[]) => MenuEntry[];
 }
 
 const NO_FOLDERS: FolderEntry[] = [];
@@ -49,7 +58,8 @@ const GROUP_PADDING = 16;
 
 /** A line of the view: a group heading, or a row of tiles. */
 type TileItem =
-  | { kind: "heading"; label: string; divider: boolean }
+  /** `value`: grouped by a property, the value the group stands for. */
+  | { kind: "heading"; label: string; value?: string; divider: boolean }
   | { kind: "row"; tiles: Tile[]; first: boolean; last: boolean };
 
 /** How many tiles fit across `width`, as the grid's auto-fill would place them. */
@@ -57,18 +67,31 @@ function tilesPerRow(width: number): number {
   return Math.max(1, Math.floor((width - GROUP_PADDING * 2 + COLUMN_GAP) / (TILE_WIDTH + COLUMN_GAP)));
 }
 
-export default function TilesView({ files, folders = NO_FOLDERS, onOpenFolder, folderMenu, backgroundMenu }: Props) {
+export default function TilesView({
+  files,
+  folders = NO_FOLDERS,
+  onOpenFolder,
+  folderMenu,
+  backgroundMenu,
+  place,
+  folderPath,
+  fileMenu,
+}: Props) {
+  const drag = useFileDrag();
   const arrangementCtx = useArrangement();
+  const { arrangement: arranged, byProperty, groupsTakeDrops } = useArrangedBy();
+  const groupProperties = useGroupProperties();
   const labelFont = useMemo(() => uiFont(12), []);
   const fileGroups = useMemo(
-    () => groupFiles(files, arrangementCtx.arrangement),
-    [files, arrangementCtx.arrangement]
+    () => groupFiles(files, arranged, undefined, byProperty),
+    [files, arranged, byProperty]
   );
   const shown = useMemo(() => fileGroups.flatMap((g) => g.files), [fileGroups]);
   // The folders come first, in their level's order; with the files grouped, under their own heading
   const groups = useMemo(() => {
-    const fileTiles = fileGroups.map((g) => ({
+    const fileTiles: { label: string | null; value?: string; tiles: Tile[] }[] = fileGroups.map((g) => ({
       label: g.label,
+      value: g.value,
       tiles: g.files.map((f): Tile => ({ id: f.file_id, name: fileName(f.file_path), file: f })),
     }));
     if (folders.length === 0) return fileTiles;
@@ -111,7 +134,7 @@ export default function TilesView({ files, folders = NO_FOLDERS, onOpenFolder, f
             last: i + perRow >= group.tiles.length,
           });
         }
-        return group.label ? [{ kind: "heading", label: group.label, divider: groupIndex > 0 }, ...rows] : rows;
+        return group.label ? [{ kind: "heading", label: group.label, value: group.value, divider: groupIndex > 0 }, ...rows] : rows;
       }),
     [groups, perRow]
   );
@@ -166,9 +189,20 @@ export default function TilesView({ files, folders = NO_FOLDERS, onOpenFolder, f
     },
   });
 
+  const dropHere = place && folderPath ? { "data-drop-path": JSON.stringify(place), "data-drop-kind": "area" } : {};
+  /** The tiles a drag or right-click on `id` acts on: files from here, folders as themselves. */
+  const itemsAt = (id: string): DragItem[] =>
+    place && folderPath
+      ? dragItemsFor(selection.targetIds(id), files, place, (fid) => {
+          const value = valueOfFolder.get(fid);
+          return value == null ? null : folderPath(value);
+        })
+      : [];
+  const pressTile = (e: React.PointerEvent, id: string) => drag?.press(e, () => itemsAt(id));
+
   if (empty) {
     return (
-      <div className="flex items-center justify-center flex-1 text-neutral-500 text-sm">
+      <div {...dropHere} className="flex items-center justify-center flex-1 text-neutral-500 text-sm">
         No files
       </div>
     );
@@ -177,6 +211,7 @@ export default function TilesView({ files, folders = NO_FOLDERS, onOpenFolder, f
   return (
     <div
       ref={containerRef}
+      {...dropHere}
       className="flex-1 overflow-auto isolate outline-none"
       tabIndex={0}
       data-browse-keys
@@ -184,7 +219,7 @@ export default function TilesView({ files, folders = NO_FOLDERS, onOpenFolder, f
       onClick={selection.clear}
       onContextMenu={(e) => {
         e.preventDefault();
-        showContextMenu(withLead(backgroundMenu?.() ?? [], arrangementMenu(arrangementCtx)));
+        showContextMenu(withLead(backgroundMenu?.() ?? [], arrangementMenu(arrangementCtx, groupProperties)));
       }}
     >
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
@@ -204,6 +239,10 @@ export default function TilesView({ files, folders = NO_FOLDERS, onOpenFolder, f
                 ref={virtualizer.measureElement}
                 data-index={v.index}
                 style={place}
+                // Grouped by a property of one value: dropping on the heading gives files its value
+                {...(groupsTakeDrops && item.value != null
+                  ? { "data-drop-path": JSON.stringify([item.value]), "data-drop-source": ARRANGED_GROUPS }
+                  : {})}
                 className={item.divider ? "border-t border-neutral-700/60" : ""}
               >
                 <h2 className="px-5 pt-2.5 text-[15px] font-semibold text-neutral-400">{item.label}</h2>
@@ -232,15 +271,18 @@ export default function TilesView({ files, folders = NO_FOLDERS, onOpenFolder, f
                   <div
                     key={tile.id}
                     data-file-id={file?.file_id}
+                    data-drop-path={folder && folderPath ? JSON.stringify(folderPath(folder.value)) : undefined}
+                    onPointerDown={(e) => pressTile(e, tile.id)}
                     onClick={(e) => selection.onItemClick(e, tile.id)}
                     onDoubleClick={(e) => selection.onItemDoubleClick(e, tile.id)}
                     onContextMenu={(e) => {
-                      if (!folder || !folderMenu) return;
+                      const entries = folder ? folderMenu?.(folder.value) : fileMenu?.(itemsAt(tile.id));
+                      if (!entries || entries.length === 0) return;
                       e.preventDefault();
                       e.stopPropagation();
-                      showContextMenu(folderMenu(folder.value), { event: e });
+                      showContextMenu(entries, { event: e });
                     }}
-                    className="flex flex-col items-center gap-1 cursor-default select-none"
+                    className="flex flex-col items-center gap-1 rounded-md cursor-default select-none"
                     style={{ width: TILE_WIDTH }}
                   >
                     <div

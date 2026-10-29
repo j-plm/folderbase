@@ -1,13 +1,19 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
 import {
   DEFAULT_ARRANGEMENT,
   GROUP_OPTIONS,
   SORT_OPTIONS,
   defaultDirection,
+  isPropertyGroup,
   type Arrangement,
   type GroupBy,
+  type PropertyGrouping,
   type SortKey,
 } from "../lib/arrange";
+import { propName } from "../lib/fileColumns";
+import { groupByColumn } from "../lib/propertyGroups";
+import { propertyLabel } from "../lib/propertyTypes";
+import { useBrowse } from "./BrowseContext";
 import { toggleSort } from "../lib/columns";
 import type { MenuEntry } from "../lib/nativeMenu";
 
@@ -61,18 +67,71 @@ export function useArrangement(): ArrangementContextValue {
   return ctx;
 }
 
-/** Native menu entries for Group By / Sort By (toolbar button and background right-click). */
-export function arrangementMenu({ arrangement, setGroupBy, setSortKey }: ArrangementContextValue): MenuEntry[] {
+/**
+ * The arrangement as the location showing can use it: grouping by a property
+ * it doesn't have is no grouping, and grouping by one it has comes with how
+ * to read it.
+ */
+export function useArrangedBy(): {
+  arrangement: Arrangement;
+  byProperty?: PropertyGrouping;
+  /** Grouped by a property of one value (Select, Text, Number): each heading is a value, so it takes drops. */
+  groupsTakeDrops: boolean;
+} {
+  const { arrangement } = useArrangement();
+  const browse = useBrowse();
+  const properties = browse?.groupProperties;
+  const grouping = browse?.grouping;
+  const typeOf = browse?.dropContext?.typeOf;
+  return useMemo(() => {
+    const { groupBy } = arrangement;
+    if (!isPropertyGroup(groupBy)) return { arrangement, groupsTakeDrops: false };
+    if (!grouping || !properties?.includes(groupBy)) return { arrangement: { ...arrangement, groupBy: "none" }, groupsTakeDrops: false };
+    const single = !!typeOf && ["enum", "free_text", "number"].includes(typeOf(propName(groupBy)));
+    return { arrangement, byProperty: grouping, groupsTakeDrops: single };
+  }, [arrangement, properties, grouping, typeOf]);
+}
+
+/** The location's properties to group by (none outside a location). */
+export function useGroupProperties(): string[] {
+  return useBrowse()?.groupProperties ?? NO_PROPERTIES;
+}
+
+const NO_PROPERTIES: string[] = [];
+
+/** Group By's properties ("prop:Client"), after Finder's groups: a section each for Custom and Media. */
+export function propertyGroupEntries({ arrangement, setGroupBy }: ArrangementContextValue, properties: string[]): MenuEntry[] {
+  return groupByColumn(properties, (c) => c).flatMap(({ label, items }): MenuEntry[] => [
+    { type: "separator" },
+    { type: "header", text: label },
+    ...items.map(
+      (c): MenuEntry => ({
+        type: "check",
+        text: propertyLabel(propName(c)),
+        checked: arrangement.groupBy === c,
+        action: () => setGroupBy(c as GroupBy),
+      })
+    ),
+  ]);
+}
+
+/**
+ * Native menu entries for Group By / Sort By (toolbar button and background
+ * right-click). Group By offers Finder's groups, then `properties` (the
+ * location's, as "prop:Client"), sectioned as every list of properties is.
+ */
+export function arrangementMenu(ctx: ArrangementContextValue, properties: string[] = []): MenuEntry[] {
+  const { arrangement, setGroupBy, setSortKey } = ctx;
   return [
     {
       type: "submenu",
       text: "Group By",
-      items: GROUP_OPTIONS.map((o) => ({
-        type: "check" as const,
-        text: o.label,
-        checked: arrangement.groupBy === o.key,
-        action: () => setGroupBy(o.key),
-      })),
+      items: [
+        ...GROUP_OPTIONS.map(
+          (o): MenuEntry => ({ type: "check", text: o.label, checked: arrangement.groupBy === o.key, action: () => setGroupBy(o.key) })
+        ),
+        ...propertyGroupEntries(ctx, properties),
+      ],
     },
     {
       type: "submenu",

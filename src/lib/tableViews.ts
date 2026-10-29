@@ -1,6 +1,7 @@
 import { DATE_UNITS, type DateUnit } from "./dateFolders";
 import type { SortState } from "./columns";
-import type { FilterMatch, FilterRule } from "./dbTable";
+import type { FilterItem, FilterMatch } from "./dbTable";
+import { parseFilterItems, serializeFilterItems } from "./filterTree";
 import type { GroupLevel } from "./dbGroups";
 
 /** A saved view of a location's files, as the database stores it (see commands::location_views). */
@@ -23,7 +24,8 @@ export interface StoredView {
  * and folded groups are left out: they belong to the moment, not the view.
  */
 export interface TableDefinition {
-  filters: FilterRule[];
+  /** Filters and groups of them, combined by `match` (each group by its own). */
+  filters: FilterItem[];
   match: FilterMatch;
   sorts: SortState[];
   groups: GroupLevel[];
@@ -205,7 +207,7 @@ export function parseViewDefinition(json: string | null | undefined): ViewDefini
   }
   return {
     table: {
-      filters: list<FilterRule>(t.filters) ?? base.filters,
+      filters: parseFilterItems(t.filters) ?? base.filters,
       match: t.match === "any" ? "any" : "all",
       sorts: list<SortState>(t.sorts) ?? base.sorts,
       groups: list<GroupLevel>(t.groups) ?? base.groups,
@@ -232,9 +234,7 @@ export function parseViewDefinition(json: string | null | undefined): ViewDefini
 export function serializeViewDefinition(def: ViewDefinition): string {
   const t = def.table;
   const table: TableDefinition = {
-    filters: t.filters.map((f) =>
-      f.item ? { id: f.id, column: f.column, op: f.op, value: f.value, item: f.item } : { id: f.id, column: f.column, op: f.op, value: f.value }
-    ),
+    filters: serializeFilterItems(t.filters),
     match: t.match,
     sorts: t.sorts.map((s) => ({ key: s.key, direction: s.direction })),
     groups: t.groups.map((g) => ({ key: g.key, direction: g.direction })),

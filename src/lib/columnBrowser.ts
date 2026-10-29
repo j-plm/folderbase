@@ -5,7 +5,7 @@
 // `children`) open into a new column to the right.
 
 import type { FileRecord } from "../types";
-import { fileName, groupFiles, type Arrangement } from "./arrange";
+import { fileName, groupFiles, type Arrangement, type PropertyGrouping } from "./arrange";
 import { compareSortValues } from "./columns";
 
 export interface BrowserNode {
@@ -81,7 +81,7 @@ export interface NodeGroup {
  * Orders a column: folders on top (by name), then files arranged by the
  * current Sort By / Group By. When grouping, folders get their own group.
  */
-export function arrangeColumn(nodes: BrowserNode[], arrangement: Arrangement): NodeGroup[] {
+export function arrangeColumn(nodes: BrowserNode[], arrangement: Arrangement, byProperty?: PropertyGrouping): NodeGroup[] {
   const folders = nodes
     .filter(isFolder)
     .sort((a, b) =>
@@ -92,10 +92,13 @@ export function arrangeColumn(nodes: BrowserNode[], arrangement: Arrangement): N
 
   const fileGroups = groupFiles(
     files.map((n) => n.file!),
-    arrangement
+    arrangement,
+    new Date(),
+    byProperty
   ).map((g) => ({ label: g.label, nodes: g.files.map((f) => byId.get(f.file_id)!) }));
 
-  if (arrangement.groupBy === "none") {
+  // Not grouped (or by a property it can't read)
+  if (fileGroups.length === 1 && fileGroups[0].label === "") {
     return [{ label: "", nodes: [...folders, ...fileGroups[0].nodes] }];
   }
   return [

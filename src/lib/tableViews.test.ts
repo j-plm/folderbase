@@ -31,6 +31,9 @@ describe("parseViewDefinition", () => {
     const filters = [{ id: "a", column: "tags", op: "matches" as const, value: "{Year:4}", item: "n:2" }];
     const def = parseViewDefinition(serializeViewDefinition({ table: { ...emptyTable(), filters } }));
     expect(def.table.filters).toEqual(filters);
+    // Groups of filters keep their own And/Or
+    const grouped = [filters[0], { id: "g", match: "any" as const, items: [{ id: "b", column: "ext", op: "has" as const, value: "pdf" }] }];
+    expect(parseViewDefinition(serializeViewDefinition({ table: { ...emptyTable(), filters: grouped } })).table.filters).toEqual(grouped);
   });
 
   it("round-trips a hierarchy with branches", () => {

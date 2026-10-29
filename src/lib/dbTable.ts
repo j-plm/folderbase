@@ -48,7 +48,47 @@ export function listItems(items: string[], item: string | undefined): string[] {
   return at >= 0 && at < items.length ? [items[at]] : [];
 }
 
+/** How a list of filters combines: And (all hold) or Or (any one does). */
 export type FilterMatch = "all" | "any";
+
+/**
+ * Filters in brackets, with their own And/Or: "Client is Acme And (Tags has
+ * Rent Or Tags has Bills)". Groups can hold groups (see filterTree.ts).
+ */
+export interface FilterGroup {
+  id: string;
+  match: FilterMatch;
+  items: FilterItem[];
+}
+
+/** One entry of a filter list: a filter, or a group of them. */
+export type FilterItem = FilterRule | FilterGroup;
+
+export function isFilterGroup(item: FilterItem): item is FilterGroup {
+  return Array.isArray((item as FilterGroup).items);
+}
+
+/** A filter that has what it needs to narrow anything (a value, unless it's "is empty"). */
+export function isActiveRule(rule: FilterRule): boolean {
+  return !opNeedsValue(rule.op) || rule.value.trim() !== "";
+}
+
+/**
+ * Whether `items`, combined by `match`, hold for a row; `test` says whether one
+ * filter does. Filters still waiting for a value, and groups of only those, are
+ * left out, so a half-made Or doesn't let everything through. Null: nothing to test.
+ */
+export function evalFilters(items: FilterItem[], match: FilterMatch, test: (rule: FilterRule) => boolean): boolean | null {
+  let tested = false;
+  for (const item of items) {
+    const result = isFilterGroup(item) ? evalFilters(item.items, item.match, test) : isActiveRule(item) ? test(item) : null;
+    if (result == null) continue;
+    tested = true;
+    if (match === "all" && !result) return false;
+    if (match === "any" && result) return true;
+  }
+  return tested ? match === "all" : null;
+}
 
 export const FILTER_OPS: Record<ColumnKind, { op: FilterOp; label: string }[]> = {
   text: [
@@ -208,19 +248,18 @@ export function patternFor(text: string): CompiledPattern | null {
   return p;
 }
 
-/** Rows passing all (or any) of `rules`. No rules keeps every row. */
+/** Rows passing `items` combined by `match` (groups by their own). No filters keeps every row. */
 export function applyFilters<T>(
   rows: T[],
-  rules: FilterRule[],
+  items: FilterItem[],
   match: FilterMatch,
   getValue: (row: T, column: string) => unknown,
   kindOf: (column: string) => ColumnKind
 ): T[] {
-  if (rules.length === 0) return rows;
-  return rows.filter((row) => {
-    const test = (rule: FilterRule) => matchesRule(getValue(row, rule.column), kindOf(rule.column), rule);
-    return match === "all" ? rules.every(test) : rules.some(test);
-  });
+  if (items.length === 0) return rows;
+  return rows.filter(
+    (row) => evalFilters(items, match, (rule) => matchesRule(getValue(row, rule.column), kindOf(rule.column), rule)) !== false
+  );
 }
 
 /** Sorted by each key in turn; ties keep their order. Empty values sort last. */

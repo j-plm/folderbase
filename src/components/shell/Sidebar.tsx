@@ -14,6 +14,7 @@ import {
 import type { Location } from "../../lib/commands";
 import AddLocationModal from "./AddLocationModal";
 import Dialog, { DialogButton } from "../shared/Dialog";
+import AddedFolderSheet from "./AddedFolderSheet";
 import RenameField from "../shared/RenameField";
 import { SymbolIcon } from "../../lib/fileIcons";
 import { showContextMenu } from "../../lib/nativeMenu";
@@ -77,6 +78,8 @@ export default function Sidebar() {
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  /** The location whose Added Files folder is being chosen. */
+  const [addedFolderFor, setAddedFolderFor] = useState<Location | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   /** The location whose name is being edited in place. */
@@ -128,6 +131,7 @@ export default function Sidebar() {
     showContextMenu(
       [
         { type: "item", text: "Map Disk Folders…", action: () => openDiskFolders(loc.location_id) },
+        { type: "item", text: "Added Files Folder…", action: () => setAddedFolderFor(loc) },
         { type: "item", text: "Refresh", enabled: !refreshing.has(loc.location_id), action: () => refreshLocation(loc.location_id) },
         { type: "separator" },
         { type: "item", text: "Rename", action: () => setRenamingId(loc.location_id) },
@@ -505,6 +509,15 @@ export default function Sidebar() {
               </DialogButton>
             </>
           }
+        />
+      )}
+      {addedFolderFor && (
+        <AddedFolderSheet
+          location={addedFolderFor}
+          onClose={() => {
+            setAddedFolderFor(null);
+            void loadLocations();
+          }}
         />
       )}
       {deletingView && (

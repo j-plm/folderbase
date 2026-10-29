@@ -248,3 +248,16 @@ button {
     animation: none !important;
   }
 }
+
+/* Filing by drag: the folder a drop would go into, as Finder highlights it (contexts/FileDragContext) */
+[data-drop-over="item"] {
+  background: var(--blue-selection);
+  border-radius: 6px;
+}
+[data-drop-over="item"],
+[data-drop-over="item"] * {
+  color: #ffffff !important;
+}
+[data-drop-over="area"] {
+  box-shadow: inset 0 0 0 3px var(--blue-selection);
+}

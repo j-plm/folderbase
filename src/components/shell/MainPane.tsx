@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from "react";
+import { useEffect, useMemo, type CSSProperties } from "react";
 import { useNavigation } from "../../contexts/NavigationContext";
 import TilesView from "../views/TilesView";
 import ListView from "../views/ListView";
@@ -11,10 +11,16 @@ import { useBrowseKeys } from "../../hooks/useBrowseKeys";
 import { useOptionalLocationViews } from "../../contexts/LocationViewsContext";
 import { FolderIcon } from "../../lib/fileIcons";
 import { placeSteps } from "../../lib/folderTree";
+import { folderLabel, planDrop, type DragItem } from "../../lib/filing";
 import type { MenuEntry } from "../../lib/nativeMenu";
-import { getLocations } from "../../lib/commands";
+import { getLocations, openPaths } from "../../lib/commands";
 import PathBar, { type PathSegment } from "./PathBar";
 import NewFolderDialog from "./NewFolderDialog";
+import { FileDragProvider, useFileDrag } from "../../contexts/FileDragContext";
+import { useArrangedBy } from "../../contexts/ArrangementContext";
+import { isPropertyGroup } from "../../lib/arrange";
+import { ARRANGED_GROUPS } from "../../lib/fileDrag";
+import type { FolderLevel } from "../../lib/tableViews";
 
 // Content starts past the floating sidebar. Columns view applies the inset inside its own
 // horizontal scroller, so earlier columns slide under the sidebar as in Finder.
@@ -34,6 +40,29 @@ function viewStyle(mode: string): CSSProperties {
 }
 
 export default function MainPane() {
+  const { activeLocationId } = useNavigation();
+  // Filing by drag, and the location's undo history, in every view mode
+  return (
+    <FileDragProvider locationId={activeLocationId}>
+      <MainPaneContent />
+    </FileDragProvider>
+  );
+}
+
+function MainPaneContent() {
+  const drag = useFileDrag();
+  const browseNow = useBrowse();
+  // Grouped by a property of one value, Icons and List headings file into it (FileDragContext `registerSource`)
+  const { arrangement: arranged, byProperty, groupsTakeDrops } = useArrangedBy();
+  useEffect(() => {
+    const column = arranged.groupBy;
+    if (!drag || !browseNow || !byProperty || !groupsTakeDrops || !isPropertyGroup(column)) return;
+    const level: FolderLevel = { column, direction: "asc", next: null, branches: {} };
+    return drag.registerSource(ARRANGED_GROUPS, {
+      context: () => browseNow.dropContextWith(level),
+      fromOf: (file) => [byProperty.keyOf(file, column)?.label ?? ""],
+    });
+  }, [drag, browseNow, arranged.groupBy, byProperty, groupsTakeDrops]);
   const { activeLocationId, setActiveLocation, viewMode, diskFoldersLocationId, closeDiskFolders, editHierarchy, setEditHierarchy } =
     useNavigation();
   const browse = useBrowse();
@@ -45,6 +74,7 @@ export default function MainPane() {
     if (!browse) return null;
     const { tree, place, steps, filters, levelNames, viewFromFolder, groupsFor, go } = browse;
     return {
+      path: place,
       within: tree && place.length > 0 ? new Set(tree.filesAt(place).map((f) => f.file_id)) : null,
       name: steps[steps.length - 1]?.label ?? null,
       filters,
@@ -97,8 +127,35 @@ export default function MainPane() {
         : []),
     ];
   };
-  // With single folders skipped, a folder's menu is the folder it opens into
-  const folderMenu = (value: string) => folderMenuAt(browse.opens([...place, value]));
+  // With single folders skipped, a folder's menu is the folder it opens into, and drops go there too
+  const folderPath = (value: string) => browse.opens([...place, value]);
+  const folderMenu = (value: string) => folderMenuAt(folderPath(value));
+  /**
+   * A right-click on files: Open, and Remove from “Folder”, which takes them
+   * out of the folder they're shown in (its value only), into the one enclosing it.
+   */
+  const fileMenu = (items: DragItem[]): MenuEntry[] => {
+    const files = items.flatMap((i) => (i.kind === "file" ? [i] : []));
+    if (files.length === 0 || files.length < items.length) return [];
+    const entries: MenuEntry[] = [{ type: "item", text: "Open", action: () => void openPaths(files.map((f) => f.file.file_path)).catch(() => {}) }];
+    const from = files[0].from;
+    const ctx = browse.dropContext;
+    if (!from || from.length === 0 || !ctx || files.some((f) => JSON.stringify(f.from) !== JSON.stringify(from))) return entries;
+    const out = from.slice(0, -1);
+    // Even if the view's filters then leave them out: removing is what was asked for. Greyed where
+    // the folder's value can't be taken away (it's read from the file)
+    const removable = planDrop(files, out, ctx, { partial: true }).files > 0;
+    return [
+      ...entries,
+      { type: "separator" },
+      {
+        type: "item",
+        text: `Remove from “${folderLabel(ctx.tree, from, ctx.topLabel)}”`,
+        enabled: removable,
+        action: () => drag?.fileInto(files, out, { partial: true }),
+      },
+    ];
+  };
   /** Here's folders, each merged with the single folders it holds when they're skipped ("2024 › Tax"). */
   const folders = (here?.folders ?? []).map((entry) => {
     const lands = browse.opens([...place, entry.value]);
@@ -142,15 +199,18 @@ export default function MainPane() {
       onOpen: openLocation,
       menu: locationsMenu,
       menuKey: activeLocationId,
+      // The view's top; for a named view, its own segment takes drops there instead
+      dropPath: named ? undefined : [],
     },
     ...(named
-      ? [{ label: activeView.name, icon: <FolderIcon size={14} />, onOpen: () => go([]), menu: viewsMenu, menuKey: activeView.view_id }]
+      ? [{ label: activeView.name, icon: <FolderIcon size={14} />, onOpen: () => go([]), menu: viewsMenu, menuKey: activeView.view_id, dropPath: [] }]
       : []),
     ...browse.steps.map(
       (step): PathSegment => ({
         label: step.label,
         icon: <FolderIcon size={14} />,
         onOpen: () => go(step.path),
+        dropPath: step.path,
         menuKey: step.value,
         menu: () => [
           ...(tree?.contents(step.path.slice(0, -1)).folders ?? []).map(
@@ -191,6 +251,9 @@ export default function MainPane() {
             onOpenFolder={enter}
             folderMenu={folderMenu}
             backgroundMenu={backgroundMenu}
+            place={place}
+            folderPath={folderPath}
+            fileMenu={fileMenu}
           />
         )}
         {viewMode === "list" && here && (
@@ -201,14 +264,28 @@ export default function MainPane() {
             onOpenFolder={enter}
             folderMenu={folderMenu}
             backgroundMenu={backgroundMenu}
+            place={place}
+            folderPath={folderPath}
+            fileMenu={fileMenu}
           />
         )}
-        {viewMode === "columns" && tree && <ColumnsView tree={tree} place={place} onPlace={go} folderMenu={folderMenuAt} opens={browse.opens} placeMenu={(path) => browse.levelMenu(path)} />}
+        {viewMode === "columns" && tree && (
+          <ColumnsView
+            tree={tree}
+            place={place}
+            onPlace={go}
+            folderMenu={folderMenuAt}
+            opens={browse.opens}
+            placeMenu={(path) => browse.levelMenu(path)}
+            fileMenu={fileMenu}
+          />
+        )}
         {viewMode === "database" && (
           <LocationDatabaseView files={files} place={tablePlace} locationId={activeLocationId} onChanged={refresh} />
         )}
       </div>
-      <div style={{ ...INSET, ...CLEAR_PANEL }}>
+      <div style={{ ...INSET, ...CLEAR_PANEL }} className="relative">
+        <DropDetails />
         <PathBar segments={segments} />
       </div>
       <NewFolderDialog />
@@ -224,6 +301,28 @@ export default function MainPane() {
       {editHierarchy && (
         <HierarchyPanel locationId={activeLocationId} files={files} onClose={() => setEditHierarchy(false)} />
       )}
+    </div>
+  );
+}
+
+/**
+ * While dragging over a folder, what the drop would change, level by level,
+ * in a bar just above the path bar (the cursor only says the gist).
+ */
+function DropDetails() {
+  const status = useFileDrag()?.status;
+  if (!status || status.details.length === 0) return null;
+  return (
+    <div className="absolute inset-x-0 bottom-full flex items-center h-[28px] px-3 overflow-hidden border-t border-neutral-700/60 bg-neutral-900 text-[12px] text-neutral-400 whitespace-nowrap select-none pointer-events-none">
+      <span className="font-semibold text-neutral-100 shrink-0">{status.title}</span>
+      <span className="truncate">
+        {status.details.map((d) => (
+          <span key={d}>
+            <span className="mx-1.5">·</span>
+            {d}
+          </span>
+        ))}
+      </span>
     </div>
   );
 }

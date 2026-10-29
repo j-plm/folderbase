@@ -47,7 +47,7 @@ import {
   type ScopeCondition,
 } from "../../lib/scopes";
 import ScopeDialog from "./db/ScopeDialog";
-import RulesPanel, { RULES_PANEL_MIN_WIDTH } from "./db/RulesPanel";
+import RulesPanel, { RULES_PANEL_MIN_WIDTH, RULES_TABLE_MIN_WIDTH } from "./db/RulesPanel";
 import { definitionFromFilter, writeKeys, type RuleDefinition, type RuleEnv, type RulePlan, type RuleWrite, type StoredRule } from "../../lib/rules";
 import { impliedByFile as impliedByFiles, isEmptyValue, valueReader } from "../../lib/fileValues";
 import { NATIVE_KINDS, PROP_PREFIX, fileExtension, fileName, metaValue, nativeValue, propName } from "../../lib/fileColumns";
@@ -55,7 +55,10 @@ import { FileIcon, SymbolIcon } from "../../lib/fileIcons";
 import { useNavigation } from "../../contexts/NavigationContext";
 import { formatFinderDate, formatFinderSize, kindCategory } from "../../lib/arrange";
 import { flattenGroups, groupIds as groupIdsAll, groupRows, levelState, setLevelCollapsed, toggleCollapsed, type GroupLevel, type RowGroup } from "../../lib/dbGroups";
-import { folderGroupPath, type PlaceFilter } from "../../lib/folderTree";
+import { folderGroupPath, seedFromGroups, type PlaceFilter } from "../../lib/folderTree";
+import { useFileDrag } from "../../contexts/FileDragContext";
+import { useBrowse } from "../../contexts/BrowseContext";
+import type { DragItem } from "../../lib/filing";
 import {
   CELL_PADDING,
   cellBoxStyle,
@@ -109,7 +112,8 @@ import {
   parseInput,
   valueToText,
 } from "../../lib/propertyTypes";
-import { applyFilters, cycleSort, multiSort, newRule, type FilterMatch, type FilterRule } from "../../lib/dbTable";
+import { applyFilters, cycleSort, multiSort, newRule, type FilterItem, type FilterMatch } from "../../lib/dbTable";
+import { activeFilters, addItem, filterRules, mapRules } from "../../lib/filterTree";
 import {
   EMPTY_CELLS,
   cellKey,
@@ -133,6 +137,8 @@ import { HeaderNameEditor, ListCellEditor, ValueListEditor, PropertyValueView, T
 
 /** Where you are in the view's folders (BrowseContext), as the table follows it. */
 export interface TablePlace {
+  /** The folder you're in, as a path of folder values ([] at the view's top). */
+  path: string[];
   /**
    * The files under the folder you're in (null at the view's top): a soft
    * filter on the view, never saved into it. Counts and value lists still
@@ -234,6 +240,8 @@ function listNames(names: string[]): string {
 const GROUP_HEIGHT = 30;
 /** Each nested grouping level's heading steps in by this much. */
 const GROUP_INDENT = 16;
+/** The table's own groups, as a hierarchy drops file into (FileDragContext `registerSource`). */
+const TABLE_GROUPS = "table-groups";
 const INSET = 10;
 
 const TOOLBAR_BUTTON = "px-2.5 py-1 text-xs rounded-md border whitespace-nowrap transition-colors";
@@ -280,7 +288,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
   /** Grouping levels (outermost first) and the groups folded shut; both kept per location. */
   const [groupLevels, setGroupLevels] = useState<GroupLevel[]>([]);
   const [collapsed, setCollapsedState] = useState<ReadonlySet<string>>(() => new Set());
-  const [rules, setRules] = useState<FilterRule[]>([]);
+  const [rules, setRules] = useState<FilterItem[]>([]);
   const [match, setMatch] = useState<FilterMatch>("all");
   const [indexing, setIndexing] = useState<{
     scanned: number;
@@ -349,15 +357,21 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
   const listPreviewRef = useRef(listPreview);
   listPreviewRef.current = listPreview;
   const pendingWrites = useRef(0);
-  const history = useUndo(
+  // Filing by drag: Name cells drag rows; group headings take drops. Edits share the location's
+  // history with it, so Undo reaches them (and drops) in every view mode
+  const drag = useFileDrag();
+  const browse = useBrowse();
+  const sharedHistory = drag?.history;
+  const ownHistory = useUndo(
     locationId,
     (e) => setError(String(e)),
+    // Unused alongside the shared history, so it mustn't retitle Edit ▸ Undo
     (h) =>
-      setEditMenuLabels(
-        h.past[h.past.length - 1]?.label ?? null,
-        h.future[h.future.length - 1]?.label ?? null
-      ).catch(() => {})
+      sharedHistory
+        ? undefined
+        : setEditMenuLabels(h.past[h.past.length - 1]?.label ?? null, h.future[h.future.length - 1]?.label ?? null).catch(() => {})
   );
+  const history = sharedHistory ?? ownHistory;
 
   // Reset view state and load column prefs when switching locations
   useEffect(() => {
@@ -638,6 +652,59 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
     return groupRows(matched, groupLevels, groupKey, (columnId) => `No ${columnLabel(columnId)}`);
   }, [matched, groupLevels, groupKey, place, folderGroups]);
   const { items, rows: sorted } = useMemo(() => flattenGroups(matched, groups, collapsed), [matched, groups, collapsed]);
+
+  /** The table's groups as a hierarchy drops can file into: only when grouped by properties of one value (a heading is then one value). */
+  const groupRoot = useMemo(
+    () =>
+      groupLevels.length > 0 &&
+      groupLevels.every((l) => l.key.startsWith(PROP_PREFIX) && ["enum", "free_text", "number"].includes(typeOf(propName(l.key))))
+        ? seedFromGroups(groupLevels)
+        : null,
+    [groupLevels, typeOf]
+  );
+  useEffect(() => {
+    if (!drag || !browse || !groupRoot) return;
+    return drag.registerSource(TABLE_GROUPS, {
+      context: () => browse.dropContextWith(groupRoot),
+      fromOf: (file) => groupLevels.map((l) => groupKey(file, l.key)?.label ?? ""),
+    });
+  }, [drag, browse, groupRoot, groupLevels, groupKey]);
+  /** Where each group heading takes drops: a folder group its folder, a property group its values (in TABLE_GROUPS). */
+  const groupTargets = useMemo(() => {
+    const map = new Map<string, { path: string[]; source?: string }>();
+    const walk = (list: RowGroup<FileRecord>[], parent: string[], parentId: string) => {
+      for (const g of list) {
+        const folder = folderGroupPath(g.id);
+        if (folder) {
+          map.set(g.id, { path: folder });
+          walk(g.children, folder, g.id);
+        } else if (groupRoot) {
+          // A group's id ends "column=label" ("column=" for the No-value group)
+          const level = groupLevels[g.depth];
+          const value = g.id.slice((parentId ? parentId.length + 1 : 0) + level.key.length + 1);
+          const path = [...parent, value];
+          map.set(g.id, { path, source: TABLE_GROUPS });
+          walk(g.children, path, g.id);
+        }
+      }
+    };
+    if (groups) walk(groups, [], "");
+    return map;
+  }, [groups, groupRoot, groupLevels]);
+  /** Each row's folder group (its first, deepest), as where it's dragged from; otherwise the folder you're in. */
+  const rowFrom = useMemo(() => {
+    const map = new Map<string, string[]>();
+    const walk = (list: RowGroup<FileRecord>[]) => {
+      for (const g of list) {
+        walk(g.children);
+        const target = groupTargets.get(g.id);
+        if (!target || target.source) continue;
+        for (const row of g.rows) if (!map.has(row.file_id)) map.set(row.file_id, target.path);
+      }
+    };
+    if (groups) walk(groups);
+    return map;
+  }, [groups, groupTargets]);
   /**
    * Row keys: the file's id, or with folder groups, a later copy of a file in
    * several folders (a Multi-select) gets its own.
@@ -1150,14 +1217,14 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
     const newId = PROP_PREFIX + to;
     updateVisibleProperties((prev) => prev.map((p) => (p === from ? to : p)));
     setColumnOrder((prev) => prev.map((id) => (id === oldId ? newId : id)));
-    setRules((rs) => rs.map((r) => (r.column === oldId ? { ...r, column: newId } : r)));
+    setRules((rs) => mapRules(rs, (r) => (r.column === oldId ? { ...r, column: newId } : r)));
     setSorts((ss) => ss.map((s) => (s.key === oldId ? { ...s, key: newId } : s)));
     setGroupLevels((gs) => gs.map((g) => (g.key === oldId ? { ...g, key: newId } : g)));
   }
 
   function removeFromView(name: string) {
     updateVisibleProperties((prev) => prev.filter((p) => p !== name));
-    setRules((rs) => rs.filter((r) => r.column !== PROP_PREFIX + name));
+    setRules((rs) => mapRules(rs, (r) => (r.column === PROP_PREFIX + name ? null : r)));
     setSorts((ss) => ss.filter((s) => s.key !== PROP_PREFIX + name));
     setGroupLevels((gs) => gs.filter((g) => g.key !== PROP_PREFIX + name));
   }
@@ -1362,7 +1429,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
       type: "item",
       text: `Filter by ${col.label}…`,
       action: () => {
-        setRules((rs) => [...rs, newRule(col.id, kindOf(col.id))]);
+        setRules((rs) => addItem(rs, null, newRule(col.id, kindOf(col.id))));
         setPanel("filter");
       },
     });
@@ -1891,9 +1958,11 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
   }
 
   // Edit ▸ Undo / Redo (and their shortcuts) reach this view's history while it's shown
+  // (the shared history takes them itself)
   const { undo, redo } = history;
-  useEffect(() => setUndoTarget({ undo, redo }), [undo, redo]);
-  useEffect(() => () => void setEditMenuLabels(null, null).catch(() => {}), []);
+  const shared = !!sharedHistory;
+  useEffect(() => (shared ? undefined : setUndoTarget({ undo, redo })), [shared, undo, redo]);
+  useEffect(() => (shared ? undefined : () => void setEditMenuLabels(null, null).catch(() => {})), [shared]);
 
   // ── Fill handle ───────────────────────────────────────────────────────────
 
@@ -2618,6 +2687,17 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
     );
   }
 
+  /** A drag from a Name cell carries the selected rows (or just this one), out of the app or onto a folder or group. */
+  function pressName(e: React.PointerEvent, id: string) {
+    drag?.press(e, () => {
+      const byId = new Map(sorted.map((f) => [f.file_id, f]));
+      return selection.targetIds(id).flatMap((rowId): DragItem[] => {
+        const file = byId.get(rowId);
+        return file ? [{ kind: "file", file, from: rowFrom.get(rowId) ?? place?.path ?? [] }] : [];
+      });
+    });
+  }
+
   function renderCell(col: ColumnDef, file: FileRecord, rowIdx: number, rowSelected: boolean) {
     if (col.id.startsWith(PROP_PREFIX)) return renderPropertyCell(col, file, rowIdx);
     const style = cellBoxStyle(layout.widths[col.id], layout.phaseOf(col.id));
@@ -2639,6 +2719,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
                   }
                 : style
             }
+            onPointerDown={(e) => pressName(e, file.file_id)}
             className={`shrink-0 self-stretch px-3 whitespace-nowrap overflow-visible flex items-center gap-1.5 text-neutral-100 ${
               isFrozen ? `rounded-l-md ${rowSelected ? "native-selected" : rowIdx % 2 === 1 ? "bg-neutral-850" : "bg-neutral-900"}` : ""
             }`}
@@ -2850,11 +2931,11 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
     editing && editAnchor && (typeOf(propName(editing.ref.col)) === "enum" || typeOf(propName(editing.ref.col)) === "array")
       ? editing
       : null;
-  const activeRules = rules.filter((r) => r.op === "empty" || r.op === "not_empty" || r.value.trim() !== "");
+  const activeRules = filterRules(activeFilters(rules));
 
   return (
     // With the Rules panel open, the table keeps to the space beside it (so every column can be scrolled into view)
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative" style={rulesOpen ? { paddingRight: `min(${rulesWidth}px, calc(100% - 280px))` } : undefined}>
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative" style={rulesOpen ? { paddingRight: `min(${rulesWidth}px, calc(100% - ${RULES_TABLE_MIN_WIDTH}px))` } : undefined}>
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-2.5 border-b border-neutral-700/60 shrink-0">
         <span className="flex-1 min-w-0 truncate whitespace-nowrap text-neutral-500 text-xs">
@@ -3045,7 +3126,10 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
               : "No files match your search or filters"}
           </div>
         ) : (
-          <div style={{ paddingLeft: INSET, paddingRight: INSET }}>
+          <div
+            style={{ paddingLeft: INSET, paddingRight: INSET }}
+            {...(place ? { "data-drop-path": JSON.stringify(place.path), "data-drop-kind": "area" } : {})}
+          >
             <div
               ref={rowsRef}
               style={{
@@ -3061,6 +3145,12 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
                   return (
                     <div
                       key={`group:${group.id}`}
+                      {...(groupTargets.has(group.id)
+                        ? {
+                            "data-drop-path": JSON.stringify(groupTargets.get(group.id)!.path),
+                            "data-drop-source": groupTargets.get(group.id)!.source,
+                          }
+                        : {})}
                       role="button"
                       aria-expanded={!item.collapsed}
                       style={{

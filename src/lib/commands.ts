@@ -23,10 +23,13 @@ export interface Location {
   library: string;
   added_at: string;
   last_indexed: string | null;
+  /** Where files dropped in from outside are copied, relative to the root (null: "Added Files"). */
+  added_folder: string | null;
 }
 
-export async function pickDirectory(): Promise<string | null> {
-  const result = await open({ directory: true, multiple: false });
+/** Asks for a folder, starting in `defaultPath` when given. */
+export async function pickDirectory(defaultPath?: string): Promise<string | null> {
+  const result = await open({ directory: true, multiple: false, defaultPath });
   if (Array.isArray(result)) return result[0] ?? null;
   return result ?? null;
 }
@@ -63,13 +66,18 @@ export async function getLocations(): Promise<Location[]> {
   return invoke<Location[]>("get_locations");
 }
 
-/** Adds a location; `excluded` folders (absolute paths inside it) are never scanned. */
+/**
+ * Adds a location; `excluded` folders (absolute paths inside it) are never
+ * scanned. `addedFolder` (relative to it) is where files dropped in from
+ * outside will be copied; left out, "Added Files".
+ */
 export async function addLocation(
   rootPath: string,
   name: string,
-  excluded: string[] = []
+  excluded: string[] = [],
+  addedFolder: string | null = null
 ): Promise<Location> {
-  return invoke<Location>("add_location", { rootPath, name, excluded });
+  return invoke<Location>("add_location", { rootPath, name, excluded, addedFolder });
 }
 
 export interface Subfolder {
@@ -443,6 +451,47 @@ export function hapticFeedback(pattern: "alignment" | "levelChange"): void {
 /** Opens several files together, the way Finder opens a multiple selection. */
 export async function openPaths(paths: string[]): Promise<void> {
   return invoke<void>("open_paths", { paths });
+}
+
+/**
+ * Copies files dropped in from outside into the location's holding folder
+ * (those already inside it stay put) and indexes them. Resolves to every
+ * dropped file's path in the location, and what was copied in.
+ */
+export async function importFiles(locationId: string, paths: string[]): Promise<Imported> {
+  return invoke<Imported>("import_files", { locationId, paths });
+}
+
+export interface Imported {
+  /** Every dropped file's path in the location. */
+  files: string[];
+  /** The Added Files folder they were copied into. */
+  folder: string;
+  /** What was copied in (directly in `folder`). */
+  copies: string[];
+}
+
+/** Undoes a drop from outside: the `copies` it made in `folder` go to the Trash, with their records. */
+export async function trashAddedFiles(locationId: string, folder: string, copies: string[]): Promise<void> {
+  return invoke<void>("trash_added_files", { locationId, folder, copies });
+}
+
+/**
+ * Chooses a location's Added Files folder (absolute, or relative to it; "" for
+ * the default). With `moveFiles`, what's in the old one moves there, values and all.
+ */
+export async function setAddedFolder(locationId: string, folder: string, moveFiles: boolean): Promise<Location> {
+  return invoke<Location>("set_added_folder", { locationId, folder, moveFiles });
+}
+
+/**
+ * Hands a drag over to the system, so the files can be dropped into Finder or
+ * another app. Always a copy: a drop on Finder never moves a file out of its
+ * location. The image carries on from the icon dragged in the window: `size`
+ * points square, `offset` right of and below the pointer.
+ */
+export async function dragOut(paths: string[], size: number, offset: number): Promise<void> {
+  return invoke<void>("drag_out", { paths, size, offset });
 }
 
 export interface PathMappingNode {

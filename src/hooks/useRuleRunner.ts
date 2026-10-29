@@ -13,7 +13,7 @@ const SETTLE_MS = 400;
  * Rules only fill empty values and never rewrite their own, so the reload
  * after a run finds nothing more to do. Automatic runs aren't undoable.
  */
-export function useRuleRunner(locationId: string | null, files: FileRecord[], refresh: () => Promise<void>) {
+export function useRuleRunner(locationId: string | null, files: FileRecord[], refresh: () => Promise<unknown>) {
   const running = useRef(false);
   const again = useRef(false);
 

@@ -1,4 +1,17 @@
-import { listItems, matchesRule, newRule, patternFor, patternMatch, type ColumnKind, type FilterMatch, type FilterRule } from "./dbTable";
+import {
+  evalFilters,
+  isFilterGroup,
+  listItems,
+  matchesRule,
+  newRule,
+  patternFor,
+  patternMatch,
+  type ColumnKind,
+  type FilterItem,
+  type FilterMatch,
+  type FilterRule,
+} from "./dbTable";
+import { activeFilters, filterRules, newGroup, parseFilterItems, withFreshIds } from "./filterTree";
 import { FormulaError, runFormula, type FormulaContext } from "./formula";
 import { DATE_FORMATS, parseDateAs, type ExampleSlot } from "./patterns";
 import { coerceValue, dateKey, dateTimeKey, listValues, parseNumber, timeOfKey, valueToText } from "./propertyTypes";
@@ -42,7 +55,8 @@ export interface RuleAction {
 
 export interface RuleDefinition {
   match: FilterMatch;
-  conditions: FilterRule[];
+  /** Conditions and groups of them, combined by `match` (each group by its own), as the Filter panel's. */
+  conditions: FilterItem[];
   actions: RuleAction[];
   /**
    * The example slots were picked from, kept so the picks can be adjusted later:
@@ -88,7 +102,7 @@ export function parseDefinition(json: string): RuleDefinition {
     const d = JSON.parse(json) as Partial<RuleDefinition>;
     return {
       match: d.match === "any" ? "any" : "all",
-      conditions: Array.isArray(d.conditions) ? d.conditions : [],
+      conditions: parseFilterItems(d.conditions) ?? [],
       actions: Array.isArray(d.actions) ? d.actions.map((a) => ({ ...newAction(), ...a })) : [],
       example: d.example,
     };
@@ -99,42 +113,63 @@ export function parseDefinition(json: string): RuleDefinition {
 
 /**
  * A new rule's conditions from the table's current context: the folder it's
- * in (its place's conditions), its filter rules (with all/any) and the search
- * text as "Name contains …". A rule has one all/any, so the folder joins only
- * filters that all hold (or a single one); "any of" several filters keeps
- * just the filters.
+ * in (its place's conditions), its filters (with their And/Or and groups) and
+ * the search text as "Name contains …", all of which must hold. Filters joined
+ * by Or go in a group of their own when anything else joins them.
  */
-export function definitionFromFilter(rules: FilterRule[], match: FilterMatch, search: string, place: FilterRule[] = []): RuleDefinition {
-  const fresh = (r: FilterRule) => ({ ...r, id: Math.random().toString(36).slice(2) });
-  const own = rules.filter((r) => r.op === "empty" || r.op === "not_empty" || r.value.trim() !== "").map(fresh);
-  if (search.trim()) own.push({ ...newRule("name", "text"), op: "contains", value: search.trim() });
-  if (match === "any" && own.length > 1) return { match, conditions: own, actions: [newAction()] };
-  return { match: "all", conditions: [...place.map(fresh), ...own], actions: [newAction()] };
+export function definitionFromFilter(filters: FilterItem[], match: FilterMatch, search: string, place: FilterRule[] = []): RuleDefinition {
+  const own = withFreshIds(activeFilters(filters));
+  const also: FilterItem[] = withFreshIds(place);
+  if (search.trim()) also.push({ ...newRule("name", "text"), op: "contains", value: search.trim() });
+  if (match === "any" && own.length > 1) {
+    if (also.length === 0) return { match, conditions: own, actions: [newAction()] };
+    return { match: "all", conditions: [...also.slice(0, place.length), newGroup("any", own), ...also.slice(place.length)], actions: [newAction()] };
+  }
+  return { match: "all", conditions: [...also.slice(0, place.length), ...own, ...also.slice(place.length)], actions: [newAction()] };
 }
 
 /**
  * The filter's conditions added to a rule's own, skipping any it already has.
- * A rule with no conditions yet takes the filter's all/any too.
+ * A rule with no conditions yet takes the filter's And/Or too; otherwise
+ * filters joined the other way come in as a group, so both still hold.
  */
 export function withFilterConditions(def: RuleDefinition, filter: RuleDefinition): RuleDefinition {
-  const same = (a: FilterRule, b: FilterRule) => a.column === b.column && a.op === b.op && a.value === b.value && a.item === b.item;
-  const added = filter.conditions.filter((c) => !def.conditions.some((d) => same(c, d)));
+  const same = (a: FilterItem, b: FilterItem): boolean =>
+    isFilterGroup(a) || isFilterGroup(b)
+      ? isFilterGroup(a) && isFilterGroup(b) && a.match === b.match && a.items.length === b.items.length && a.items.every((x, i) => same(x, b.items[i]))
+      : a.column === b.column && a.op === b.op && a.value === b.value && a.item === b.item;
+  if (def.conditions.length === 0) return filter.conditions.length > 0 ? { ...def, match: filter.match, conditions: filter.conditions } : def;
+  // Joined the other way, the filter's conditions are one thing to add: as a group
+  const asGroup = filter.match !== def.match && filter.conditions.length > 1;
+  const incoming = asGroup ? [newGroup(filter.match, filter.conditions)] : filter.conditions;
+  const added = incoming.filter((c) => !def.conditions.some((d) => same(c, d)));
   if (added.length === 0) return def;
-  return {
-    ...def,
-    match: def.conditions.length === 0 ? filter.match : def.match,
-    conditions: [...def.conditions, ...added],
-  };
+  return { ...def, conditions: [...def.conditions, ...added] };
 }
 
 /** The slots a rule's patterns can fill: from every "matches pattern" condition. */
 export function ruleSlots(def: RuleDefinition): string[] {
   const slots: string[] = [];
-  for (const c of def.conditions) {
+  for (const c of filterRules(def.conditions)) {
     if (c.op !== "matches") continue;
     for (const s of patternFor(c.value.trim())?.slots ?? []) if (!slots.includes(s)) slots.push(s);
   }
   return slots;
+}
+
+/**
+ * The "matches pattern" conditions a file must meet, whatever else it does:
+ * those reached through And alone (a group of one joins as And). A file
+ * meeting everything else but one of these is reported as not fitting the pattern.
+ */
+function requiredPatterns(items: FilterItem[], match: FilterMatch): Set<string> {
+  const out = new Set<string>();
+  if (match === "any" && items.length > 1) return out;
+  for (const item of items) {
+    if (isFilterGroup(item)) for (const id of requiredPatterns(item.items, item.match)) out.add(id);
+    else if (item.op === "matches") out.add(item.id);
+  }
+  return out;
 }
 
 // ── Running ─────────────────────────────────────────────────────────────────
@@ -458,28 +493,24 @@ export function planRule(
     if (action.mode === "same") lookups.set(action.id, sameLookup(action, files, env));
   }
 
+  const conditions = filterRules(def.conditions);
+  const required = requiredPatterns(def.conditions, def.match);
   for (const file of files) {
-    const results = def.conditions.map((c) => matchesRule(env.valueOf(file, c.column), env.kindOf(c.column), c));
-    let matched: boolean;
-    let nomatch = false;
-    if (def.match === "any" && def.conditions.length > 0) {
-      matched = results.some(Boolean);
-    } else {
-      matched = results.every(Boolean);
-      // Everything but a pattern holds: the name just doesn't fit it
-      nomatch =
-        !matched &&
-        def.conditions.some((c, i) => c.op === "matches" && !results[i]) &&
-        def.conditions.every((c, i) => c.op === "matches" || results[i]);
-    }
+    const results = new Map(conditions.map((c) => [c.id, matchesRule(env.valueOf(file, c.column), env.kindOf(c.column), c)]));
+    const matched = evalFilters(def.conditions, def.match, (c) => results.get(c.id)!) !== false;
+    // Everything but a pattern that has to hold holds: the name just doesn't fit it
+    const nomatch =
+      !matched &&
+      conditions.some((c) => required.has(c.id) && !results.get(c.id)) &&
+      evalFilters(def.conditions, def.match, (c) => required.has(c.id) || results.get(c.id)!) !== false;
     if (!matched && !nomatch) continue;
     // What each pattern read: the text that fitted, or what was there when none did
     const sources: { column: string; text: string }[] = [];
     const slots: Record<string, string> = {};
-    def.conditions.forEach((c, i) => {
+    conditions.forEach((c) => {
       if (c.op !== "matches") return;
       const value = env.valueOf(file, c.column);
-      const pattern = results[i] ? patternFor(c.value.trim()) : null;
+      const pattern = results.get(c.id) ? patternFor(c.value.trim()) : null;
       const found = pattern ? patternMatch(pattern, value, c.item) : null;
       if (found) {
         sources.push({ column: c.column, text: found.text });

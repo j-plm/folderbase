@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getLocationProperties, getLocations, getProperties, getPropertyScopes, getPropertyValues } from "../../lib/commands";
 import { scopesByName } from "../../lib/scopes";
+import { HOLDING_FOLDER } from "../../lib/fileDrag";
 import type { Property, PropertyScope, ValueType } from "../../types";
 
 /**
@@ -10,6 +11,8 @@ import type { Property, PropertyScope, ValueType } from "../../types";
 export function useFolderSource(locationId: string | null) {
   const [library, setLibrary] = useState<string | null>(null);
   const [locationName, setLocationName] = useState<string | null>(null);
+  /** Where files dropped in from outside are copied, relative to the location. */
+  const [addedFolder, setAddedFolder] = useState<string>(HOLDING_FOLDER);
   const [registry, setRegistry] = useState<Property[]>([]);
   const [scopeRows, setScopeRows] = useState<PropertyScope[]>([]);
   const [metadataKeys, setMetadataKeys] = useState<string[]>([]);
@@ -33,6 +36,7 @@ export function useFolderSource(locationId: string | null) {
     setRegisteredValues(Object.fromEntries(values));
     setLibrary(lib);
     setLocationName(location?.name ?? null);
+    setAddedFolder(location?.added_folder ?? HOLDING_FOLDER);
     setRegistry(props);
     setScopeRows(scopes);
     setMetadataKeys(keys);
@@ -40,6 +44,10 @@ export function useFolderSource(locationId: string | null) {
   }, [locationId]);
   useEffect(() => {
     reload().catch(() => {});
+    // A location's settings changed elsewhere (its Added Files folder)
+    const onChanged = () => void reload().catch(() => {});
+    window.addEventListener("location-changed", onChanged);
+    return () => window.removeEventListener("location-changed", onChanged);
   }, [reload]);
 
   /** Library-scoped properties win over global ones of the same name. */
@@ -73,5 +81,5 @@ export function useFolderSource(locationId: string | null) {
     [metadataKeys, registry]
   );
 
-  return { library, locationName, valuesOf, propertyIdOf, typeOf, scopes, properties, reload, loaded: loadedFor === locationId };
+  return { library, locationName, addedFolder, valuesOf, propertyIdOf, typeOf, scopes, properties, reload, loaded: loadedFor === locationId };
 }

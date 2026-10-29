@@ -224,12 +224,7 @@ pub fn rename_in_definition(def: &mut Value, from: &str, to: &str) -> bool {
     let mut changed = false;
     let old_column = format!("prop:{from}");
     if let Some(conditions) = def.get_mut("conditions").and_then(Value::as_array_mut) {
-        for c in conditions {
-            if c.get("column").and_then(Value::as_str) == Some(old_column.as_str()) {
-                c["column"] = Value::String(format!("prop:{to}"));
-                changed = true;
-            }
-        }
+        changed |= rename_in_conditions(conditions, &old_column, &format!("prop:{to}"));
     }
     if let Some(actions) = def.get_mut("actions").and_then(Value::as_array_mut) {
         for a in actions {
@@ -274,6 +269,20 @@ pub fn rename_in_definition(def: &mut Value, from: &str, to: &str) -> bool {
     changed
 }
 
+/// Renames a column in conditions, and in the groups of conditions among them (`items`).
+fn rename_in_conditions(conditions: &mut [Value], old_column: &str, new_column: &str) -> bool {
+    let mut changed = false;
+    for c in conditions {
+        if let Some(items) = c.get_mut("items").and_then(Value::as_array_mut) {
+            changed |= rename_in_conditions(items, old_column, new_column);
+        } else if c.get("column").and_then(Value::as_str) == Some(old_column) {
+            c["column"] = Value::String(new_column.to_string());
+            changed = true;
+        }
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::rename_in_definition;
@@ -294,6 +303,25 @@ mod tests {
         assert_eq!(def["conditions"][1]["column"], "name");
         assert_eq!(def["actions"][0]["property"], "Customer");
         assert_eq!(def["actions"][1]["value"], "upper(prop(\"Customer\"))");
+    }
+
+    #[test]
+    fn renames_conditions_inside_groups() {
+        let mut def = json!({
+            "match": "all",
+            "conditions": [
+                { "column": "name", "op": "contains", "value": "x" },
+                { "id": "g", "match": "any", "items": [
+                    { "column": "prop:Client", "op": "has", "value": "Acme" },
+                    { "id": "h", "match": "all", "items": [{ "column": "prop:Client", "op": "empty", "value": "" }] }
+                ] }
+            ],
+            "actions": []
+        });
+        assert!(rename_in_definition(&mut def, "Client", "Customer"));
+        assert_eq!(def["conditions"][1]["items"][0]["column"], "prop:Customer");
+        assert_eq!(def["conditions"][1]["items"][1]["items"][0]["column"], "prop:Customer");
+        assert!(!rename_in_definition(&mut def, "Client", "Customer"));
     }
 
     #[test]

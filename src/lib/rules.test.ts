@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { formatForSlot, columnByName, columnPart, definitionFromFilter, parseDefinition, planRule, planRules, ruleSlots, withFilterConditions, writeKeys, type RuleDefinition, type RuleEnv } from "./rules";
 import { parseDateAs } from "./patterns";
+import { filterRules } from "./filterTree";
+import type { FilterGroup } from "./dbTable";
 import { PROP_PREFIX, nativeValue, NATIVE_KINDS, KIND_BY_TYPE, metaValue } from "./fileColumns";
 import type { FileRecord, ValueType } from "../types";
 
@@ -68,6 +70,33 @@ describe("planRule", () => {
     expect(plan.counts).toMatchObject({ match: 3, change: 3, nomatch: 1 });
     const narrow = planRule("r", { ...statements, conditions: [{ id: "c", column: "name", op: "contains", value: "Caleb" }] }, files, env());
     expect(narrow.rows.map((r) => r.file.file_id)).toEqual(["4"]);
+  });
+
+  it("reads conditions in groups, each with its own And/Or", () => {
+    // Pattern And (Caleb Or Palmer): the pattern must hold, so Palmer doesn't fit it
+    const grouped: RuleDefinition = {
+      ...statements,
+      conditions: [
+        ...statements.conditions,
+        {
+          id: "g",
+          match: "any",
+          items: [
+            { id: "c2", column: "name", op: "contains", value: "Caleb" },
+            { id: "c3", column: "name", op: "contains", value: "Palmer" },
+          ],
+        },
+      ],
+    };
+    const plan = planRule("r", grouped, files, env());
+    expect(plan.rows.map((r) => [r.file.file_id, r.status])).toEqual([
+      ["3", "nomatch"],
+      ["4", "change"],
+    ]);
+    // A pattern in an Or isn't required: a file meeting the other side matches without its slots
+    const either = planRule("r", { ...grouped, match: "any" }, files, env());
+    expect(either.rows.flatMap((r) => r.problems)).not.toContain("doesn't fit the pattern");
+    expect(either.counts.match).toBe(4);
   });
 
   it("never rewrites its own value once changed by hand", () => {
@@ -186,8 +215,9 @@ describe("definitions", () => {
       "any",
       "2025"
     );
-    expect(def.match).toBe("any");
-    expect(def.conditions.map((c) => [c.column, c.op, c.value])).toEqual([
+    // The search narrows what the filters show, so it must hold too
+    expect(def.match).toBe("all");
+    expect(filterRules(def.conditions).map((c) => [c.column, c.op, c.value])).toEqual([
       ["prop:Tags", "has", "Ruben"],
       ["name", "contains", "2025"],
     ]);
@@ -198,15 +228,43 @@ describe("definitions", () => {
     const place = [{ id: "p", column: "prop:Person", op: "is" as const, value: "Josh" }];
     const one = definitionFromFilter([{ id: "1", column: "ext", op: "has", value: "pdf" }], "any", "", place);
     expect(one.match).toBe("all");
-    expect(one.conditions.map((c) => [c.column, c.value])).toEqual([
+    expect(filterRules(one.conditions).map((c) => [c.column, c.value])).toEqual([
       ["prop:Person", "Josh"],
       ["ext", "pdf"],
     ]);
     expect(definitionFromFilter([], "all", "", place).conditions).toHaveLength(1);
-    // "Any of" several filters can't also require the folder
-    const any = definitionFromFilter([{ id: "1", column: "ext", op: "has", value: "pdf" }], "any", "2025", place);
-    expect(any.match).toBe("any");
-    expect(any.conditions.map((c) => c.column)).toEqual(["ext", "name"]);
+    // Filters joined by Or come in as a group, so the folder and search still hold
+    const any = definitionFromFilter(
+      [
+        { id: "1", column: "ext", op: "has", value: "pdf" },
+        { id: "2", column: "ext", op: "has", value: "jpg" },
+      ],
+      "any",
+      "2025",
+      place
+    );
+    expect(any.match).toBe("all");
+    expect(any.conditions).toHaveLength(3);
+    const [folder, group, search] = any.conditions;
+    expect(folder).toMatchObject({ column: "prop:Person", value: "Josh" });
+    expect((group as FilterGroup).match).toBe("any");
+    expect(filterRules([group]).map((c) => c.value)).toEqual(["pdf", "jpg"]);
+    expect(search).toMatchObject({ column: "name", value: "2025" });
+  });
+
+  it("keeps the filter's groups", () => {
+    const def = definitionFromFilter(
+      [
+        { id: "1", column: "ext", op: "has", value: "pdf" },
+        { id: "g", match: "any", items: [{ id: "2", column: "prop:Tags", op: "has", value: "Rent" }, { id: "3", column: "prop:Tags", op: "has", value: "" }] },
+      ],
+      "all",
+      ""
+    );
+    // The empty filter goes; the group keeps its Or
+    expect(def.conditions).toHaveLength(2);
+    expect(def.conditions[1]).toMatchObject({ match: "any", items: [{ value: "Rent" }] });
+    expect(def.conditions[1].id).not.toBe("g");
   });
 
   it("adds the filter's conditions it doesn't already have", () => {
@@ -223,13 +281,21 @@ describe("definitions", () => {
     expect(empty.conditions).toHaveLength(2);
 
     const own = definitionFromFilter([{ id: "x", column: "ext", op: "is", value: "pdf" }], "all", "");
+    // Joined by Or while the rule's are And: they come in as one group
     const merged = withFilterConditions(own, filter);
     expect(merged.match).toBe("all");
-    expect(merged.conditions.map((c) => [c.column, c.value])).toEqual([
+    expect(merged.conditions).toHaveLength(2);
+    expect(merged.conditions[1]).toMatchObject({ match: "any" });
+    expect(filterRules(merged.conditions).map((c) => [c.column, c.value])).toEqual([
       ["ext", "pdf"],
       ["prop:Tags", "Ruben"],
+      ["ext", "pdf"],
     ]);
     expect(withFilterConditions(merged, filter)).toBe(merged);
+
+    // Joined the same way: only the ones it lacks
+    const alsoAll = withFilterConditions(own, { ...filter, match: "all" });
+    expect(filterRules(alsoAll.conditions).map((c) => c.value)).toEqual(["pdf", "Ruben"]);
   });
 
   it("lists the slots its patterns fill, and survives a damaged definition", () => {

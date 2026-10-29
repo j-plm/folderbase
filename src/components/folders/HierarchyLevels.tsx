@@ -50,7 +50,7 @@ export function columnSymbol(column: string, typeOf: (name: string) => ValueType
 }
 
 /** The levels' columns: the level, its order, then its settings as checkboxes under labelled headers. */
-export const LEVEL_GRID = "grid grid-cols-[minmax(0,1fr)_52px_56px_56px_56px_22px] items-center";
+export const LEVEL_GRID = "grid grid-cols-[minmax(0,1fr)_44px_48px_48px_48px_22px] items-center";
 
 export interface HierarchyProps {
   root: FolderLevel | null;
@@ -210,7 +210,7 @@ function Branch(props: HierarchyProps & { chain: ChainAddress; slot: LevelSlot; 
       }}
       className={`${LEVEL_GRID} relative group h-7 rounded-md cursor-default select-none`}
     >
-      <div style={indent(inside.length)} className="relative self-stretch flex items-center gap-1.5 min-w-0">
+      <div style={indent(inside.length)} className="relative self-stretch flex items-center gap-1.5 min-w-0 overflow-hidden">
         <Guides depth={inside.length} />
         <span className="shrink-0 w-3" />
         <FolderLabel label={label} />
@@ -358,7 +358,7 @@ function LevelRow({
           isSelected ? "bg-neutral-800 dark:bg-neutral-700/60" : "hover:bg-neutral-800/50"
         }`}
       >
-        <div style={indent(chain.length)} className="relative self-stretch flex items-center gap-1.5 min-w-0">
+        <div style={indent(chain.length)} className="relative self-stretch flex items-center gap-1.5 min-w-0 overflow-hidden">
           <Guides depth={chain.length} />
           <SymbolIcon name="line.3.horizontal" size={10} fallback="≡" className="shrink-0 w-3 text-neutral-500 opacity-0 group-hover:opacity-100" />
           {lead && (
@@ -368,7 +368,7 @@ function LevelRow({
             </>
           )}
           <SymbolIcon name={columnSymbol(level.column, typeOf)} size={13} fallback="•" className="shrink-0 w-4 text-neutral-400" />
-          <span className="shrink min-w-0 truncate text-[13px] text-neutral-100">{name}</span>
+          <span className="shrink min-w-[3em] truncate text-[13px] text-neutral-100">{name}</span>
           {dated && (
             <button
               type="button"
@@ -381,9 +381,12 @@ function LevelRow({
               <SymbolIcon name="chevron.down" size={7} fallback="▾" />
             </button>
           )}
-          <span className="flex-1" />
-          <span className="shrink-0 pr-1 text-[11px] tabular-nums text-neutral-500">
-            {named.length === 0 ? "No folders yet" : `${named.length.toLocaleString()} ${named.length === 1 ? "folder" : "folders"}`}
+          {/* The count shows only with room to spare: short of it, it wraps onto a hidden second line, leaving the names whole */}
+          <span className="flex-1 min-w-0 h-[18px] overflow-hidden flex flex-wrap justify-end">
+            <span className="flex-1 h-[18px]" />
+            <span className="shrink-0 pr-1 leading-[18px] text-[11px] tabular-nums text-neutral-500 whitespace-nowrap">
+              {named.length === 0 ? "No folders yet" : `${named.length.toLocaleString()} ${named.length === 1 ? "folder" : "folders"}`}
+            </span>
           </span>
         </div>
         <div className="flex justify-center">

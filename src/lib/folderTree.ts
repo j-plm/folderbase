@@ -1,5 +1,5 @@
 import { dateGroupRange, sizeGroupRange } from "./arrange";
-import { applyFilters, newRule, type ColumnKind, type FilterMatch, type FilterOp, type FilterRule } from "./dbTable";
+import { applyFilters, newRule, type ColumnKind, type FilterItem, type FilterMatch, type FilterOp, type FilterRule } from "./dbTable";
 import type { GroupLevel, RowGroup } from "./dbGroups";
 import { NATIVE_LABELS, PROP_PREFIX, nativeValue, propName } from "./fileColumns";
 import { isEmptyValue, type ValueReader } from "./fileValues";
@@ -58,7 +58,7 @@ export interface FolderContents {
 }
 
 /** The view's files: its filters applied, as the Database view applies them. */
-export function viewFiles(files: FileRecord[], filters: FilterRule[], match: FilterMatch, reader: ValueReader): FileRecord[] {
+export function viewFiles(files: FileRecord[], filters: FilterItem[], match: FilterMatch, reader: ValueReader): FileRecord[] {
   return applyFilters(files, filters, match, reader.columnValue, reader.kindOf);
 }
 
