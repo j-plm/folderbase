@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { dragOut, importFiles, setEditMenuLabels, setMetadataCells, trashAddedFiles } from "../lib/commands";
 import { setUndoTarget } from "../lib/editMenu";
 import { planDrop, folderLabel, type DragItem, type DropContext, type DropOptions, type DropPlan } from "../lib/filing";
-import { DRAG_ICON_OFFSET, DRAG_ICON_SIZE, HOLDING_FOLDER } from "../lib/fileDrag";
+import { DRAG_ICON_OFFSET, DRAG_ICON_SIZE, HOLDING_FOLDER, edgeScroll } from "../lib/fileDrag";
 import { DRAG_THRESHOLD } from "../lib/tagDrag";
 import { dropPositionScale, platform } from "../lib/platform";
 import { FileIcon, FolderIcon } from "../lib/fileIcons";
@@ -102,6 +102,40 @@ type Commit = (plan: DropPlan, opts: DropOptions) => Promise<void>;
 
 /** A plan that files nothing: a drop cancelled after files were copied in still needs undoing. */
 const nothingFrom = (plan: DropPlan): DropPlan => ({ ...plan, edits: [], before: [], files: 0, replacements: [], asks: [] });
+
+/**
+ * Scrolls what's under (x, y) when it's near the edge of an area that
+ * scrolls: the nearest one that can go that way (a column's list up and down,
+ * the row of columns sideways). Whether anything moved.
+ */
+function scrollUnder(x: number, y: number): boolean {
+  let el = document.elementFromPoint(x, y) as HTMLElement | null;
+  let moved = false;
+  let wantX = true;
+  let wantY = true;
+  for (; el && (wantX || wantY); el = el.parentElement) {
+    const style = getComputedStyle(el);
+    const canY = wantY && /(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight;
+    const canX = wantX && /(auto|scroll)/.test(style.overflowX) && el.scrollWidth > el.clientWidth;
+    if (!canX && !canY) continue;
+    const { dx, dy } = edgeScroll(el.getBoundingClientRect(), x, y);
+    if (canY && dy !== 0) {
+      wantY = false;
+      if (dy < 0 ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight) {
+        el.scrollTop += dy;
+        moved = true;
+      }
+    }
+    if (canX && dx !== 0) {
+      wantX = false;
+      if (dx < 0 ? el.scrollLeft > 0 : el.scrollLeft + el.clientWidth < el.scrollWidth) {
+        el.scrollLeft += dx;
+        moved = true;
+      }
+    }
+  }
+  return moved;
+}
 
 const sameFiles = (a: string[], b: Set<string>) => a.length > 0 && a.every((p) => b.has(p));
 
@@ -295,9 +329,25 @@ export function FileDragProvider({ locationId, children }: { locationId: string 
     [describe]
   );
 
+  // While a drag lasts, an area scrolls when the pointer nears its edge, and what's under the pointer is
+  // looked at again as the content moves under it (as Finder's lists and columns do)
+  const scrollFrame = useRef<number | undefined>(undefined);
+  const autoScroll = useCallback(() => {
+    const step = () => {
+      const s = session.current;
+      if (!s) return;
+      if (scrollUnder(s.x, s.y)) hoverAt(s.x, s.y);
+      scrollFrame.current = requestAnimationFrame(step);
+    };
+    if (scrollFrame.current != null) cancelAnimationFrame(scrollFrame.current);
+    scrollFrame.current = requestAnimationFrame(step);
+  }, [hoverAt]);
+
   const end = useCallback(() => {
     endDrag.current();
     endDrag.current = () => {};
+    if (scrollFrame.current != null) cancelAnimationFrame(scrollFrame.current);
+    scrollFrame.current = undefined;
     window.clearTimeout(springTimer.current);
     session.current?.hover?.el.removeAttribute("data-drop-over");
     session.current = null;
@@ -377,8 +427,9 @@ export function FileDragProvider({ locationId, children }: { locationId: string 
       };
       place(ev.clientX, ev.clientY);
       hoverAt(ev.clientX, ev.clientY);
+      autoScroll();
     },
-    [describe, end, finish, commitPlan, hoverAt, resolve]
+    [describe, end, finish, commitPlan, hoverAt, resolve, autoScroll]
   );
 
   const press = useCallback(
@@ -491,6 +542,7 @@ export function FileDragProvider({ locationId, children }: { locationId: string 
           const fresh = payload.paths.filter((p) => !byPath.has(p)).length;
           session.current = { items, add: false, hover: null, plan: null, x: 0, y: 0, external: { paths: payload.paths, fresh } };
           hoverAt(...at(payload.position));
+          autoScroll();
         } else if (payload.type === "over") {
           if (session.current?.external) hoverAt(...at(payload.position));
         } else if (payload.type === "leave") {
@@ -520,7 +572,7 @@ export function FileDragProvider({ locationId, children }: { locationId: string 
       disposed = true;
       unlisten?.();
     };
-  }, [hoverAt, end, dropIn, finish, commitPlan, resolve]);
+  }, [hoverAt, end, dropIn, finish, commitPlan, resolve, autoScroll]);
 
   useEffect(() => end, [end]);
 

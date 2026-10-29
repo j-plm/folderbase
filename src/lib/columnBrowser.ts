@@ -74,6 +74,8 @@ export function inheritWidths(
 
 export interface NodeGroup {
   label: string;
+  /** Grouped by a property: the value the group stands for ("" for the No-value group). */
+  value?: string;
   nodes: BrowserNode[];
 }
 
@@ -95,7 +97,7 @@ export function arrangeColumn(nodes: BrowserNode[], arrangement: Arrangement, by
     arrangement,
     new Date(),
     byProperty
-  ).map((g) => ({ label: g.label, nodes: g.files.map((f) => byId.get(f.file_id)!) }));
+  ).map((g) => ({ label: g.label, value: g.value, nodes: g.files.map((f) => byId.get(f.file_id)!) }));
 
   // Not grouped (or by a property it can't read)
   if (fileGroups.length === 1 && fileGroups[0].label === "") {

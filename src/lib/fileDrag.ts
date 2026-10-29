@@ -34,3 +34,26 @@ export function dragItemsFor(
     return file ? [{ kind: "file", file, from }] : [];
   });
 }
+
+/** How near a scrolling area's edge a drag starts scrolling it, and the fastest it goes (points per frame). */
+export const SCROLL_EDGE = 28;
+export const SCROLL_MAX = 18;
+
+/**
+ * How far a drag at (x, y) scrolls an area within `rect` this frame: faster
+ * the nearer the edge, as Finder scrolls a list dragged near its top or
+ * bottom (or a row of columns near its side). Nothing outside the area.
+ */
+export function edgeScroll(
+  rect: { left: number; top: number; right: number; bottom: number },
+  x: number,
+  y: number,
+  edge = SCROLL_EDGE,
+  max = SCROLL_MAX
+): { dx: number; dy: number } {
+  if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return { dx: 0, dy: 0 };
+  const speed = (into: number) => (into < edge ? Math.ceil(((edge - into) / edge) * max) : 0);
+  // Both edges at once in a tiny area: no scrolling
+  const along = (from: number, to: number, at: number) => (to - from < edge * 2 ? 0 : speed(to - at) - speed(at - from));
+  return { dx: along(rect.left, rect.right, x), dy: along(rect.top, rect.bottom, y) };
+}

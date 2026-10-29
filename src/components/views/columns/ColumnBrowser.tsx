@@ -33,6 +33,7 @@ import { measureText, uiFont } from "../../../lib/textMeasure";
 import { useReportSelection } from "../../../lib/selectionStatus";
 import { showContextMenu, withLead, type MenuEntry } from "../../../lib/nativeMenu";
 import { arrangementMenu, useArrangedBy, useArrangement, useGroupProperties } from "../../../contexts/ArrangementContext";
+import { ARRANGED_GROUPS } from "../../../lib/fileDrag";
 
 const sameIds = (a: string[], b: string[]) => a.length === b.length && a.every((id, i) => id === b[i]);
 
@@ -104,7 +105,7 @@ export default function ColumnBrowser({
   columnDropPath?: (parent: BrowserNode | null) => string[] | null;
 }) {
   const arrangementCtx = useArrangement();
-  const { arrangement, byProperty } = useArrangedBy();
+  const { arrangement, byProperty, groupsTakeDrops } = useArrangedBy();
   const groupProperties = useGroupProperties();
   const [path, setPath] = useState<string[]>(() => folderPath ?? []);
   const [sel, setSel] = useState<SelectionState>(EMPTY_SELECTION);
@@ -324,6 +325,7 @@ export default function ColumnBrowser({
         >
           <ColumnList
             groups={groups}
+            groupsTakeDrops={groupsTakeDrops}
             width={colWidths[depth]}
             font={font}
             active={depth === activeDepth}
@@ -365,7 +367,7 @@ export default function ColumnBrowser({
 
 /** A line of a column: a group heading, or an item with its neighbours (for joined selections). */
 type ColumnItem =
-  | { kind: "heading"; label: string; first: boolean }
+  | { kind: "heading"; label: string; value?: string; first: boolean }
   | { kind: "row"; node: BrowserNode; prev?: string; next?: string };
 
 /**
@@ -384,8 +386,11 @@ function ColumnList({
   onRowMenu,
   onRowPointerDown,
   dropPathOf,
+  groupsTakeDrops = false,
 }: {
   groups: NodeGroup[];
+  /** Grouped by a property of one value: headings take drops, giving files its value. */
+  groupsTakeDrops?: boolean;
   width: number;
   font: string;
   /** The column the selection is in (its selection is accent-coloured). */
@@ -404,7 +409,7 @@ function ColumnList({
   const items = useMemo(
     () =>
       groups.flatMap((g, gi): ColumnItem[] => [
-        ...(g.label ? [{ kind: "heading" as const, label: g.label, first: gi === 0 }] : []),
+        ...(g.label ? [{ kind: "heading" as const, label: g.label, value: g.value, first: gi === 0 }] : []),
         ...g.nodes.map((node, i) => ({
           kind: "row" as const,
           node,
@@ -424,10 +429,10 @@ function ColumnList({
 
   // Where each group heading reaches the top of the column (sizes are fixed, so exact)
   const headings = useMemo(() => {
-    const found: { label: string; top: number }[] = [];
+    const found: { label: string; value?: string; top: number }[] = [];
     let offset = 0;
     for (const item of items) {
-      if (item.kind === "heading") found.push({ label: item.label, top: offset + (item.first ? 0 : GROUP_GAP) });
+      if (item.kind === "heading") found.push({ label: item.label, value: item.value, top: offset + (item.first ? 0 : GROUP_GAP) });
       offset += sizeOf(item);
     }
     return found;
@@ -436,6 +441,9 @@ function ColumnList({
   // the next group's heading covers it as it arrives
   const scrollTop = virtualizer.scrollOffset ?? 0;
   const pinned = headings.filter((h) => h.top <= scrollTop).pop() ?? headings[0];
+  /** A heading as a drop target, when the grouping takes drops. */
+  const dropOn = (value: string | undefined) =>
+    groupsTakeDrops && value != null ? { "data-drop-path": JSON.stringify([value]), "data-drop-source": ARRANGED_GROUPS } : {};
 
   useEffect(() => {
     if (!revealId) return;
@@ -447,6 +455,7 @@ function ColumnList({
     <div ref={scrollRef} className="h-full overflow-y-auto">
       {pinned && (
         <div
+          {...dropOn(pinned.value)}
           style={{ height: HEADING_HEIGHT, marginBottom: -HEADING_HEIGHT }}
           className="sticky top-0 z-10 flex items-end px-4 pb-1.5 bg-neutral-900 text-xs font-semibold text-neutral-500"
         >
@@ -469,6 +478,7 @@ function ColumnList({
               return (
                 <div
                   key={v.key}
+                  {...dropOn(item.value)}
                   // Full column width, past the list's side padding
                   style={{ ...place, left: -8, width: "calc(100% + 16px)" }}
                   // Above the pinned heading, so an arriving group's heading slides over it
