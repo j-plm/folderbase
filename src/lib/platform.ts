@@ -16,6 +16,8 @@ export const labels = {
       ? "Delete"
       : "Move to Trash",
   newFolder: "New Folder",
+  /** Shows a file selected in the OS file manager. */
+  reveal: platform === "macos" ? "Show in Finder" : platform === "windows" ? "Show in Explorer" : "Show in Folder",
   /** How to name a toggle-click in hints ("⌘-click to select several"). */
   toggleClick: platform === "macos" ? "⌘-click" : "Ctrl-click",
 } as const;

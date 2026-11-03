@@ -45,20 +45,35 @@ pub async fn open_path(path: String) -> Result<(), String> {
     opener::open(&path).map_err(|e| e.to_string())
 }
 
+/// The start of `open_paths`' error for a file that's gone; the path follows.
+pub const FILE_NOT_FOUND: &str = "file not found: ";
+/// The start of `open_paths`' error for a file no app is set to open; the path follows.
+pub const NO_APPLICATION: &str = "no application: ";
+
+/// Fails on the first of `paths` that's no longer on disk.
+pub fn check_exist(paths: &[String]) -> Result<(), String> {
+    match paths.iter().find(|p| !std::path::Path::new(p).exists()) {
+        Some(missing) => Err(format!("{FILE_NOT_FOUND}{missing}")),
+        None => Ok(()),
+    }
+}
+
 /// Opens several files at once, as Finder does when opening a multiple selection:
 /// one `open` call hands every file to Launch Services together, so files sharing
 /// an app arrive in one launch (e.g. several PDFs in one Preview window).
 #[tauri::command]
 pub async fn open_paths(paths: Vec<String>) -> Result<(), String> {
-    if let Some(missing) = paths.iter().find(|p| !std::path::Path::new(p).exists()) {
-        return Err(format!("file not found: {missing}"));
-    }
+    check_exist(&paths)?;
     if paths.is_empty() {
         return Ok(());
     }
 
     #[cfg(target_os = "macos")]
     {
+        // As Finder does, say so rather than open nothing (the files can still go to an app chosen with Open With)
+        if let Some(path) = paths.iter().find(|p| crate::commands::open_with::default_app(p).is_none()) {
+            return Err(format!("{NO_APPLICATION}{path}"));
+        }
         let status = std::process::Command::new("open")
             .args(&paths)
             .status()

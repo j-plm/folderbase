@@ -187,7 +187,7 @@ export function BrowseProvider({ locationId, children }: { locationId: string; c
         table: { ...table, filters, match: "all" as const },
         folders: { root: levelAt(root, path), pins: within.map((p) => ({ ...p, at: p.at.slice(at.length) })) },
       };
-      return { label, create: () => create(name, def) };
+      return { label, create: async () => void (await create(name, def)) };
     },
     [table, tree, root, pins, reader, files, views, create]
   );

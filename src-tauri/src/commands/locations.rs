@@ -87,6 +87,108 @@ pub async fn rename_location_impl(location_id: &str, name: &str, pool: &DbPool) 
         .map_err(|e| e.to_string())
 }
 
+/// Whether the location's folder is on disk (not moved away, or on a drive that's unplugged).
+#[tauri::command]
+pub async fn location_available(location_id: String, db: State<'_, DbPool>) -> Result<bool, String> {
+    let root: String = sqlx::query_scalar("SELECT root_path FROM locations WHERE location_id = ?")
+        .bind(&location_id)
+        .fetch_one(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(std::path::Path::new(&root).is_dir())
+}
+
+/// Points a location at its folder's new place on disk (after the folder, or a
+/// cloud drive holding it, moved). Every file keeps its record and values; only
+/// the paths stored change. Other locations that moved along with it (the same
+/// enclosing folder renamed) and are missing are pointed at their new place too.
+/// Returns every location moved, this one first.
+#[tauri::command]
+pub async fn relocate_location(location_id: String, new_root: String, db: State<'_, DbPool>) -> Result<Vec<Location>, String> {
+    relocate_location_impl(&location_id, &new_root, db.inner()).await
+}
+
+pub async fn relocate_location_impl(location_id: &str, new_root: &str, pool: &DbPool) -> Result<Vec<Location>, String> {
+    let new_root = if new_root.len() > 1 { new_root.trim_end_matches('/') } else { new_root };
+    if !std::path::Path::new(new_root).is_dir() {
+        return Err(format!("{new_root} isn't a folder"));
+    }
+    let locations = get_locations_impl(pool).await?;
+    let location = locations
+        .iter()
+        .find(|l| l.location_id == location_id)
+        .ok_or_else(|| format!("No location {location_id}"))?;
+    if let Some(other) = locations.iter().find(|l| l.root_path == new_root && l.location_id != location_id) {
+        return Err(format!("“{}” already uses that folder", other.name));
+    }
+    let mut moves = vec![(location_id.to_string(), location.root_path.clone(), new_root.to_string())];
+
+    // The folder the move happened at: "…/Old Drive/Projects" to "…/New Drive/Projects" moved "…/Old Drive"
+    let (old_parent, new_parent) = moved_parent(&location.root_path, new_root);
+    if old_parent != location.root_path {
+        for other in &locations {
+            let Some(rest) = other.root_path.strip_prefix(&format!("{old_parent}/")) else { continue };
+            let moved_to = format!("{new_parent}/{rest}");
+            let taken = locations.iter().any(|l| l.root_path == moved_to);
+            if other.location_id != location_id
+                && !std::path::Path::new(&other.root_path).is_dir()
+                && std::path::Path::new(&moved_to).is_dir()
+                && !taken
+            {
+                moves.push((other.location_id.clone(), other.root_path.clone(), moved_to));
+            }
+        }
+    }
+
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for (id, old, new) in &moves {
+        for (table, column) in [
+            ("files", "file_path"),
+            ("path_mapping_nodes", "folder_path"),
+            // The Added Files folder, when it's set as an absolute path inside the location
+            ("locations", "added_folder"),
+            ("locations", "root_path"),
+        ] {
+            sqlx::query(&format!(
+                "UPDATE {table} SET {column} = ? || substr({column}, length(?) + 1) \
+                 WHERE location_id = ? AND ({column} = ? OR substr({column}, 1, length(?) + 1) = ? || '/')"
+            ))
+            .bind(new)
+            .bind(old)
+            .bind(id)
+            .bind(old)
+            .bind(old)
+            .bind(old)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+
+    let moved = get_locations_impl(pool).await?;
+    Ok(moves
+        .iter()
+        .filter_map(|(id, _, _)| moved.iter().find(|l| &l.location_id == id).cloned())
+        .collect())
+}
+
+/// `old` and `new` with the folder names they both end in taken off: where a
+/// move happened, when a folder further up was renamed or moved.
+pub fn moved_parent(old: &str, new: &str) -> (String, String) {
+    let mut old = std::path::Path::new(old);
+    let mut new = std::path::Path::new(new);
+    while let (Some(a), Some(b), Some(old_up), Some(new_up)) = (old.file_name(), new.file_name(), old.parent(), new.parent()) {
+        // Never up to the disk's own top (or past a relative path's start)
+        if a != b || old_up.file_name().is_none() || new_up.file_name().is_none() {
+            break;
+        }
+        old = old_up;
+        new = new_up;
+    }
+    (old.to_string_lossy().into_owned(), new.to_string_lossy().into_owned())
+}
+
 /// Puts the locations in this order (the sidebar's, after a drag).
 #[tauri::command]
 pub async fn reorder_locations(location_ids: Vec<String>, db: State<'_, DbPool>) -> Result<(), String> {
@@ -257,6 +359,21 @@ mod tests {
         let names: Vec<String> = list_subfolders_impl(&root).unwrap().into_iter().map(|f| f.name).collect();
         assert_eq!(names, vec!["Alpha", "beta"]);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_move_happened_where_the_paths_stop_ending_alike() {
+        assert_eq!(
+            moved_parent("/Cloud/Old Docs/05 Testing", "/Cloud/Engineering/05 Testing"),
+            ("/Cloud/Old Docs".into(), "/Cloud/Engineering".into())
+        );
+        assert_eq!(moved_parent("/a/x/b/c", "/d/b/c"), ("/a/x".into(), "/d".into()));
+    }
+
+    #[test]
+    fn a_renamed_folder_moved_at_itself() {
+        assert_eq!(moved_parent("/a/Scans", "/a/Old Scans"), ("/a/Scans".into(), "/a/Old Scans".into()));
+        assert_eq!(moved_parent("/Scans", "/Scans"), ("/Scans".into(), "/Scans".into()));
     }
 
     #[test]

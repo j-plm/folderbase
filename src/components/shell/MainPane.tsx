@@ -13,7 +13,8 @@ import { FolderIcon } from "../../lib/fileIcons";
 import { placeSteps } from "../../lib/folderTree";
 import { folderLabel, planDrop, type DragItem } from "../../lib/filing";
 import type { MenuEntry } from "../../lib/nativeMenu";
-import { getLocations, openPaths } from "../../lib/commands";
+import { getLocations } from "../../lib/commands";
+import { fileEntries } from "../../lib/fileActions";
 import PathBar, { type PathSegment } from "./PathBar";
 import NewFolderDialog from "./NewFolderDialog";
 import { FileDragProvider, useFileDrag } from "../../contexts/FileDragContext";
@@ -131,13 +132,13 @@ function MainPaneContent() {
   const folderPath = (value: string) => browse.opens([...place, value]);
   const folderMenu = (value: string) => folderMenuAt(folderPath(value));
   /**
-   * A right-click on files: Open, and Remove from “Folder”, which takes them
+   * A right-click on files: Open, Open With, Show in Finder, and Remove from “Folder”, which takes them
    * out of the folder they're shown in (its value only), into the one enclosing it.
    */
   const fileMenu = (items: DragItem[]): MenuEntry[] => {
     const files = items.flatMap((i) => (i.kind === "file" ? [i] : []));
     if (files.length === 0 || files.length < items.length) return [];
-    const entries: MenuEntry[] = [{ type: "item", text: "Open", action: () => void openPaths(files.map((f) => f.file.file_path)).catch(() => {}) }];
+    const entries = fileEntries(files.map((f) => f.file.file_path));
     const from = files[0].from;
     const ctx = browse.dropContext;
     if (!from || from.length === 0 || !ctx || files.some((f) => JSON.stringify(f.from) !== JSON.stringify(from))) return entries;

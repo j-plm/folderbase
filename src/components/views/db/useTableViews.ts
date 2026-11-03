@@ -34,6 +34,25 @@ function rememberActive(locationId: string, viewId: string) {
   }
 }
 
+/**
+ * A new view of a location that isn't showing, which the location then opens
+ * with (its id). The showing location's views make theirs with `create`.
+ */
+export async function addLocationView(locationId: string, name: string, def: ViewDefinition): Promise<string> {
+  const created = await saveLocationView({
+    view_id: "",
+    location_id: locationId,
+    name,
+    is_default: false,
+    position: 0,
+    definition: serializeViewDefinition(def),
+    draft: null,
+  });
+  cache.delete(locationId);
+  rememberActive(locationId, created.view_id);
+  return created.view_id;
+}
+
 function recalledActive(locationId: string): string | null {
   try {
     return localStorage.getItem(ACTIVE_KEY(locationId));
@@ -57,8 +76,8 @@ export interface TableViews {
   revert: () => Promise<void>;
   /** A new view of what's showing, which then shows (its id); the view it came from goes back to as saved. */
   saveAs: (name: string) => Promise<string | null>;
-  /** A new view with this definition, which then shows; the view showing before is left as it is. */
-  create: (name: string, def: ViewDefinition) => Promise<void>;
+  /** A new view with this definition, which then shows (its id); the view showing before is left as it is. */
+  create: (name: string, def: ViewDefinition) => Promise<string>;
   rename: (viewId: string, name: string) => Promise<void>;
   remove: (viewId: string) => Promise<void>;
   /** Puts the views in this order, the default among them. */
@@ -279,6 +298,7 @@ export function useTableViews(
       setViews([...viewsRef.current, created]);
       setActive(created.view_id);
       applyRef.current(def);
+      return created.view_id;
     },
     [locationId, flush, write, setViews, setActive]
   );

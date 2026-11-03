@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useScrollAheadVirtualizer } from "../../../hooks/useScrollAheadVirtualizer";
-import { openPaths } from "../../../lib/commands";
+import { openFiles } from "../../../lib/fileActions";
 import { hasPrimaryModifier, isOpenShortcut, isToggleSelect } from "../../../lib/platform";
 import {
   DOUBLE_CLICK_MS,
@@ -207,7 +207,7 @@ export default function ColumnBrowser({
   /** Opens the files among `nodes` together, as Finder opens a multiple selection. */
   function open(nodes: BrowserNode[]) {
     const paths = nodes.flatMap((n) => (n.file ? [n.file.file_path] : []));
-    if (paths.length > 0) openPaths(paths).catch(() => {});
+    void openFiles(paths);
   }
 
   function handleKeyDown(e: React.KeyboardEvent) {

@@ -8,6 +8,7 @@ import {
   clearDatabase,
   deleteLocation,
   ingestDirectory,
+  locationAvailable,
   renameLocation,
   reorderLocations,
 } from "../../lib/commands";
@@ -19,7 +20,9 @@ import RenameField from "../shared/RenameField";
 import { SymbolIcon } from "../../lib/fileIcons";
 import { showContextMenu } from "../../lib/nativeMenu";
 import { useOptionalLocationViews } from "../../contexts/LocationViewsContext";
-import { DEFAULT_VIEW_NAME, type StoredView } from "../../lib/tableViews";
+import { DEFAULT_VIEW_NAME, emptyFolders, emptyTable, uniqueViewName, type StoredView } from "../../lib/tableViews";
+import { addLocationView } from "../views/db/useTableViews";
+import { locateLocationFolder } from "../../lib/fileActions";
 import { DefaultBadge } from "./ViewsButton";
 import { useDragReorder } from "../../hooks/useDragReorder";
 import { moveColumnId } from "../../lib/columns";
@@ -29,6 +32,8 @@ const MAX_WIDTH = 400;
 const DEFAULT_WIDTH = 220;
 const WIDTH_KEY = "sidebar-width";
 const PANEL_MARGIN = 8;
+/** How often locations' folders are checked for being on disk. */
+const MISSING_CHECK_MS = 30_000;
 
 function loadWidth(): number {
   const saved = Number(localStorage.getItem(WIDTH_KEY));
@@ -36,7 +41,7 @@ function loadWidth(): number {
 }
 
 export default function Sidebar() {
-  const { activeLocationId, setActiveLocation, openDiskFolders } = useNavigation();
+  const { activeLocationId, setActiveLocation, openDiskFolders, setViewMode } = useNavigation();
   const [width, setWidth] = useState(loadWidth);
   /** The selected location's saved views, listed under it. */
   const locationViews = useOptionalLocationViews();
@@ -74,6 +79,8 @@ export default function Sidebar() {
   }, [width]);
 
   const [locations, setLocations] = useState<Location[]>([]);
+  /** Locations whose folder isn't on disk (moved, or on a drive that's unplugged). */
+  const [missing, setMissing] = useState<Set<string>>(() => new Set());
   const [addOpen, setAddOpen] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -130,15 +137,47 @@ export default function Sidebar() {
     e.preventDefault();
     showContextMenu(
       [
+        { type: "item", text: "New View", action: () => void newView(loc) },
+        { type: "separator" },
         { type: "item", text: "Map Disk Folders…", action: () => openDiskFolders(loc.location_id) },
         { type: "item", text: "Added Files Folder…", action: () => setAddedFolderFor(loc) },
         { type: "item", text: "Refresh", enabled: !refreshing.has(loc.location_id), action: () => refreshLocation(loc.location_id) },
+        { type: "item", text: "Locate Folder…", action: () => void locate(loc) },
         { type: "separator" },
         { type: "item", text: "Rename", action: () => setRenamingId(loc.location_id) },
         { type: "item", text: "Remove Location…", action: () => setConfirmDeleteId(loc.location_id) },
       ],
       { event: e }
     );
+  }
+
+  /**
+   * A new view of all the location's files, opened in the Database view with
+   * its name up for editing.
+   */
+  async function newView(loc: Location) {
+    const def = { table: emptyTable(), folders: emptyFolders() };
+    try {
+      if (loc.location_id === activeLocationId && locationViews) {
+        const name = uniqueViewName("New View", locationViews.views.map((v) => v.name));
+        setRenamingViewId(await locationViews.create(name, def));
+      } else {
+        const taken = (await getLocationViews(loc.location_id)).map((v) => v.name);
+        const id = await addLocationView(loc.location_id, uniqueViewName("New View", taken), def);
+        setActiveLocation(loc.location_id);
+        setRenamingViewId(id);
+      }
+      setViewsFolded(false);
+      setViewMode("database");
+    } catch (e) {
+      setRefreshError({ id: loc.location_id, message: String(e), action: "make a new view" });
+    }
+  }
+
+  /** Points the location at its folder's new place on disk. */
+  async function locate(loc: Location) {
+    const moved = await locateLocationFolder(loc);
+    if (moved.length > 0) await loadLocations();
   }
 
   function showViewMenu(e: React.MouseEvent, view: StoredView) {
@@ -200,6 +239,26 @@ export default function Sidebar() {
   useEffect(() => {
     loadLocations();
   }, []);
+
+  // Which locations' folders are missing, checked again whenever the window comes forward and
+  // every so often, so a drive unplugged or a cloud folder moved shows without opening a file
+  useEffect(() => {
+    let stale = false;
+    async function check() {
+      const available = await Promise.all(locations.map((l) => locationAvailable(l.location_id).catch(() => true)));
+      if (stale) return;
+      const next = locations.filter((_, i) => !available[i]).map((l) => l.location_id);
+      setMissing((prev) => (next.length === prev.size && next.every((id) => prev.has(id)) ? prev : new Set(next)));
+    }
+    void check();
+    const timer = window.setInterval(() => void check(), MISSING_CHECK_MS);
+    window.addEventListener("focus", check);
+    return () => {
+      stale = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", check);
+    };
+  }, [locations]);
 
   // Counted again on leaving a location, whose views may have changed while it was open
   useEffect(() => {
@@ -360,7 +419,16 @@ export default function Sidebar() {
                       }`}
                     >
                       <SymbolIcon name="folder" size={17} className={isActive ? "text-blue-500" : "text-neutral-400"} />
-                      <span className="truncate text-body">{loc.name}</span>
+                      <span className={`truncate text-body ${missing.has(loc.location_id) ? "opacity-50" : ""}`}>{loc.name}</span>
+                      {missing.has(loc.location_id) && (
+                        <span
+                          title={`The folder of “${loc.name}” can’t be found. Its drive may be disconnected, or it may have moved: right-click and choose Locate Folder…`}
+                          aria-label="Folder not found"
+                          className="shrink-0 flex"
+                        >
+                          <SymbolIcon name="exclamationmark.triangle.fill" size={13} fallback="⚠" className="text-amber-500" />
+                        </span>
+                      )}
                     </button>
                   )}
                   {/* Disclosure for the location's saved views */}

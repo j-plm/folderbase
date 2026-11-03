@@ -10,6 +10,7 @@ pub mod ingest;
 pub mod location_views;
 pub mod locations;
 pub mod metadata;
+pub mod open_with;
 pub mod path_mapping;
 pub mod properties;
 pub mod rules;

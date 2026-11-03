@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
-import { openPaths } from "../lib/commands";
+import { openFiles } from "../lib/fileActions";
 import { hasPrimaryModifier, isOpenShortcut, isToggleSelect } from "../lib/platform";
 import {
   DOUBLE_CLICK_MS,
@@ -71,7 +71,7 @@ export function useSelection(
     }
     const byId = new Map(files.map((f) => [f.file_id, f.file_path]));
     const paths = ids.map((id) => byId.get(id)).filter((p): p is string => !!p);
-    openPaths(paths).catch(() => {});
+    void openFiles(paths);
   }
 
   // A plain click on an item inside a multiple selection collapses it only once

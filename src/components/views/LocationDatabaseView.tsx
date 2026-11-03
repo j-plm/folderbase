@@ -68,6 +68,7 @@ import {
   type SortState,
 } from "../../lib/columns";
 import { showContextMenu, type MenuEntry } from "../../lib/nativeMenu";
+import { fileEntries } from "../../lib/fileActions";
 import OverflowBar from "../shell/OverflowBar";
 import { measureElements, measureText, uiFont } from "../../lib/textMeasure";
 import { useColumnLayout } from "../../hooks/useColumnLayout";
@@ -1402,6 +1403,21 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
     setPropertyMenu({ anchor: { x: e.clientX, y: e.clientY }, columnId });
   }
 
+  /** A right-click on a row: what it does to the file (or the selection it's in), and its column's menu. */
+  function showRowMenu(e: React.MouseEvent, fileId: string, columnId?: string) {
+    const ids = new Set(selection.targetIds(fileId));
+    setCellSel(EMPTY_CELLS);
+    const paths = sorted.flatMap((f) => (ids.has(f.file_id) ? [f.file_path] : []));
+    const col = columns.find((c) => c.id === columnId);
+    void showContextMenu(
+      [
+        ...fileEntries(paths),
+        ...(col ? ([{ type: "separator" }, { type: "submenu", text: `“${col.label}” Column`, items: headerMenuEntries(col.id) }] satisfies MenuEntry[]) : []),
+      ],
+      { event: e }
+    );
+  }
+
   function headerMenuEntries(columnId: string | null): MenuEntry[] {
     const col = columns.find((c) => c.id === columnId && c.id !== ADD_COLUMN.id);
     if (!col) return columnMenuEntries();
@@ -2622,10 +2638,11 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
         style={style}
         onMouseDown={(e) => startCellDrag(e, ref)}
         onClick={(e) => onCellClick(e, ref)}
-        // Right-click anywhere in the column: the column's menu (Edit Values…, type, wrap…)
+        // Right-click: the file's menu (Open, Open With, Show in Finder), then the column's (Edit Values…, type, wrap…)
         onContextMenu={(e) => {
+          e.preventDefault();
           e.stopPropagation();
-          handleHeaderMenu(e, col.id);
+          showRowMenu(e, file.file_id, col.id);
         }}
         onDoubleClick={(e) => {
           e.stopPropagation();
@@ -3218,6 +3235,11 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
                       selection.onItemClick(e, file.file_id);
                     }}
                     onDoubleClick={(e) => selection.onItemDoubleClick(e, file.file_id)}
+                    // Any cell: the file's menu (a property's cell adds its column's, itself)
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      showRowMenu(e, file.file_id);
+                    }}
                     className={`flex items-center rounded-md text-body cursor-default ${
                       joinsAbove ? "rounded-t-none" : ""
                     } ${joinsBelow ? "rounded-b-none" : ""} ${

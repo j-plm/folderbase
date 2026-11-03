@@ -95,6 +95,19 @@ export async function renameLocation(locationId: string, name: string): Promise<
 }
 
 /** Puts the locations in this order (the sidebar's). */
+/** Whether the location's folder is on disk (not moved, or on a drive that's unplugged). */
+export async function locationAvailable(locationId: string): Promise<boolean> {
+  return invoke<boolean>("location_available", { locationId });
+}
+
+/**
+ * Points a location at its folder's new place on disk; files keep their values.
+ * Missing locations that moved along with it follow. Resolves to every location moved.
+ */
+export async function relocateLocation(locationId: string, newRoot: string): Promise<Location[]> {
+  return invoke<Location[]>("relocate_location", { locationId, newRoot });
+}
+
 export async function reorderLocations(locationIds: string[]): Promise<void> {
   return invoke<void>("reorder_locations", { locationIds });
 }
@@ -451,6 +464,35 @@ export function hapticFeedback(pattern: "alignment" | "levelChange"): void {
 /** Opens several files together, the way Finder opens a multiple selection. */
 export async function openPaths(paths: string[]): Promise<void> {
   return invoke<void>("open_paths", { paths });
+}
+
+/** An app that can open some files, as Open With lists it. */
+export interface OpenWithApp {
+  path: string;
+  name: string;
+  /** What the files open in on a double-click. */
+  is_default: boolean;
+}
+
+/** The apps that can open all of `paths`, the default first, then by name. */
+export async function appsForPaths(paths: string[]): Promise<OpenWithApp[]> {
+  return invoke<OpenWithApp[]>("apps_for_paths", { paths });
+}
+
+/** Opens `paths` together in the app at `app`. */
+export async function openPathsWith(paths: string[], app: string): Promise<void> {
+  return invoke<void>("open_paths_with", { paths, app });
+}
+
+/** Shows `paths` selected in Finder (the OS file manager). */
+export async function revealPaths(paths: string[]): Promise<void> {
+  return invoke<void>("reveal_paths", { paths });
+}
+
+/** Asks for an app (in Applications to start with). */
+export async function pickApplication(): Promise<string | null> {
+  const result = await open({ directory: false, multiple: false, defaultPath: "/Applications", filters: [{ name: "Applications", extensions: ["app"] }] });
+  return typeof result === "string" ? result : null;
 }
 
 /**

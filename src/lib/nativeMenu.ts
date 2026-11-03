@@ -16,7 +16,8 @@ export type MenuEntry =
   /** `key` identifies an entry for `alignKey`. */
   | { type: "check"; text: string; checked: boolean; enabled?: boolean; action: () => void; key?: string; onDelete?: MenuDelete }
   | { type: "item"; text: string; enabled?: boolean; action: () => void; key?: string; onDelete?: MenuDelete }
-  | { type: "submenu"; text: string; items: MenuEntry[] }
+  /** `load`, in native menus, gives the items as the menu opens (Open With's apps), in place of `items`. */
+  | { type: "submenu"; text: string; items: MenuEntry[]; load?: () => Promise<MenuEntry[]> }
   /** A section's title (Custom, Native, Media), as macOS menus head a section: greyed, not chosen. */
   | { type: "header"; text: string }
   | { type: "separator" };
@@ -35,7 +36,7 @@ function buildItems(entries: MenuEntry[]): Promise<Array<CheckMenuItem | MenuIte
         case "item":
           return MenuItem.new({ text: entry.text, enabled: entry.enabled ?? true, action: entry.action });
         case "submenu":
-          return Submenu.new({ text: entry.text, items: await buildItems(entry.items) });
+          return Submenu.new({ text: entry.text, items: await buildItems(entry.load ? await entry.load() : entry.items) });
         case "separator":
           return PredefinedMenuItem.new({ item: "Separator" });
         case "header":
