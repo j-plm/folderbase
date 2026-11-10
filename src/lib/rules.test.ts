@@ -64,6 +64,18 @@ describe("planRule", () => {
     expect(over.edits).toEqual([{ file_id: "2", key: "Person", value: "Ruben" }]);
   });
 
+  it("says what it does to each property, for the preview's columns", () => {
+    const [kept] = planRule("r", statements, [files[1]], env()).rows;
+    expect(kept.values.Person).toEqual({ value: "Ruben", current: "Ruby", outcome: "kept" });
+    expect(kept.values.Date).toEqual({ value: "2025-07-04", current: null, outcome: "change" });
+    const [same] = planRule("r", statements, [file("5", "250301_Ruben.pdf", { Person: "Ruben" })], env()).rows;
+    expect(same.values.Person.outcome).toBe("same");
+    const [missing] = planRule("r", { ...statements, actions: [{ id: "a3", property: "Nope", mode: "slot", value: "Person" }] }, [files[0]], env()).rows;
+    expect(missing.values.Nope).toMatchObject({ outcome: "none", problem: "there's no property “Nope”" });
+    const [nomatch] = planRule("r", statements, [file("6", "250301.pdf")], env()).rows;
+    expect(nomatch.values).toEqual({});
+  });
+
   it("doesn't touch files outside the conditions, and reports names that don't fit the pattern", () => {
     const plan = planRule("r", { ...statements, conditions: [...statements.conditions, { id: "c2", column: "ext", op: "has", value: "pdf" }] }, files, env());
     expect(plan.rows.find((r) => r.file.file_id === "3")?.status).toBe("nomatch");

@@ -197,11 +197,13 @@ export function matchesRule(value: unknown, kind: ColumnKind, rule: FilterRule):
     default: {
       const a = (Array.isArray(value) ? value.join(", ") : value == null ? "" : String(value)).toLowerCase();
       const b = target.toLowerCase();
+      // Spaces count when looking inside the text: contains " 1" isn't contains "1"
+      const part = rule.value.toLowerCase();
       switch (rule.op) {
-        case "contains": return a.includes(b);
-        case "starts_with": return a.startsWith(b);
-        case "ends_with": return a.endsWith(b);
-        case "not_contains": return !a.includes(b);
+        case "contains": return a.includes(part);
+        case "starts_with": return a.startsWith(part);
+        case "ends_with": return a.endsWith(part);
+        case "not_contains": return !a.includes(part);
         case "is": return a === b;
         case "is_not": return a !== b;
         default: return true;

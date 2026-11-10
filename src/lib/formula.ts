@@ -130,6 +130,12 @@ export function parseFormula(src: string): Node {
       pos++;
       parts.push(primary());
     }
+    // Two values side by side, like {Date}{Time}: say how to join them rather than "Expected )"
+    const next = peek();
+    if (next && next.type !== "punct") {
+      const shown = (t: Token) => src.slice(t.at, tokens[tokens.indexOf(t) + 1]?.at ?? src.length).trim();
+      throw new FormulaError(`Put & before “${shown(next)}” to join it on`);
+    }
     return parts.length === 1 ? parts[0] : { kind: "join", parts };
   };
 

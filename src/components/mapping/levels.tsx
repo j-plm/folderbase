@@ -1,4 +1,3 @@
-import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { ReactNode } from "react";
 import type { FolderTreeNode } from "../../lib/commands";
@@ -32,8 +31,10 @@ export interface LevelLayoutProps<N extends LevelNode> {
   heading: (levelIndex: number, layout: "tiles" | "columns") => ReactNode;
   /** The heading's text, so a column can be fitted to it. */
   headingText: (levelIndex: number) => string;
-  /** A level's caption under the heading. */
-  caption: (levelIndex: number) => string;
+  /** A level's caption under the heading (it may hold an action). */
+  caption: (levelIndex: number) => ReactNode;
+  /** A click on the heading's background: selects every folder in the level, or none. */
+  onHeadingClick?: (levelIndex: number) => void;
   /** A group's parent, named above its folders when a level holds several groups. */
   folderName: (path: string) => string;
   /** Click on a folder: toggles it, or with Shift selects everything from the last click to it. */
@@ -88,95 +89,94 @@ export function levelTargets<N extends LevelNode>(level: Level<N>): { targets: N
 }
 
 /**
- * The shared name of these folders, or, when they carry different names, a
- * summary such as "Client (2) · Project (3)".
+ * The levels below `fromIndex` after its selection changed: each shows the
+ * children of the folders selected above it (in folder order), keeping the
+ * selection of folders still shown. So widening a selection opens the new
+ * subtrees beside the ones already open, rather than closing them.
+ * `childrenOf` gives a folder's children (none for an excluded folder).
  */
-export function levelName(nodes: FolderTreeNode[], labels: Record<string, string>) {
+export function rebuildLevels<N extends LevelNode>(
+  levels: Level<N>[],
+  fromIndex: number,
+  childrenOf: (path: string) => N[]
+): Level<N>[] {
+  const out = levels.slice(0, fromIndex + 1);
+  for (let i = fromIndex; i < out.length; i++) {
+    const level = out[i];
+    const selected = new Set(level.selected);
+    const groups: FolderGroup<N>[] = levelNodes(level)
+      .filter((n) => selected.has(n.folder_path))
+      .map((n) => ({ parentPath: n.folder_path, nodes: childrenOf(n.folder_path) }))
+      .filter((g) => g.nodes.length > 0);
+    if (groups.length === 0) break;
+    const shown = new Set(groups.flatMap((g) => g.nodes.map((n) => n.folder_path)));
+    const kept = (levels[i + 1]?.selected ?? []).filter((p) => shown.has(p));
+    out.push({ groups, selected: kept });
+  }
+  return out;
+}
+
+/** ⌘A or a click on the heading: every folder in the level, or none when all already are (heading only). */
+export function selectAllInLevel<N extends LevelNode>(level: Level<N>, toggle = false): string[] {
+  const all = levelNodes(level).map((n) => n.folder_path);
+  return toggle && all.length > 0 && all.every((p) => level.selected.includes(p)) ? [] : all;
+}
+
+/**
+ * How these folders are named: the one name they share (`null` when none or
+ * several), how many carry a name, and for several names a summary such as
+ * "Client (2) · Project (3)".
+ */
+export function levelCoverage(nodes: LevelNode[], labels: Record<string, string>) {
   const counts = new Map<string, number>();
   for (const n of nodes) {
     const name = labels[n.folder_path];
     if (name) counts.set(name, (counts.get(name) ?? 0) + 1);
   }
-  if (counts.size > 1) {
-    const summary = [...counts].map(([name, count]) => `${name} (${count})`).join(" · ");
-    return { value: "", mixed: true, summary };
-  }
-  return { value: counts.keys().next().value ?? "", mixed: false, summary: "" };
+  const named = [...counts.values()].reduce((a, b) => a + b, 0);
+  const mixed = counts.size > 1;
+  return {
+    name: counts.size === 1 ? (counts.keys().next().value as string) : null,
+    named,
+    total: nodes.length,
+    mixed,
+    summary: mixed ? [...counts].map(([name, count]) => `${name} (${count})`).join(" · ") : "",
+    counts,
+  };
 }
 
-/** The level heading's placeholder: what typing a name will apply to. */
-export function levelPlaceholder(level: Level, labels: Record<string, string>): string {
+/**
+ * The folders a level's name can be extended to: when its named folders all
+ * share one name, the unnamed ones among the targets (the selected folders when
+ * only some are selected, else all). `null` when there are none to extend to.
+ */
+export function levelExtension<N extends LevelNode>(
+  level: Level<N>,
+  labels: Record<string, string>,
+  isExcluded: (path: string) => boolean = () => false
+): { name: string; paths: string[]; partial: boolean } | null {
+  const { name } = levelCoverage(levelNodes(level), labels);
+  if (!name) return null;
   const { targets, partial } = levelTargets(level);
-  const { mixed, summary } = levelName(targets, labels);
-  if (mixed) return summary;
-  if (partial) return `Name ${targets.length} of ${levelNodes(level).length} folders`;
-  return "Name this level";
+  const paths = targets.filter((n) => !labels[n.folder_path] && !isExcluded(n.folder_path)).map((n) => n.folder_path);
+  return paths.length > 0 ? { name, paths, partial } : null;
 }
 
-/** "3 folders in Houses, Scans", "2 of 3 folders in Houses", or "Saved" right after a commit. */
-export function levelCaption<N extends LevelNode>(level: Level<N>, saved: boolean, folderName: (path: string) => string) {
+/** "3 folders in Houses, Scans", "2 of 3 folders in Houses", "Series · 5 of 8", or "Saved" right after a commit. */
+export function levelCaption<N extends LevelNode>(
+  level: Level<N>,
+  saved: boolean,
+  folderName: (path: string) => string,
+  labels: Record<string, string> = {}
+) {
   if (saved) return "Saved";
   const count = levelNodes(level).length;
+  const { name, named } = levelCoverage(levelNodes(level), labels);
+  if (name && named < count) return `${name} · ${named} of ${count}`;
   const { targets, partial } = levelTargets(level);
   const parents = level.groups.map((g) => folderName(g.parentPath)).join(", ");
   if (partial) return `${targets.length} of ${count} folders in ${parents}`;
   return `${count} folder${count === 1 ? "" : "s"} in ${parents}`;
-}
-
-/** Remount key for a level's name input: changes when its folders change, discarding any draft. */
-export function levelKey<N extends LevelNode>(level: Level<N>): string {
-  return levelNodes(level).map((n) => n.folder_path).join("|");
-}
-
-/**
- * Editable level heading. Edits stay local until Enter or blur, so only the
- * final name is ever saved; Escape discards the edit.
- */
-export function LevelNameInput({
-  value,
-  placeholder,
-  onCommit,
-  className = "",
-}: {
-  value: string;
-  placeholder: string;
-  onCommit: (name: string) => void;
-  className?: string;
-}) {
-  const [draft, setDraft] = useState(value);
-  const [editing, setEditing] = useState(false);
-  const cancelled = useRef(false);
-
-  useEffect(() => {
-    if (!editing) setDraft(value);
-  }, [value, editing]);
-
-  return (
-    <input
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onFocus={() => setEditing(true)}
-      onBlur={() => {
-        setEditing(false);
-        if (cancelled.current) {
-          cancelled.current = false;
-          setDraft(value);
-        } else if (draft.trim() !== value) {
-          onCommit(draft);
-        }
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") e.currentTarget.blur();
-        if (e.key === "Escape") {
-          cancelled.current = true;
-          e.currentTarget.blur();
-        }
-      }}
-      placeholder={placeholder}
-      spellCheck={false}
-      className={`min-w-0 bg-transparent font-semibold placeholder:font-normal placeholder:text-neutral-500 outline-none rounded px-1 -mx-1 focus:bg-neutral-800 focus:text-neutral-100 ${className}`}
-    />
-  );
 }
 
 /** Names the level's target folders after their parent folders ("Projects" for the folders in Projects). */
@@ -195,16 +195,24 @@ export function InheritNameButton({ onClick }: { onClick: () => void }) {
   );
 }
 
+/** A click on a level heading's background (not its controls or property strip) selects the level. */
+export function headingClick(e: React.MouseEvent, levelIndex: number, onHeadingClick?: (levelIndex: number) => void) {
+  if (!onHeadingClick || (e.target as Element).closest("button, input, select, [data-no-heading-click]")) return;
+  onHeadingClick(levelIndex);
+}
+
 export interface FolderNoteText {
   text: string;
   title: string;
+  /** What the folder would take, not what it has (an unnamed folder in a named level). */
+  faded?: boolean;
 }
 
 /** A folder's note ("Mapped to Client", a file count), shown beside or under the folder. */
 export function FolderNote({ note, className = "" }: { note: FolderNoteText | undefined; className?: string }) {
   if (!note) return null;
   return (
-    <span title={note.title} className={`shrink-0 truncate text-[11px] opacity-60 ${className}`}>
+    <span title={note.title} className={`shrink-0 truncate text-[11px] ${note.faded ? "opacity-25 italic" : "opacity-60"} ${className}`}>
       {note.text}
     </span>
   );

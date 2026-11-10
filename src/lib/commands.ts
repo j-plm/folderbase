@@ -204,12 +204,13 @@ export async function getPropertyScopes(library: string | null): Promise<Propert
   return invoke<PropertyScope[]>("get_property_scopes", { library });
 }
 
-/** Replaces a property's conditions (any of them); an empty list makes it apply to every file. Refuses cycles. */
+/** Replaces a property's conditions (any of them, or all); an empty list makes it apply to every file. Refuses cycles. */
 export async function setPropertyScope(
   propertyId: string,
-  conditions: { property_id: string; value: string }[]
+  conditions: { property_id: string; value: string }[],
+  matchAll = false
 ): Promise<void> {
-  return invoke<void>("set_property_scope", { propertyId, conditions });
+  return invoke<void>("set_property_scope", { propertyId, conditions, matchAll });
 }
 
 /** Changes the type (and options), converting the values files already hold. */

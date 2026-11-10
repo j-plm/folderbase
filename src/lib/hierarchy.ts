@@ -1,6 +1,6 @@
 import { NO_VALUE, folderKeys, noValuePlacement, sameFolderLevel } from "./folderTree";
 import type { ValueReader } from "./fileValues";
-import type { Scope } from "./scopes";
+import { ANY_VALUE, type Scope } from "./scopes";
 import type { FolderLevel } from "./tableViews";
 import type { FileRecord, ValueType } from "../types";
 
@@ -388,6 +388,8 @@ export function chainFiles(
 export function scopeSuggestion(root: FolderLevel | null, scope: Scope): { slot: LevelSlot; value: string } | null {
   if (scope.conditions.length !== 1) return null;
   const { property, value } = scope.conditions[0];
+  // "Has a value" goes under every folder of its property, not one
+  if (value === ANY_VALUE) return null;
   const index = listOf(root).findIndex((l) => l.column === `prop:${property}`);
   if (index === -1) return null;
   const inside = chainAt(root, [{ index, value }]);

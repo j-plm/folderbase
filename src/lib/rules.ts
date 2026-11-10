@@ -120,7 +120,7 @@ export function parseDefinition(json: string): RuleDefinition {
 export function definitionFromFilter(filters: FilterItem[], match: FilterMatch, search: string, place: FilterRule[] = []): RuleDefinition {
   const own = withFreshIds(activeFilters(filters));
   const also: FilterItem[] = withFreshIds(place);
-  if (search.trim()) also.push({ ...newRule("name", "text"), op: "contains", value: search.trim() });
+  if (search.trim()) also.push({ ...newRule("name", "text"), op: "contains", value: search });
   if (match === "any" && own.length > 1) {
     if (also.length === 0) return { match, conditions: own, actions: [newAction()] };
     return { match: "all", conditions: [...also.slice(0, place.length), newGroup("any", own), ...also.slice(place.length)], actions: [newAction()] };
@@ -205,6 +205,22 @@ export interface PreviewChange {
 
 export type PreviewStatus = "change" | "set" | "nomatch" | "edited";
 
+/** What the rule does to one property of one file. */
+export interface PreviewValue {
+  /** What the rule gives (null when it gives nothing). */
+  value: unknown;
+  /** What's there now. */
+  current: unknown;
+  /**
+   * "change": it's written; "same": it's there already; "kept": something else
+   * is there and Overwrite is off; "edited": changed by hand since the rule
+   * wrote it, so left as it is; "none": nothing to write.
+   */
+  outcome: "change" | "same" | "kept" | "edited" | "none";
+  /** Why nothing is written, when that's a mistake to fix. */
+  problem?: string;
+}
+
 export interface PreviewRow {
   file: FileRecord;
   status: PreviewStatus;
@@ -219,6 +235,8 @@ export interface PreviewRow {
   sources: { column: string; text: string }[];
   /** The values the patterns picked out ({Test} = 0014…). */
   slots: Record<string, string>;
+  /** Each property the rule sets, by name (none when the file doesn't fit the pattern). */
+  values: Record<string, PreviewValue>;
 }
 
 export interface RulePlan {
@@ -521,7 +539,7 @@ export function planRule(
       }
     });
     if (nomatch) {
-      rows.push({ file, status: "nomatch", changes: [], problems: ["doesn't fit the pattern"], sources, slots });
+      rows.push({ file, status: "nomatch", changes: [], problems: ["doesn't fit the pattern"], sources, slots, values: {} });
       patternMisses++;
       continue;
     }
@@ -535,26 +553,31 @@ export function planRule(
     const m = meta(file);
     const changes: PreviewChange[] = [];
     const problems: string[] = [];
+    const values: Record<string, PreviewValue> = {};
     let edited = false;
     for (const action of def.actions) {
       if (!action.property) continue;
-      const type = env.typeOf(action.property);
+      const key = action.property;
+      const current = m[key] ?? null;
+      const outcome = (outcome: PreviewValue["outcome"], value: unknown = null, problem?: string) => {
+        values[key] = { value, current, outcome, ...(problem ? { problem } : null) };
+        if (problem) problems.push(problem);
+      };
+      const type = env.typeOf(key);
       if (!type) {
-        problems.push(`there's no property “${action.property}”`);
+        outcome("none", null, `there's no property “${key}”`);
         continue;
       }
-      const result = actionValue(action, type, env.configOf(action.property), slots, file, env, lookups.get(action.id));
+      const result = actionValue(action, type, env.configOf(key), slots, file, env, lookups.get(action.id));
       if (!result) {
         // Nothing to write and nothing there: say why, rather than show it as already set
-        if (isEmpty(m[action.property])) problems.push(nothingReason(action, slots));
+        outcome("none", null, isEmpty(current) ? nothingReason(action, slots) : undefined);
         continue;
       }
       if ("problem" in result) {
-        problems.push(result.problem);
+        outcome("none", null, result.problem);
         continue;
       }
-      const key = action.property;
-      const current = m[key] ?? null;
       const prefix = `${ruleId}|${file.file_id}|${key}`;
       /** A value (or list item) this rule wrote here before. */
       const wrote = (v: unknown) => env.written.has(`${prefix}|${JSON.stringify(v)}`);
@@ -565,29 +588,43 @@ export function planRule(
         // Items this rule added that it no longer gives (the rule was changed): it takes them back
         const keep = have.filter((h) => hasItem(items, h) || !wrote(h));
         const add: string[] = [];
+        let handRemoved = false;
         for (const item of items) {
           if (hasItem(have, item)) continue;
-          if (wrote(item) && !env.overHandEdits) edited = true;
+          if (wrote(item) && !env.overHandEdits) handRemoved = true;
           else add.push(item);
         }
-        if (add.length === 0 && keep.length === have.length) continue;
+        if (handRemoved) edited = true;
+        if (add.length === 0 && keep.length === have.length) {
+          outcome(handRemoved ? "edited" : "same", result.value);
+          continue;
+        }
         const next = [...keep, ...add];
+        outcome("change", next);
         changes.push({ property: key, from: current, to: next });
         edits.push({ file_id: file.file_id, key, value: next });
         for (const item of add) writes.push({ rule_id: ruleId, file_id: file.file_id, key, value: JSON.stringify(item) });
         m[key] = next;
         continue;
       }
-      if (same(current, result.value)) continue;
+      if (same(current, result.value)) {
+        outcome("same", result.value);
+        continue;
+      }
       // Still what this rule wrote: the rule may change it (its definition was edited)
       const own = !isEmpty(current) && wrote(current);
       const handEdited = env.written.has(prefix) && !own;
       if (handEdited && !env.overHandEdits) {
         // Written before and changed since: the hand edit stands
         edited = true;
+        outcome("edited", result.value);
         continue;
       }
-      if (!isEmpty(current) && !own && !handEdited && !action.overwrite) continue;
+      if (!isEmpty(current) && !own && !handEdited && !action.overwrite) {
+        outcome("kept", result.value);
+        continue;
+      }
+      outcome("change", result.value);
       changes.push({ property: key, from: current, to: result.value });
       edits.push({ file_id: file.file_id, key, value: result.value });
       writes.push({ rule_id: ruleId, file_id: file.file_id, key, value: JSON.stringify(result.value) });
@@ -595,7 +632,7 @@ export function planRule(
     }
     const status: PreviewStatus =
       changes.length > 0 ? "change" : edited ? "edited" : problems.length > 0 && def.actions.length > 0 ? "nomatch" : "set";
-    rows.push({ file, status, changes, problems, sources, slots });
+    rows.push({ file, status, changes, problems, sources, slots, values });
   }
 
   const count = (s: PreviewStatus) => rows.filter((r) => r.status === s).length;

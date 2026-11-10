@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  ANY_VALUE,
   applies,
+  describeCondition,
+  impliedConditions,
   dependsOn,
   describeScope,
   impliedValues,
@@ -34,9 +37,9 @@ describe("scopesByName", () => {
     const names: Record<string, string> = { t: "Tags", h: "Housing" };
     const result = scopesByName(
       [
-        { property_id: "h", condition_property_id: "t", value: "housing" },
-        { property_id: "h", condition_property_id: "t", value: "home" },
-        { property_id: "x", condition_property_id: "t", value: "gone" },
+        { property_id: "h", condition_property_id: "t", value: "housing", match_all: false },
+        { property_id: "h", condition_property_id: "t", value: "home", match_all: false },
+        { property_id: "x", condition_property_id: "t", value: "gone", match_all: false },
       ],
       (id) => names[id]
     );
@@ -117,6 +120,76 @@ describe("labels", () => {
     expect(scopeOrigin(scopes[2], "Tags")).toBe("housing, car");
     expect(scopeOrigin(undefined)).toBeNull();
     expect(describeScope(scopes[2])).toBe("Applies when Tags has housing or car");
+  });
+});
+
+describe("a condition on any value", () => {
+  // Scan_Side applies when Component has any value (a Text property)
+  const any: Scope = { property: "Scan_Side", conditions: [{ property: "Component", value: ANY_VALUE }] };
+
+  it("applies while the property has a value, whatever it is", () => {
+    expect(applies(any, { Component: "Sprocket" }, {})).toBe(true);
+    expect(applies(any, { Component: "" }, {})).toBe(false);
+    expect(scopeState(any, {}, {})).toBe("na");
+    expect(scopeState(any, { Component: "Hub" }, {})).toBe("expected");
+  });
+
+  it("implies nothing, as it names no value", () => {
+    expect(impliedValues({ Scan_Side: "S1" }, [any], () => false)).toEqual({});
+  });
+
+  it("is cleared only when the property's last value goes", () => {
+    const both = [{ ...any, conditions: [{ property: "Tags", value: ANY_VALUE }] }];
+    expect(propertiesToClear({ Tags: ["a", "b"], Scan_Side: "S1" }, both, "Tags", ["a"])).toEqual([]);
+    expect(propertiesToClear({ Tags: ["a", "b"], Scan_Side: "S1" }, both, "Tags", ["a", "b"])).toEqual(["Scan_Side"]);
+  });
+
+  it("opens from every value of its property, and reads as having a value", () => {
+    expect(opensInto([any], "Component", "Sprocket")).toEqual(["Scan_Side"]);
+    expect(opensInto([any], null, "Sprocket")).toEqual([]);
+    expect(scopeOrigin(any)).toBe("Component");
+    expect(describeScope(any)).toBe("Applies when Component has a value");
+    expect(describeCondition(any.conditions[0])).toBe("Component has a value");
+    expect(describeCondition({ property: "Tags", value: "car" })).toBe("Tags has “car”");
+  });
+});
+
+describe("conditions that must all hold", () => {
+  // Scan_Side applies to Sprocket Scans files that have a Component
+  const both: Scope = {
+    property: "Scan_Side",
+    all: true,
+    conditions: [
+      { property: "Measurement Type", value: "Sprocket Scans" },
+      { property: "Component", value: ANY_VALUE },
+    ],
+  };
+
+  it("reads all from the registry's rows", () => {
+    const names: Record<string, string> = { s: "Scan_Side", m: "Measurement Type" };
+    const [scope] = scopesByName([{ property_id: "s", condition_property_id: "m", value: "Sprocket Scans", match_all: true }], (id) => names[id]);
+    expect(scope.all).toBe(true);
+  });
+
+  it("applies only where every condition holds", () => {
+    expect(applies(both, { "Measurement Type": "Sprocket Scans", Component: "Hub" }, {})).toBe(true);
+    expect(applies(both, { "Measurement Type": "Sprocket Scans" }, {})).toBe(false);
+    expect(applies(both, { Component: "Hub" }, {})).toBe(false);
+  });
+
+  it("implies each named value, even with several conditions", () => {
+    expect(impliedConditions(both)).toEqual([{ property: "Measurement Type", value: "Sprocket Scans" }]);
+    expect(impliedValues({ Scan_Side: "S1" }, [both], () => false)).toEqual({ "Measurement Type": ["Sprocket Scans"] });
+  });
+
+  it("is cleared when any one condition stops holding", () => {
+    const meta = { "Measurement Type": "Sprocket Scans", Component: ["Hub"], Scan_Side: "S1" };
+    expect(propertiesToClear(meta, [both], "Component", ["Hub"])).toEqual(["Scan_Side"]);
+  });
+
+  it("reads as and", () => {
+    expect(describeScope(both)).toBe("Applies when Measurement Type has Sprocket Scans, and Component has a value");
+    expect(scopeOrigin(both)).toBe("Measurement Type: Sprocket Scans + Component");
   });
 });
 

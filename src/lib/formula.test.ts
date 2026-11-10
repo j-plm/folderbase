@@ -46,6 +46,16 @@ describe("runFormula", () => {
     expect(run("trim(lower(\"  ABC \"))")).toBe("abc");
   });
 
+  it("tidies the end of a value, as the help's examples say", () => {
+    const tidy = (Serial: string, f: string) => runFormula(f, { ...ctx, slots: { Serial } });
+    const strip = 'replace({Serial}, "(-S\\d+| \\d+)$", "")';
+    expect(tidy("AB-12-S1", strip)).toBe("AB-12");
+    expect(tidy("AB-12 1", strip)).toBe("AB-12");
+    expect(tidy("AB-12", strip)).toBe("AB-12");
+    expect(tidy("AB-12-S1", 'match({Serial}, "-(S\\d+)$")')).toBe("S1");
+    expect(tidy("AB-12", 'match({Serial}, "-(S\\d+)$")')).toBe("");
+  });
+
   it("explains mistakes", () => {
     expect(() => run("{Nope}")).toThrow(FormulaError);
     expect(() => run("nothing")).toThrow(/isn't known/);
@@ -54,6 +64,9 @@ describe("runFormula", () => {
     expect(() => run('match(name, "(")')).toThrow(/valid regular expression/);
     expect(formulaProblem('upper("x"')).toMatch(/Expected/);
     expect(formulaProblem('"open')).toMatch(/isn't closed/);
+    expect(formulaProblem('formatDate({Date}{Time}, "YYMMDD")')).toBe("Put & before “{Time}” to join it on");
+    const timed = { ...ctx, slots: { ...ctx.slots, Time: "1430" } };
+    expect(runFormula('date({Date} & {Time}, "YYMMDDHHmm")', timed)).toMatch(/^2025-03-01.14:30/);
     expect(formulaProblem("upper(name)")).toBeNull();
   });
 });

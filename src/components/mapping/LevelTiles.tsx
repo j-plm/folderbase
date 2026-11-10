@@ -3,7 +3,7 @@ import type React from "react";
 import { FolderIcon } from "../../lib/fileIcons";
 import { twoLineLabel } from "../../lib/tileLabel";
 import { measureText, uiFont } from "../../lib/textMeasure";
-import { FolderNote, type FolderNoteText, type LevelLayoutProps, type LevelNode } from "./levels";
+import { FolderNote, headingClick, type FolderNoteText, type LevelLayoutProps, type LevelNode } from "./levels";
 
 // Same cell metrics as TilesView (Finder icon view): 64pt icons, 106pt cells.
 const TILE_WIDTH = 106;
@@ -69,6 +69,7 @@ export default function LevelTiles<N extends LevelNode>({
   note,
   dimmed,
   emptyGroup,
+  onHeadingClick,
 }: LevelLayoutProps<N>) {
   const labelFont = useMemo(() => uiFont(12), []);
 
@@ -76,9 +77,9 @@ export default function LevelTiles<N extends LevelNode>({
     <div className="h-full overflow-y-auto">
       {levels.map((level, levelIndex) => (
         <section key={levelIndex} className={levelIndex > 0 ? "border-t border-neutral-700/60" : ""}>
-          <div className="flex items-center gap-3 px-5 pt-2.5">
+          <div onClick={(e) => headingClick(e, levelIndex, onHeadingClick)} className="flex flex-col gap-1 px-5 pt-2.5">
             {heading(levelIndex, "tiles")}
-            <span className="shrink-0 text-[11px] text-neutral-500">{caption(levelIndex)}</span>
+            <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-neutral-500">{caption(levelIndex)}</div>
           </div>
           {level.groups.map((group) => (
             <div key={group.parentPath}>

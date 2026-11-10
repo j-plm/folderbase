@@ -20,6 +20,8 @@ export const labels = {
   reveal: platform === "macos" ? "Show in Finder" : platform === "windows" ? "Show in Explorer" : "Show in Folder",
   /** How to name a toggle-click in hints ("⌘-click to select several"). */
   toggleClick: platform === "macos" ? "⌘-click" : "Ctrl-click",
+  /** The Select All shortcut, in hints. */
+  selectAll: platform === "macos" ? "⌘A" : "Ctrl+A",
 } as const;
 
 export const breadcrumbSeparator = platform === "windows" ? "\\" : "/";

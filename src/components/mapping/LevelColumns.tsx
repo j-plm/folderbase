@@ -4,7 +4,7 @@ import { inheritWidths } from "../../lib/columnBrowser";
 import { FolderIcon, SymbolIcon } from "../../lib/fileIcons";
 import { middleTruncate } from "../../lib/tileLabel";
 import { measureText, uiFont } from "../../lib/textMeasure";
-import { FolderNote, levelNodes, type FolderNoteText, type LevelLayoutProps, type LevelNode } from "./levels";
+import { FolderNote, headingClick, levelNodes, type FolderNoteText, type LevelLayoutProps, type LevelNode } from "./levels";
 
 // Finder column view metrics, as in ColumnBrowser.
 const DEFAULT_WIDTH = 240;
@@ -63,6 +63,7 @@ export default function LevelColumns<N extends LevelNode>({
   dimmed,
   hasChildren,
   emptyGroup,
+  onHeadingClick,
 }: LevelLayoutProps<N>) {
   const containerRef = useRef<HTMLDivElement>(null);
   const font = useMemo(() => uiFont(13), []);
@@ -126,9 +127,12 @@ export default function LevelColumns<N extends LevelNode>({
             style={{ width }}
             className="relative shrink-0 h-full flex flex-col border-r border-neutral-700/60"
           >
-            <div className="shrink-0 flex flex-col px-4 pt-2 pb-1.5 border-b border-neutral-700/60">
-              <div className="flex items-center gap-1">{heading(levelIndex, "columns")}</div>
-              <span className="text-[11px] text-neutral-500 truncate">{caption(levelIndex)}</span>
+            <div
+              onClick={(e) => headingClick(e, levelIndex, onHeadingClick)}
+              className="shrink-0 flex flex-col gap-1 px-4 pt-2 pb-1.5 border-b border-neutral-700/60"
+            >
+              {heading(levelIndex, "columns")}
+              <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-neutral-500">{caption(levelIndex)}</div>
             </div>
             <div className="flex-1 overflow-y-auto px-2 pb-2">
               {level.groups.map((group, groupIndex) => (
@@ -163,13 +167,16 @@ export default function LevelColumns<N extends LevelNode>({
                           {middleTruncate(node.folder_name, nameWidth(width) - noteWidth(folderNote), (t) => measureText(t, font))}
                         </span>
                         <FolderNote note={folderNote} className="max-w-[45%]" />
-                        {hasChildren(node) && (
+                        {hasChildren(node) ? (
                           <SymbolIcon
                             name="chevron.right"
                             size={CHEVRON_SIZE}
                             className="text-neutral-400"
                             fallback={<span className="text-neutral-400 text-xs leading-none">›</span>}
                           />
+                        ) : (
+                          // Its room is kept, so notes line up with the folders that have one
+                          <span style={{ width: CHEVRON_SIZE }} className="shrink-0" />
                         )}
                       </div>
                     );

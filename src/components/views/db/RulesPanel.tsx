@@ -6,7 +6,18 @@ import { SymbolIcon } from "../../../lib/fileIcons";
 import { showContextMenu, type MenuEntry } from "../../../lib/nativeMenu";
 import { evalFilters, listItems, matchesRule, newRule, type FilterItem, type FilterRule } from "../../../lib/dbTable";
 import { filterRules, mapRules, removeItem, updateRule } from "../../../lib/filterTree";
-import { dropIndexAt, moveColumnId } from "../../../lib/columns";
+import {
+  compareSortValues,
+  contentFitWidth,
+  dropIndexAt,
+  moveColumnId,
+  orderColumns,
+  toggleSort,
+  type ColumnDef,
+  type SortState,
+} from "../../../lib/columns";
+import TableHeader from "../shared/TableHeader";
+import { measureText, uiFont } from "../../../lib/textMeasure";
 import { baseName, fileName } from "../../../lib/fileColumns";
 import { formulaProblem } from "../../../lib/formula";
 import { DATE_FORMATS, examplePattern, type ExampleSlot } from "../../../lib/patterns";
@@ -23,7 +34,9 @@ import {
   type RuleAction,
   type RuleDefinition,
   type RuleEnv,
+  type PreviewRow,
   type PreviewStatus,
+  type PreviewValue,
   type RulePlan,
   type StoredRule,
 } from "../../../lib/rules";
@@ -1402,8 +1415,21 @@ function ExamplePicker({
 
 /** Preview rows shown at first, and added each time it's scrolled to the bottom. */
 const PREVIEW_ROWS = 100;
-const PREVIEW_COLUMNS = ["File", "Read from", "Picked out", "Result"];
-const PREVIEW_WIDTHS = [220, 240, 200, 300];
+/** The fixed columns; one for each property the rule sets goes before Result. */
+const PREVIEW_COLUMNS: ColumnDef[] = [
+  { id: "file", label: "File", weight: 1, minWidth: 80 },
+  { id: "read", label: "Read from", weight: 1, minWidth: 80 },
+  { id: "picked", label: "Picked out", weight: 1, minWidth: 80 },
+  { id: "result", label: "Result", weight: 1, minWidth: 80 },
+];
+const PREVIEW_WIDTHS: Record<string, number> = { file: 220, read: 240, picked: 200, result: 200 };
+const PROPERTY_WIDTH = 200;
+const MIN_WIDTH = 80;
+const MAX_WIDTH = 900;
+/** Space after each part of Read from and Picked out (mr-2). */
+const PART_GAP = 8;
+const propColumn = (property: string) => `prop:${property}`;
+const defaultWidth = (id: string) => PREVIEW_WIDTHS[id] ?? PROPERTY_WIDTH;
 
 function show(v: unknown): string {
   if (v == null || v === "" || (Array.isArray(v) && v.length === 0)) return "empty";
@@ -1422,22 +1448,121 @@ function PreviewHint() {
 
 type PreviewFilter = "all" | PreviewStatus;
 
+const STATUS_ORDER = { change: 0, nomatch: 1, edited: 2, set: 3 } as const;
+
+function resultText(row: PreviewRow): string {
+  switch (row.status) {
+    case "change":
+      return row.changes.length === 1 ? "1 value changes" : `${row.changes.length} values change`;
+    case "set":
+      return "already set";
+    case "edited":
+      return "changed by hand: left as it is";
+    case "nomatch":
+      return `no match: ${row.problems.join("; ")}`;
+  }
+}
+
+/** A property's cell: the text it sorts by, and how it reads when hovered. */
+function valueText(v: PreviewValue | undefined): { text: string; title: string } {
+  if (!v) return { text: "", title: "" };
+  const was = show(v.current);
+  switch (v.outcome) {
+    case "change":
+      return { text: show(v.value), title: was === "empty" ? show(v.value) : `${was} → ${show(v.value)}` };
+    case "same":
+      return { text: show(v.value), title: `${show(v.value)}: already set` };
+    case "kept":
+      return { text: was, title: `${was} stays: Overwrite is off (the rule gives ${show(v.value)})` };
+    case "edited":
+      return { text: was, title: `${was} was changed by hand, so it stays (the rule gives ${show(v.value)})` };
+    case "none":
+      return v.problem ? { text: v.problem, title: v.problem } : { text: isEmptyValue(v.current) ? "" : was, title: "nothing to write" };
+  }
+}
+
+const isEmptyValue = (v: unknown) => show(v) === "empty";
+
+/** Sorting by a property puts its changes first, then its mistakes, then the rest, whichever way it's sorted. */
+const changeRank = (v: PreviewValue | undefined) => (v?.outcome === "change" ? 0 : v?.problem ? 1 : 2);
+
+function ValueCell({ value }: { value: PreviewValue | undefined }) {
+  const { text, title } = valueText(value);
+  if (!value) return null;
+  const tone =
+    value.outcome === "change"
+      ? "text-blue-400"
+      : value.outcome === "same"
+        ? "text-neutral-300"
+        : value.outcome === "none" && value.problem
+          ? "text-amber-500"
+          : "text-neutral-500";
+  return (
+    <span title={title} className={tone}>
+      {text}
+      {value.outcome === "change" && !isEmptyValue(value.current) && <span className="text-neutral-500"> was {show(value.current)}</span>}
+      {value.outcome === "kept" && <span className="text-neutral-500"> · Overwrite off</span>}
+    </span>
+  );
+}
+
 /**
  * What the rule would do, file by file: what it read (the folder or name a
- * pattern fitted, a column it copies), what its patterns picked out, and the
- * result. Narrow it to one outcome to check those files.
+ * pattern fitted, a column it copies), what its patterns picked out, a column
+ * for each property it sets, and the result. Click a header to sort, drag one
+ * to move it; narrow it to one outcome to check those files.
  */
 function Preview({ plan, columns, onIncludeHandEdits }: { plan: RulePlan; columns: FilterColumn[]; onIncludeHandEdits: () => void }) {
   const { counts } = plan;
   const [only, setOnly] = useState<PreviewFilter>("all");
   const [limit, setLimit] = useState(PREVIEW_ROWS);
-  const [widths, setWidths] = useState<number[]>(() => {
-    const saved = loadSize<number[]>("rules-preview-columns", PREVIEW_WIDTHS);
-    return Array.isArray(saved) && saved.length === PREVIEW_WIDTHS.length ? saved : PREVIEW_WIDTHS;
+  const [widths, setWidths] = useState<Record<string, number>>(() => {
+    const saved = loadSize<Record<string, number>>("rules-preview-widths", {});
+    return saved && typeof saved === "object" && !Array.isArray(saved) ? saved : {};
   });
-  const order = { change: 0, nomatch: 1, edited: 2, set: 3 } as const;
+  const [order, setOrder] = useState<string[]>(() => {
+    const saved = loadSize<string[]>("rules-preview-order", []);
+    return Array.isArray(saved) ? saved : [];
+  });
+  const [sort, setSort] = useState<SortState | null>(null);
+  const sortedProperty = sort?.key.startsWith("prop:") ? sort.key.slice("prop:".length) : null;
+
+  // The properties set, in the order the rule sets them
+  const properties = [...new Set(plan.rows.flatMap((r) => Object.keys(r.values)))];
+  const defs = orderColumns(
+    [...PREVIEW_COLUMNS.slice(0, 3), ...properties.map((p) => ({ id: propColumn(p), label: p, weight: 1, minWidth: 80 })), PREVIEW_COLUMNS[3]],
+    order
+  );
+  const widthOf = (id: string) => widths[id] ?? defaultWidth(id);
+  const widthMap = Object.fromEntries(defs.map((c) => [c.id, widthOf(c.id)]));
+  const contentWidth = defs.reduce((sum, c) => sum + widthOf(c.id), 0);
+
+  const labelOf = (id: string) => columns.find((c) => c.id === id)?.label ?? id;
+  const readText = (row: PreviewRow) => row.sources.map((x) => `${labelOf(x.column)}: ${x.text || "empty"}`).join("  ·  ");
+  const pickedText = (row: PreviewRow) =>
+    Object.entries(row.slots)
+      .map(([k, v]) => `${k} ${v}`)
+      .join("  ·  ");
+  const sortValue = (row: PreviewRow, id: string): string | number => {
+    if (id === "file") return fileName(row.file.file_path);
+    if (id === "read") return readText(row);
+    if (id === "picked") return pickedText(row);
+    // Most values changed first (on the first click), then by outcome
+    if (id === "result") return -row.changes.length * 10 + STATUS_ORDER[row.status];
+    return valueText(row.values[id.slice("prop:".length)]).text;
+  };
+
   const shown = plan.rows.filter((r) => only === "all" || r.status === only);
-  const rows = [...shown].sort((a, b) => order[a.status] - order[b.status]).slice(0, limit);
+  const sorted = useMemo(() => {
+    if (!sort) return [...shown].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status]);
+    return [...shown].sort(
+      (a, b) =>
+        (sortedProperty ? changeRank(a.values[sortedProperty]) - changeRank(b.values[sortedProperty]) : 0) ||
+        compareSortValues(sortValue(a, sort.key), sortValue(b, sort.key), sort.direction)
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan, only, sort, columns]);
+  const rows = sorted.slice(0, limit);
   // Scrolling to the bottom brings in the next rows
   const endRef = useRef<HTMLDivElement>(null);
   const more = shown.length > limit;
@@ -1450,18 +1575,55 @@ function Preview({ plan, columns, onIncludeHandEdits }: { plan: RulePlan; column
     observer.observe(el);
     return () => observer.disconnect();
   }, [more, rows.length]);
-  const labelOf = (id: string) => columns.find((c) => c.id === id)?.label ?? id;
+
+  const setWidth = (id: string, w: number | null, save: boolean) =>
+    setWidths((ws) => {
+      const next = { ...ws };
+      if (w == null) delete next[id];
+      else next[id] = w;
+      if (save) saveSize("rules-preview-widths", next);
+      return next;
+    });
+
+  /** Wide enough for the column's header and every value in it (of the files shown), up to MAX_WIDTH. */
+  const fitWidth = (id: string) => {
+    const font = uiFont(13);
+    const mono = uiFont(12, 400, "ui-monospace, SFMono-Regular, Menlo, monospace");
+    const parts = (texts: string[], f: string) => texts.reduce((w, t) => w + measureText(t, f) + PART_GAP, 0);
+    const cells = shown.map((row) => {
+      switch (id) {
+        case "file":
+          return measureText(fileName(row.file.file_path), font);
+        case "read":
+          return parts(row.sources.map((x) => `${labelOf(x.column)} ${x.text || "empty"}`), font);
+        case "picked":
+          return parts(Object.entries(row.slots).map(([k, v]) => `${k} ${v}`), mono);
+        case "result":
+          return measureText(resultText(row), font);
+        default: {
+          const v = row.values[id.slice("prop:".length)];
+          if (!v) return 0;
+          const extra =
+            v.outcome === "change" && !isEmptyValue(v.current) ? ` was ${show(v.current)}` : v.outcome === "kept" ? " · Overwrite off" : "";
+          return measureText(valueText(v).text + extra, font);
+        }
+      }
+    });
+    const label = defs.find((c) => c.id === id)?.label ?? "";
+    return Math.min(MAX_WIDTH, contentFitWidth(cells, measureText(label, uiFont(12)), MIN_WIDTH));
+  };
+
   const tabs: [PreviewFilter, string, number][] = [
     ["all", "All", plan.rows.length],
-    ["change", "Will change", counts.change],
     ["nomatch", "No match", counts.nomatch],
     ["set", "Already set", counts.set],
     ["edited", "Changed by hand", counts.edited],
   ];
-  // Columns are as wide as dragged; the table scrolls sideways when they don't fit
-  const gridStyle = { gridTemplateColumns: widths.map((w) => `${w}px`).join(" ") };
-  const grid = "grid gap-x-3";
-  const total = widths.reduce((a, b) => a + b, 0) + 12 * (widths.length - 1) + 24;
+  const cell = (id: string, content: React.ReactNode, className: string, title?: string) => (
+    <span key={id} style={{ width: widthOf(id) }} title={title} className={`shrink-0 px-3 truncate ${className}`}>
+      {content}
+    </span>
+  );
   return (
     <section className="flex flex-col gap-2 min-w-0">
       <p className={sectionTitle}>Preview</p>
@@ -1492,92 +1654,105 @@ function Preview({ plan, columns, onIncludeHandEdits }: { plan: RulePlan; column
                 setOnly(id);
                 setLimit(PREVIEW_ROWS);
               }}
-              className={`h-6 px-2 rounded-[6px] text-xs ${only === id ? "bg-neutral-700 text-neutral-100" : "text-neutral-400 hover:bg-neutral-800"}`}
+              // Hiding files with no changes narrows All, so All stays the tab shown
+              className={`h-6 px-2 rounded-[6px] text-xs ${only === id || (id === "all" && only === "change") ? "bg-neutral-700 text-neutral-100" : "text-neutral-400 hover:bg-neutral-800"}`}
             >
               {label} <span className="tabular-nums opacity-70">{n.toLocaleString()}</span>
             </button>
           ))}
+        <label className="flex items-center gap-1.5 ml-auto text-xs text-neutral-400">
+          <input
+            type="checkbox"
+            checked={only === "change"}
+            onChange={(e) => {
+              setOnly(e.target.checked ? "change" : "all");
+              setLimit(PREVIEW_ROWS);
+            }}
+          />
+          Hide files with no changes
+        </label>
       </div>
       {rows.length > 0 && (
-        <div className="rounded-lg border border-neutral-700/60 overflow-x-auto min-w-0">
-          <div style={{ minWidth: total }}>
-          <div style={gridStyle} className={`${grid} px-3 py-1 text-xs text-neutral-500 border-b border-neutral-700/60 sticky top-0 bg-neutral-900`}>
-            {PREVIEW_COLUMNS.map((label, i) => (
-              // Only the label is clipped: the grip sits on the boundary, just outside the cell
-              <span key={label} className="relative min-w-0">
-                <span className="block truncate">{label}</span>
-                {/* Drag a header's right edge to resize its column */}
-                <span
-                  onMouseDown={(e) =>
-                    dragWidth(e, widths[i], 80, 900, 1, (w, done) => {
-                      setWidths((ws) => {
-                        const next = ws.map((x, j) => (j === i ? w : x));
-                        if (done) saveSize("rules-preview-columns", next);
-                        return next;
-                      });
-                    })
-                  }
-                  onDoubleClick={() =>
-                    setWidths((ws) => {
-                      const next = ws.map((x, j) => (j === i ? PREVIEW_WIDTHS[i] : x));
-                      saveSize("rules-preview-columns", next);
-                      return next;
-                    })
-                  }
-                  title="Drag to resize; double-click to reset"
-                  className="group/grip absolute -right-[11px] -top-1 -bottom-1 w-[10px] flex justify-center cursor-col-resize z-10"
-                >
-                  <span className="w-px h-full bg-neutral-700/60 group-hover/grip:bg-blue-500 group-hover/grip:w-[2px]" />
-                </span>
-              </span>
-            ))}
-          </div>
-          {rows.map((row, i) => {
-            const read = row.sources.map((x) => `${labelOf(x.column)}: ${x.text || "empty"}`).join("  ·  ");
-            const picked = Object.entries(row.slots)
-              .map(([k, v]) => `${k} ${v}`)
-              .join("  ·  ");
-            const result =
-              row.status === "change"
-                ? row.changes.map((c) => `${c.property}${show(c.from) === "empty" ? "" : ` ${show(c.from)}`} → ${show(c.to)}`).join("  ·  ")
-                : row.status === "set"
-                  ? "already set"
-                  : row.status === "edited"
-                    ? "changed by hand: left as it is"
-                    : `no match: ${row.problems.join("; ")}`;
-            return (
-              <div key={row.file.file_id} style={gridStyle} className={`${grid} items-baseline px-3 py-1 ${i % 2 ? "bg-neutral-850" : ""}`}>
-                <span className="truncate" title={row.file.relative_path ?? fileName(row.file.file_path)}>
-                  {fileName(row.file.file_path)}
-                </span>
-                <span className="truncate text-neutral-400" title={read}>
-                  {row.sources.map((x, j) => (
-                    <span key={j} className="mr-2">
-                      <span className="text-neutral-500">{labelOf(x.column)}</span> {x.text || "empty"}
-                    </span>
-                  ))}
-                </span>
-                <span className="truncate text-neutral-300 font-mono text-[12px]" title={picked}>
-                  {Object.entries(row.slots).map(([k, v]) => (
-                    <span key={k} className="mr-2">
-                      <span className="text-neutral-500">{k}</span> {v}
-                    </span>
-                  ))}
-                </span>
-                <span
-                  className={`truncate ${row.status === "change" ? "text-blue-400" : row.status === "nomatch" ? "text-amber-500" : "text-neutral-400"}`}
-                  title={result}
-                >
-                  {result}
-                </span>
+        // Columns are as wide as dragged. The table scrolls both ways in its own box, so the
+        // header stays in view to sort and resize by
+        <div className="rounded-lg border border-neutral-700/60 overflow-auto min-w-0 max-h-[70vh]">
+          <div style={{ minWidth: contentWidth }}>
+            <TableHeader
+              columns={defs}
+              widths={widthMap}
+              contentWidth={contentWidth}
+              sort={sort}
+              onSort={(id) => {
+                setSort((s) => (s ? toggleSort(s, id) : { key: id, direction: "asc" }));
+                setLimit(PREVIEW_ROWS);
+              }}
+              onResizeStart={(id, e) => dragWidth(e, widthOf(id), MIN_WIDTH, MAX_WIDTH, 1, (w, done) => setWidth(id, w, done))}
+              // Double-click toggles between as narrow as it goes and wide enough for everything in it
+              onResetColumn={(id) => {
+                const fit = fitWidth(id);
+                setWidth(id, widthOf(id) >= fit ? MIN_WIDTH : fit, true);
+              }}
+              onReorder={(id, target) => {
+                const next = moveColumnId(
+                  defs.map((c) => c.id),
+                  id,
+                  target
+                );
+                setOrder(next);
+                saveSize("rules-preview-order", next);
+              }}
+            />
+            {rows.map((row, i) => {
+              const read = readText(row);
+              const picked = pickedText(row);
+              const result = resultText(row);
+              return (
+                <div key={row.file.file_id} style={{ width: contentWidth }} className={`flex items-baseline py-1 ${i % 2 ? "bg-neutral-850" : ""}`}>
+                  {defs.map((c) => {
+                    switch (c.id) {
+                      case "file":
+                        return cell(c.id, fileName(row.file.file_path), "", row.file.relative_path ?? fileName(row.file.file_path));
+                      case "read":
+                        return cell(
+                          c.id,
+                          row.sources.map((x, j) => (
+                            <span key={j} className="mr-2">
+                              <span className="text-neutral-500">{labelOf(x.column)}</span> {x.text || "empty"}
+                            </span>
+                          )),
+                          "text-neutral-400",
+                          read
+                        );
+                      case "picked":
+                        return cell(
+                          c.id,
+                          Object.entries(row.slots).map(([k, v]) => (
+                            <span key={k} className="mr-2">
+                              <span className="text-neutral-500">{k}</span> {v}
+                            </span>
+                          )),
+                          "text-neutral-300 font-mono text-[12px]",
+                          picked
+                        );
+                      case "result":
+                        return cell(
+                          c.id,
+                          result,
+                          row.status === "change" ? "text-blue-400" : row.status === "nomatch" ? "text-amber-500" : "text-neutral-400",
+                          result
+                        );
+                      default:
+                        return cell(c.id, <ValueCell value={row.values[c.id.slice("prop:".length)]} />, "");
+                    }
+                  })}
+                </div>
+              );
+            })}
+            {more && (
+              <div ref={endRef} className="px-3 py-1 text-neutral-500">
+                Showing {rows.length.toLocaleString()} of {shown.length.toLocaleString()}: scroll for more
               </div>
-            );
-          })}
-          {more && (
-            <div ref={endRef} className="px-3 py-1 text-neutral-500">
-              Showing {rows.length.toLocaleString()} of {shown.length.toLocaleString()}: scroll for more
-            </div>
-          )}
+            )}
           </div>
         </div>
       )}

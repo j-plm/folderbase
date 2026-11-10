@@ -8,6 +8,10 @@ describe("matchesRule", () => {
     expect(matchesRule("Rig-A", "text", rule("contains", "rig"))).toBe(true);
     expect(matchesRule("Rig-A", "text", rule("is", "rig-a"))).toBe(true);
     expect(matchesRule("Rig-A", "text", rule("not_contains", "rig"))).toBe(false);
+    // A space counts: " 1" is only the 1 after a space
+    expect(matchesRule("A16-1 1_250305", "text", rule("contains", " 1"))).toBe(true);
+    expect(matchesRule("A16-1_250305", "text", rule("contains", " 1"))).toBe(false);
+    expect(matchesRule("A16-1_250305", "text", rule("not_contains", " 1"))).toBe(true);
   });
   it("number conditions compare numerically, reading numeric text", () => {
     expect(matchesRule(10, "number", rule("gt", "9"))).toBe(true);

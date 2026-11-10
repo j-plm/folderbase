@@ -70,6 +70,8 @@ export interface PropertyScope {
   property_id: string;
   condition_property_id: string;
   value: string;
+  /** All the property's conditions must hold, not just one (the same on each of its rows). */
+  match_all: boolean;
 }
 
 export interface PropertyValue {

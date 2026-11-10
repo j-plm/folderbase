@@ -241,6 +241,11 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
+    // A scoped property's conditions must all hold (1) rather than any (0); the same on each of its rows
+    let _ = sqlx::query("ALTER TABLE property_scopes ADD COLUMN match_all INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
     // Where files dropped in from outside are copied, relative to the root (NULL: "Added Files")
     let _ = sqlx::query("ALTER TABLE locations ADD COLUMN added_folder TEXT")
         .execute(pool)

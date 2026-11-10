@@ -66,6 +66,7 @@ export function useFolderSource(locationId: string | null) {
     },
     [propByName, registeredValues]
   );
+  const propertyOf = useCallback((name: string) => propByName.get(name) ?? null, [propByName]);
   const propertyIdOf = useCallback((name: string) => propByName.get(name)?.property_id ?? null, [propByName]);
   const typeOf = useCallback((name: string): ValueType => propByName.get(name)?.value_type ?? "free_text", [propByName]);
   const scopes = useMemo(() => {
@@ -81,5 +82,5 @@ export function useFolderSource(locationId: string | null) {
     [metadataKeys, registry]
   );
 
-  return { library, locationName, addedFolder, valuesOf, propertyIdOf, typeOf, scopes, properties, reload, loaded: loadedFor === locationId };
+  return { library, locationName, addedFolder, valuesOf, propertyOf, propertyIdOf, typeOf, scopes, properties, reload, loaded: loadedFor === locationId };
 }

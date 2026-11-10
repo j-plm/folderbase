@@ -1,17 +1,17 @@
 import { useMemo, useState } from "react";
 import type React from "react";
-import { SymbolIcon } from "../../lib/fileIcons";
 import type { ValueReader } from "../../lib/fileValues";
 import { levelExamples, scopeSuggestion, type LevelSlot } from "../../lib/hierarchy";
 import { FOLDER_NATIVE_COLUMNS, folderColumnLabel } from "../../lib/folderTree";
 import { PROP_PREFIX } from "../../lib/fileColumns";
 import { showContextMenu, type MenuEntry } from "../../lib/nativeMenu";
 import { EXTRACTED_KEYS, propertyLabel } from "../../lib/propertyTypes";
-import type { Scope } from "../../lib/scopes";
+import { describeCondition, type Scope } from "../../lib/scopes";
 import type { FolderLevel } from "../../lib/tableViews";
 import type { FileRecord, ValueType } from "../../types";
 import { popoverField } from "../shared/Popover";
 import { columnSymbol, type DragItem } from "./HierarchyLevels";
+import { NewPropertyPill, PropertyPill } from "./PropertyPill";
 
 interface Props {
   root: FolderLevel | null;
@@ -130,7 +130,7 @@ export default function PropertyPalette({
   }
 
   const condition = (scope: Scope) =>
-    `Only where ${scope.conditions.map((c) => `${propertyLabel(c.property)} has “${c.value}”`).join(" or ")}`;
+    `Only where ${scope.conditions.map((c) => describeCondition(c, propertyLabel(c.property))).join(scope.all ? " and " : " or ")}`;
 
   return (
     <div className="flex flex-col gap-2 px-2">
@@ -151,36 +151,22 @@ export default function PropertyPalette({
               {pills.map((pill) => {
                 const isUsed = used.has(pill.column);
                 return (
-                  <span
+                  <PropertyPill
                     key={pill.column}
+                    symbol={columnSymbol(pill.column, typeOf)}
+                    label={pill.label}
+                    state={isUsed ? "used" : "default"}
                     onMouseDown={(e) => onStartDrag(e, { kind: "property", column: pill.column, label: pill.label })}
                     onDoubleClick={() => add(pill)}
                     onContextMenu={(e) => menu(e, pill)}
                     onMouseEnter={() => setHovered(pill.column)}
                     onMouseLeave={() => setHovered((h) => (h === pill.column ? null : h))}
                     title={pill.scope ? condition(pill.scope) : undefined}
-                    className={`flex items-center gap-1 h-[22px] max-w-full px-2 rounded-full border text-[12px] cursor-grab select-none ${
-                      isUsed
-                        ? "border-neutral-700 text-neutral-400"
-                        : "border-neutral-600 bg-neutral-800 dark:bg-neutral-700/50 text-neutral-100 hover:border-neutral-500"
-                    }`}
-                  >
-                    <SymbolIcon name={columnSymbol(pill.column, typeOf)} size={11} fallback="•" className="shrink-0 text-neutral-400" />
-                    <span className="truncate">{pill.label}</span>
-                    {isUsed && <SymbolIcon name="checkmark" size={9} fallback="✓" className="shrink-0 text-neutral-500" />}
-                  </span>
+                    className="max-w-full cursor-grab"
+                  />
                 );
               })}
-              {group.newProperty && !q && (
-                <button
-                  type="button"
-                  onClick={onNewProperty}
-                  className="flex items-center gap-1 h-[22px] px-2 rounded-full border border-dashed border-neutral-600 text-[12px] text-blue-400 hover:border-neutral-500"
-                >
-                  <SymbolIcon name="plus" size={10} fallback="+" />
-                  New Property…
-                </button>
-              )}
+              {group.newProperty && !q && <NewPropertyPill onClick={onNewProperty} />}
             </div>
           </div>
         );

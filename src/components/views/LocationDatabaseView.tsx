@@ -35,8 +35,10 @@ import {
 } from "../../lib/commands";
 import type { FileRecord, Property, PropertyConfig, PropertyScope, PropertyValue, ValueType } from "../../types";
 import {
+  ANY_VALUE,
   dependsOn,
   describeScope,
+  impliedConditions,
   impliedValues,
   opensInto,
   propertiesToClear,
@@ -487,6 +489,10 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
   useEffect(() => {
     loadRegistry().catch(() => {});
   }, [loadRegistry]);
+  // Map Disk Folders can create, rename, retype and delete properties
+  useEffect(() => {
+    if (!diskFoldersOpen) loadRegistry().catch(() => {});
+  }, [diskFoldersOpen, loadRegistry]);
 
   // Fetch registered values for list properties that don't have them yet
   useEffect(() => {
@@ -1515,7 +1521,9 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
         if (scope) {
           entries.push({
             type: "item",
-            text: `Apply to All Files (not just ${scope.conditions.map((c) => c.value).join(", ")})`,
+            text: `Apply to All Files (not just ${scope.conditions
+              .map((c) => (c.value === ANY_VALUE ? `those with a ${c.property}` : c.value))
+              .join(", ")})`,
             action: () => void changeScope(name, [], "Apply to All Files"),
           });
         }
@@ -1692,9 +1700,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
     return scopes
       .filter(
         (sc) =>
-          sc.conditions.length === 1 &&
-          sc.conditions[0].property === name &&
-          hasText([sc.conditions[0].value], value) &&
+          impliedConditions(sc).some((c) => c.property === name && hasText([c.value], value)) &&
           listValues(effectiveValue(file, sc.property)).length > 0
       )
       .map((sc) => sc.property);
@@ -2402,7 +2408,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
       entries.push({
         type: "item",
         text: `Unlink “${value}” from ${sc.property}`,
-        action: () => void changeScope(sc.property, rest, "Unlink"),
+        action: () => void changeScope(sc.property, rest, "Unlink", sc.all),
       });
     }
     showContextMenu(entries, { event: e });
@@ -2448,6 +2454,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
     const scopeBefore = existing
       ? scopeRows.filter((sc) => sc.property_id === existing.property_id).map((sc) => ({ property_id: sc.condition_property_id, value: sc.value }))
       : [];
+    const allBefore = !!existing && scopeRows.some((sc) => sc.property_id === existing.property_id && sc.match_all);
 
     const apply = async () => {
       if (mapFolders.length > 0 && tagsProperty) {
@@ -2464,7 +2471,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
           conditions.push({ property_id: cond.property_id, value });
         }
       }
-      await setPropertyScope(prop.property_id, conditions);
+      await setPropertyScope(prop.property_id, conditions, allBefore);
       if (!existing) placeBeside(name, at != null ? columns[at - 1]?.id ?? beside : beside);
       await afterPropertyChange();
     };
@@ -2478,7 +2485,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
       label: "Make Property",
       undo: async () => {
         if (existing) {
-          await setPropertyScope(existing.property_id, scopeBefore);
+          await setPropertyScope(existing.property_id, scopeBefore, allBefore);
         } else {
           await coreDelete(name);
         }
@@ -2504,15 +2511,16 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
    * Values the old conditions implied are kept: they become stored values, so
    * no file loses a tag it was showing. Undoable as one step.
    */
-  async function changeScope(name: string, conditions: ScopeCondition[], label: string) {
+  async function changeScope(name: string, conditions: ScopeCondition[], label: string, all = false) {
     const prop = await findProperty(name);
     if (!prop) return;
     const before = scopeRows
       .filter((sc) => sc.property_id === prop.property_id)
       .map((sc) => ({ property_id: sc.condition_property_id, value: sc.value }));
+    const allBefore = scopeRows.some((sc) => sc.property_id === prop.property_id && sc.match_all);
     const nextScopes = [
       ...scopes.filter((sc) => sc.property !== name),
-      ...(conditions.length > 0 ? [{ property: name, conditions }] : []),
+      ...(conditions.length > 0 ? [{ property: name, conditions, all }] : []),
     ];
     // Implied now but not after: write them as stored values
     const keep: CellEdit[] = [];
@@ -2538,7 +2546,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
         if (cond) ids.push({ property_id: cond.property_id, value: c.value });
       }
       if (keep.length > 0) await setMetadataCells(keep);
-      await setPropertyScope(prop.property_id, ids);
+      await setPropertyScope(prop.property_id, ids, all);
       await afterPropertyChange();
     };
     try {
@@ -2550,7 +2558,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
     history.push({
       label,
       undo: async () => {
-        await setPropertyScope(prop.property_id, before);
+        await setPropertyScope(prop.property_id, before, allBefore);
         if (previous.length > 0) await setMetadataCells(previous);
         await afterPropertyChange();
       },
@@ -2559,13 +2567,14 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
   }
 
   /** "Applies to 3 of 12 files: 1 has a value, 2 to fill in." */
-  function scopeSummary(name: string, conditions: ScopeCondition[]): string {
+  function scopeSummary(name: string, conditions: ScopeCondition[], all: boolean): string {
     const metas = rows.map((f) => f.metadata as Record<string, unknown> | null);
-    const { withValue, expected, na } = scopeCoverage(metas, scopes, name, conditions, isListProperty);
+    const { withValue, expected, na } = scopeCoverage(metas, scopes, name, conditions, isListProperty, all);
+    const implied = impliedConditions({ property: name, conditions, all }).map((c) => `“${c.value}”`);
     const count = (n: number, noun: string) => `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
     const total = withValue + expected + na;
     return `Applies to ${(withValue + expected).toLocaleString()} of ${count(total, "file")}: ${withValue.toLocaleString()} with a value, ${expected.toLocaleString()} to fill in.${
-      conditions.length === 1 ? ` Files given a ${name} value also get “${conditions[0].value}”.` : ""
+      implied.length > 0 ? ` Files given a ${name} value also get ${implied.join(" and ")}.` : ""
     }`;
   }
 
@@ -3526,17 +3535,16 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
         <ScopeDialog
           property={scopeEditing}
           initial={scopeOf(scopeEditing)?.conditions ?? []}
-          // Select / Multi-select properties, except this one and any that depend on it (that would loop)
-          properties={availableProperties.filter(
-            (p) =>
-              p !== scopeEditing && (typeOf(p) === "enum" || typeOf(p) === "array") && !dependsOn(scopes, p, scopeEditing)
-          )}
-          valuesFor={(p) => valuesFor(PROP_PREFIX + p)}
-          summary={(conditions) => scopeSummary(scopeEditing, conditions)}
-          onApply={(conditions) => {
+          initialAll={scopeOf(scopeEditing)?.all ?? false}
+          // Any property but this one and those that depend on it (that would loop); only Select and
+          // Multi-select ones have values to choose, the rest just "has a value"
+          properties={availableProperties.filter((p) => p !== scopeEditing && !dependsOn(scopes, p, scopeEditing))}
+          valuesFor={(p) => (typeOf(p) === "enum" || typeOf(p) === "array" ? valuesFor(PROP_PREFIX + p) : null)}
+          summary={(conditions, all) => scopeSummary(scopeEditing, conditions, all)}
+          onApply={(conditions, all) => {
             const name = scopeEditing;
             setScopeEditing(null);
-            void changeScope(name, conditions, "Apply Only Where");
+            void changeScope(name, conditions, "Apply Only Where", all);
           }}
           onCancel={() => setScopeEditing(null)}
         />

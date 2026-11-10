@@ -97,6 +97,8 @@ pub struct PropertyScope {
     pub property_id: String,
     pub condition_property_id: String,
     pub value: String,
+    /// All the property's conditions must hold, not just one.
+    pub match_all: bool,
 }
 
 /// A condition as the frontend sends it.

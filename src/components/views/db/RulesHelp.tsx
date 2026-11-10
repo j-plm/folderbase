@@ -51,6 +51,21 @@ const FORMULA_EXAMPLES: [string, string][] = [
   ['prop("Client") & "-" & year(created)', "Acme-2025"],
   ['match(name, "[0-9]{4}")', "the first 4 digits in a row"],
   ['date({Date} & {Time}, "YYYYMMDDHHmmss")', "a date and a time from two slots"],
+  ['replace({Serial}, "(-S\\d+| \\d+)$", "")', "a serial without an ending -S1 or “ 1”: AB-12-S1 and AB-12 1 give AB-12"],
+  ['match({Serial}, "-(S\\d+)$")', "just that ending: S1 from AB-12-S1, nothing from AB-12"],
+];
+
+/** The pieces of a regular expression, for match() and replace(). */
+const REGEX_ROWS: [string, string][] = [
+  ["\\d", "a digit 0–9; \\d+ one or more, \\d{4} exactly 4"],
+  ["[A-Z]", "one capital letter; [A-Z]+ one or more"],
+  ["\\s", "a space (or a tab); a plain space also works"],
+  [".", "any one character; .* any run of them"],
+  ["^ · $", "the start · the end, so -S\\d+$ only matches at the end"],
+  ["a|b", "either one: (-S\\d+| \\d+) is -S1 or “ 1”"],
+  ["( )", "groups a part; match() gives back the first group"],
+  ["?", "the thing before it is optional: -?S1 is S1 or -S1"],
+  ["\\. \\( \\-", "a backslash makes . ( - and the like plain text"],
 ];
 
 /**
@@ -160,6 +175,7 @@ export default function RulesHelp({ onClose }: { onClose: () => void }) {
           <Table rows={FORMULA_NAMES} />
           <Table rows={FUNCTION_ROWS} />
           <Table rows={FORMULA_EXAMPLES} />
+          <RegexNotes />
         </Section>
 
         <Section title="From files with the same …">
@@ -186,6 +202,24 @@ function splitHelp(help: string): [string, string] {
   const i = help.indexOf("): ");
   if (i !== -1) return [help.slice(0, i + 1), help.slice(i + 3)];
   return [help, ""];
+}
+
+/** What match() and replace() read: regular expressions, briefly. */
+function RegexNotes() {
+  return (
+    <>
+      <p className="text-neutral-400">
+        <Code>match()</Code> and <Code>replace()</Code> take a regular expression, a pattern of its own kind, in quotes. Its
+        letters and digits match themselves; these mean more:
+      </p>
+      <Table rows={REGEX_ROWS} />
+      <p className="text-neutral-400">
+        To tidy a value a pattern picked out, replace what you don’t want with <Code>""</Code>, ending the expression with{" "}
+        <Code>$</Code> so only the end is touched. Put the part you want in its own property with <Code>match()</Code> and a
+        group. The preview shows each result before anything is written.
+      </p>
+    </>
+  );
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -390,6 +424,7 @@ export function FormulaHelp({
       <Table rows={FUNCTION_ROWS} />
       <p className="text-neutral-400 text-xs">Examples: click one to use it.</p>
       <Table rows={FORMULA_EXAMPLES} onUse={onUse} />
+      <RegexNotes />
     </InlineHelp>
   );
 }

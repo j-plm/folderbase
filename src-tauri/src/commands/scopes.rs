@@ -7,7 +7,8 @@ use tauri::State;
 
 // Scoped properties: a property can apply only where other properties hold
 // certain values ("Housing applies when Tags has housing"). Conditions are
-// combined with *any*. Stored in `property_scopes`, one row per condition; a
+// combined with *any*, or with *all* (`match_all`, the same on each of a
+// property's rows). Stored in `property_scopes`, one row per condition; a
 // property with no rows applies to every file.
 
 /// Every condition on the library's properties (and global ones).
@@ -32,17 +33,23 @@ pub async fn get_property_scopes_impl(pool: &DbPool, library: Option<&str>) -> R
     .map_err(|e| e.to_string())
 }
 
-/// Replaces a property's conditions; an empty list makes it apply to every file.
+/// Replaces a property's conditions, combined with any or (`match_all`) all; an empty list makes it apply to every file.
 #[tauri::command]
 pub async fn set_property_scope(
     property_id: String,
     conditions: Vec<ScopeCondition>,
+    match_all: Option<bool>,
     db: State<'_, DbPool>,
 ) -> Result<(), String> {
-    set_property_scope_impl(db.inner(), &property_id, &conditions).await
+    set_property_scope_impl(db.inner(), &property_id, &conditions, match_all.unwrap_or(false)).await
 }
 
-pub async fn set_property_scope_impl(pool: &DbPool, property_id: &str, conditions: &[ScopeCondition]) -> Result<(), String> {
+pub async fn set_property_scope_impl(
+    pool: &DbPool,
+    property_id: &str,
+    conditions: &[ScopeCondition],
+    match_all: bool,
+) -> Result<(), String> {
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM properties WHERE property_id = ?")
         .bind(property_id)
@@ -84,11 +91,12 @@ pub async fn set_property_scope_impl(pool: &DbPool, property_id: &str, condition
         .map_err(|e| e.to_string())?;
     for c in conditions {
         sqlx::query(
-            "INSERT OR IGNORE INTO property_scopes (property_id, condition_property_id, value) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO property_scopes (property_id, condition_property_id, value, match_all) VALUES (?, ?, ?, ?)",
         )
         .bind(property_id)
         .bind(&c.property_id)
         .bind(c.value.trim())
+        .bind(match_all)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -126,8 +134,8 @@ pub async fn move_condition_value(
     to: &str,
 ) -> Result<(), String> {
     sqlx::query(
-        "INSERT OR IGNORE INTO property_scopes (property_id, condition_property_id, value) \
-         SELECT property_id, ?, ? FROM property_scopes WHERE condition_property_id = ? AND value = ?",
+        "INSERT OR IGNORE INTO property_scopes (property_id, condition_property_id, value, match_all) \
+         SELECT property_id, ?, ?, match_all FROM property_scopes WHERE condition_property_id = ? AND value = ?",
     )
     .bind(to_property)
     .bind(to)
