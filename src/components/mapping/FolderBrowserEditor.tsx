@@ -477,28 +477,37 @@ export default function FolderBrowserEditor({ locationId, rootNode, initialMappi
       const { text, placeholder } = headingText(levelIndex);
       const targets = levelTargets(levels[levelIndex]).targets;
       const coverage = levelCoverage(targets, labels);
+      const strip = (
+        <PropertyStrip
+          properties={nameProperties}
+          typeOf={typeOf}
+          current={coverage.name}
+          present={new Set(levelCoverage(levelNodes(levels[levelIndex]), labels).counts.keys())}
+          conditionOf={conditionOf}
+          collapsible={layout === "columns"}
+          onApply={(name) => nameLevel(levelIndex, name)}
+          onMenu={(e, name) => pillMenu(e, levelIndex, name)}
+          onNewProperty={() => setCreating({ levelIndex, name: "", type: "array" })}
+        />
+      );
+      const nameClass = placeholder ? "text-neutral-500" : "font-semibold text-neutral-100";
+      // Icons: the name, its properties and the caption share one line, as a group heading does
+      if (layout === "tiles") {
+        return (
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            <span className={`shrink-0 max-w-[35%] truncate text-[13px] ${nameClass}`}>{text}</span>
+            <InheritNameButton onClick={() => inheritParentName(levelIndex)} />
+            <div className="flex-1 min-w-0">{strip}</div>
+          </div>
+        );
+      }
       return (
         <>
           <div className="flex items-center gap-1 min-w-0">
-            <span
-              className={`flex-1 min-w-0 truncate ${layout === "tiles" ? "text-[15px]" : "text-[13px]"} ${
-                placeholder ? "text-neutral-500" : layout === "tiles" ? "font-semibold text-neutral-400" : "font-semibold text-neutral-100"
-              }`}
-            >
-              {text}
-            </span>
+            <span className={`flex-1 min-w-0 truncate text-[13px] ${nameClass}`}>{text}</span>
             <InheritNameButton onClick={() => inheritParentName(levelIndex)} />
           </div>
-          <PropertyStrip
-            properties={nameProperties}
-            typeOf={typeOf}
-            current={coverage.name}
-            present={new Set(levelCoverage(levelNodes(levels[levelIndex]), labels).counts.keys())}
-            conditionOf={conditionOf}
-            onApply={(name) => nameLevel(levelIndex, name)}
-            onMenu={(e, name) => pillMenu(e, levelIndex, name)}
-            onNewProperty={() => setCreating({ levelIndex, name: "", type: "array" })}
-          />
+          {strip}
         </>
       );
     },

@@ -77,20 +77,20 @@ export default function LevelTiles<N extends LevelNode>({
     <div className="h-full overflow-y-auto">
       {levels.map((level, levelIndex) => (
         <section key={levelIndex} className={levelIndex > 0 ? "border-t border-neutral-700/60" : ""}>
-          <div onClick={(e) => headingClick(e, levelIndex, onHeadingClick)} className="flex flex-col gap-1 px-5 pt-2.5">
+          <div onClick={(e) => headingClick(e, levelIndex, onHeadingClick)} className="flex items-center gap-3 px-5 pt-3 pb-0.5">
             {heading(levelIndex, "tiles")}
-            <div className="flex items-center gap-1.5 min-w-0 text-[11px] text-neutral-500">{caption(levelIndex)}</div>
+            <div className="shrink-0 max-w-[40%] flex items-center gap-1.5 min-w-0 text-[11px] text-neutral-500">{caption(levelIndex)}</div>
           </div>
           {level.groups.map((group) => (
             <div key={group.parentPath}>
               {level.groups.length > 1 && (
-                <h3 className="px-5 pt-2 text-[11px] font-medium text-neutral-500">{folderName(group.parentPath)}</h3>
+                <h3 className="px-5 pt-1.5 text-[11px] font-medium text-neutral-500">{folderName(group.parentPath)}</h3>
               )}
               {group.nodes.length === 0 && emptyGroup ? (
                 <div className="px-5 py-3 text-[12px] text-neutral-500">{emptyGroup(group)}</div>
               ) : (
                 <div
-                  className="grid justify-start gap-y-3 p-4"
+                  className="grid justify-start gap-y-3 px-4 pt-2 pb-3"
                   style={{ gridTemplateColumns: `repeat(auto-fill, ${TILE_WIDTH}px)`, columnGap: COLUMN_GAP }}
                 >
                   {group.nodes.map((node) => (
