@@ -792,14 +792,28 @@ Results open in the Database view as the **Duplicates** preset, with Identical, 
 
 #### The Keep order
 
-Which copy stays is chosen by an ordered list of rules, reordered by dragging and switched on or off, as Sort keys are. The first rule that tells the copies apart decides. It reads as a sentence at the top of the preset: "Keep the copy that has your values, then is in Photos, then has the original name, then is oldest". The defaults, in order:
+Which copy stays is chosen by an ordered list of rules, reordered by dragging and switched on or off, as Sort keys are. The first rule that tells the copies apart decides. It reads as a sentence at the top of the preset: "Keep the copy that's in the better place, then has your values, then has the original name, then is oldest". The defaults, in order:
 
-1. **Has your values**: the copy with the most custom values, so organising work is never thrown away (values are merged anyway, below)
-2. **Is in a preferred place**: locations and folders ranked above others (the Photos library above Camera Uploads). Places that collect copies rank last unless moved: Downloads, Added Files folders, phone and messaging uploads, backup folders
+1. **Is in the better place**: decided folder against folder, as below, so that where a whole folder has been copied, every copy in it is treated the same way
+2. **Has your values**: the copy with the most custom values. This only decides which copy stays: values are never lost either way, because the kept copy takes the others' values before they go (see [Removing](#removing))
 3. **Has the original name**: not marked as a copy ("IMG_2041.jpg" over "IMG_2041 (1).jpg", "IMG_2041 copy.jpg", "IMG_2041-2.jpg")
 4. **Is oldest**: the earliest Created date, since the first one made is the original
 5. **Is nearest the top**: the fewest folders deep
 6. For Similar files, **is the best quality**: most pixels, then largest, then has a date and location
+
+#### The better place: folders against folders
+
+Duplicates usually come a folder at a time: a camera card imported twice, a folder copied to a backup drive, a phone uploading photos already in the library. So where copies are, Folderbase compares their **folders**, not each file alone, and the same folder wins for every set the two folders share.
+
+Between two folders holding copies of each other's files, the better one is the first of these that tells them apart:
+
+1. **Ranked by you**: places put in order in *Preferred places* (Settings ▸ Duplicates, or dragged in the preset). A ranking covers the folders inside it: Photos above Backup Drive covers Photos/2024 against Backup Drive/DCIM
+2. **Not a place that collects copies**: Downloads, Added Files folders, phone and messaging uploads (Camera Uploads, WhatsApp), and folders named as backups or copies ("Backup", "Old", "Copy of …") lose to any other folder. The list can be added to or trimmed
+3. **Holds the whole set**: if one folder has every file the other has, and more, the other is the partial copy. A Photos/2024 holding 1,310 photos beats a Backup/DCIM holding 1,204 of them
+4. **Is more organised**: the folder whose files have more of your custom values between them
+5. **Is older**: the folder whose files were made first
+
+**The By Folder tab** of the Duplicates preset lists each pair of folders that share copies, largest first: "1,204 copies in both Photos/2024 and Backup/DCIM (4.1 GB) — keeping Photos/2024 (holds the whole set)". The reason the better folder won is always named. Clicking the other folder swaps it for every set in that pair, and offers to remember it ("Always prefer Photos over Backup") as a preferred place. One choice there settles thousands of files.
 
 A set still tied after every rule keeps the first by path and is marked *Tie* for a look. Ticking Keep by hand overrides the order for that set, and the override stays when the order changes. The order is kept between searches.
 
@@ -807,7 +821,7 @@ A set still tied after every rule keeps the first by path and is marked *Tie* fo
 
 **Remove Duplicates…** asks first: "Move 3,180 copies (8.3 GB) to the Trash? Their values are given to the copies kept." The sheet offers:
 
-- **Move to Trash** (the default): they can be put back from the Trash
+- **Move to Trash** (the default): they can be put back from the Trash. Network drives, and some external and synced drives, have no Trash, so there "Move to Trash" would delete for good. For copies on those the sheet says so ("312 of these are on Studio NAS, which has no Trash: they'll be deleted immediately") and starts on *Keep on Disk, Hide in Folderbase* for them instead
 - **Replace with Aliases**: each copy becomes an alias (a shortcut on Windows) to the kept copy, so other apps that point at the old paths still work, and the space is freed. Aliases aren't indexed as files
 - **Keep on Disk, Hide in Folderbase**: nothing on disk changes. The copies are marked as duplicates and hidden from views unless the filter asks for them
 
@@ -1222,7 +1236,7 @@ Accessed from the icon rail (dedicated entry point at the bottom). Opens as a fu
 - **Every setting has a scope**, shown by the pane it's in: **Folderbase** (this person on this machine), a **Location**, or **New Views** (the defaults a new view starts with). In a [shared location](#working-together-shared-locations) a location's settings are shared with everyone using it, and the pane says so; Folderbase settings never are
 - **Changes apply at once**, with no OK or Apply button, as in macOS Settings. A setting that changes files or takes a while (moving the Added Files folder, Rebuild Index) asks first, as its command does elsewhere
 - **Restore Defaults** at the foot of each pane resets that pane only. **Reset Warnings** brings back every "Don't ask again" sheet
-- **Stored**: Folderbase settings and New View defaults in the database's `app_settings` table, one row each (`commands/settings.rs`); Appearance is still its own file in the config folder; location settings in the `locations` table
+- **Stored**, as desktop apps conventionally keep preferences apart from their data: Folderbase settings and New View defaults in `settings.json` in the app's config folder (`commands/settings.rs`), beside Appearance's file, so clearing or rebuilding the library never touches them and the file can be read or reset by hand. Unknown keys are ignored, so the file can grow. Location settings stay in the `locations` table
 
 #### Panes
 
@@ -1285,9 +1299,9 @@ Status: **exists** (built, to be listed here), **hardcoded** (built with a fixed
 | Setting | Choices (default first) | Status |
 |---------|------------------------|--------|
 | Keep order | The ordered rules (see [The Keep order](#the-keep-order)). Also at the top of the Duplicates preset | planned |
-| Preferred places | Locations and folders, ranked by dragging | planned |
+| Preferred places | Locations and folders, ranked by dragging; also set from the By Folder tab ("Always prefer Photos over Backup") | planned |
 | Places that collect copies | Downloads, Added Files folders, phone and messaging uploads, backup folders; add or remove | planned |
-| Remove Duplicates does | Move to Trash / Replace with Aliases / Keep on Disk, Hide in Folderbase (the sheet starts on this) | planned |
+| Remove Duplicates does | Move to Trash / Replace with Aliases / Keep on Disk, Hide in Folderbase (the sheet starts on this; copies on a drive with no Trash start on Hide) | planned |
 | Leave out files smaller than | 1 KB / Any size / a size | planned |
 | Check files as they arrive | On / Off (drops and refreshes flag copies of indexed files) | planned |
 | Keep removed files' values for | 30 days / 7 days / 90 days (so Undo can bring them back) | planned |
