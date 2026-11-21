@@ -14,7 +14,8 @@ import {
   type OpenWithApp,
 } from "./commands";
 import type { MenuEntry } from "./nativeMenu";
-import { labels } from "./platform";
+import { labels, quickLookLabel } from "./platform";
+import { toggleQuickLook } from "./quickLook";
 
 /** Matches the error starts in `commands::admin` (`FILE_NOT_FOUND`, `NO_APPLICATION`). */
 const FILE_NOT_FOUND = "file not found: ";
@@ -132,7 +133,7 @@ export function openWithEntries(apps: OpenWithApp[], open: (app: string) => void
   return entries;
 }
 
-/** A file's own right-click items, wherever it's shown: Open, Open With ▸, Compress, Show in Finder. */
+/** A file's own right-click items, wherever it's shown: Open, Open With ▸, Compress, Quick Look, Show in Finder. */
 export function fileEntries(paths: string[], compress?: MenuEntry): MenuEntry[] {
   return [
     { type: "item", text: "Open", action: () => void openFiles(paths) },
@@ -148,7 +149,13 @@ export function fileEntries(paths: string[], compress?: MenuEntry): MenuEntry[] 
         ),
     },
     { type: "separator" },
-    ...(compress ? [compress, { type: "separator" as const }] : []),
+    ...(compress ? [compress] : []),
+    {
+      type: "item",
+      text: quickLookLabel(paths.length, paths[0]?.split(/[\\/]/).pop() ?? null),
+      action: () => void toggleQuickLook({ paths, index: 0 }),
+    },
+    { type: "separator" },
     { type: "item", text: labels.reveal, action: () => void revealFiles(paths) },
   ];
 }

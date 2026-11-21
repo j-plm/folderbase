@@ -21,3 +21,5 @@ pub mod sync;
 pub mod thumbnails;
 pub mod views;
 pub mod virtual_folder;
+pub mod quick_look;
+pub mod preview_view;

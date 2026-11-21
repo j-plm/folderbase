@@ -42,6 +42,7 @@ interface ModifierEvent {
   metaKey: boolean;
   ctrlKey: boolean;
   shiftKey: boolean;
+  altKey?: boolean;
   key?: string;
 }
 
@@ -53,6 +54,21 @@ export function isToggleSelect(e: ModifierEvent): boolean {
 /** The primary shortcut modifier (Cmd on macOS, Ctrl elsewhere), as in Cmd-A. */
 export function hasPrimaryModifier(e: ModifierEvent): boolean {
   return platform === "macos" ? e.metaKey : e.ctrlKey;
+}
+
+/** The preview column shows files live (scroll a PDF, play a video) with the OS's own preview view: macOS only so far. */
+export const livePreviewAvailable = platform === "macos";
+
+/** Space previews the selection (Quick Look), as in Finder; ⌘Y too on macOS. */
+export function isQuickLookShortcut(e: ModifierEvent): boolean {
+  if (e.key === " " && !e.metaKey && !e.ctrlKey && !e.altKey) return true;
+  return platform === "macos" && e.metaKey && !e.altKey && e.key?.toLowerCase() === "y";
+}
+
+/** Quick Look's menu item: Finder names what it previews ("Quick Look “report.pdf”", "Quick Look 3 Items"); elsewhere it's Preview. */
+export function quickLookLabel(count: number, name: string | null): string {
+  if (platform !== "macos") return "Preview";
+  return count === 1 && name ? `Quick Look “${name}”` : `Quick Look ${count} Items`;
 }
 
 /** Finder opens the selection with Cmd-O or Cmd-Down; Explorer and Linux file managers use Enter. */

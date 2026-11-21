@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
 import { openFiles } from "../lib/fileActions";
-import { hasPrimaryModifier, isOpenShortcut, isToggleSelect } from "../lib/platform";
+import { hasPrimaryModifier, isOpenShortcut, isQuickLookShortcut, isToggleSelect } from "../lib/platform";
+import { followSelection, previewTargets, toggleQuickLook } from "../lib/quickLook";
 import {
   DOUBLE_CLICK_MS,
   EMPTY_SELECTION,
@@ -63,6 +64,16 @@ export function useSelection(
   const selected = useMemo(() => new Set(state.selected), [state.selected]);
   useReportSelection(reportStatus ? state.selected.length : 0, reportStatus ? order.length : 0);
 
+  // Quick Look follows the selection while it's open
+  const pathOf = useMemo(() => {
+    const byId = new Map(files.map((f) => [f.file_id, f.file_path]));
+    return (id: string) => byId.get(id);
+  }, [files]);
+  const previewed = () => previewTargets(order.filter((id) => selected.has(id)), pathOf, cursor.current);
+  useEffect(() => {
+    followSelection(previewTargets(order.filter((id) => selected.has(id)), pathOf, cursor.current));
+  }, [order, selected, pathOf]);
+
   function open(ids: string[]) {
     const folder = onOpenFolder && ids.find((id) => folders.includes(id));
     if (folder) {
@@ -117,6 +128,11 @@ export function useSelection(
     if (hasPrimaryModifier(e) && e.key === "a") {
       e.preventDefault();
       setState(selectAll(order));
+      return;
+    }
+    if (isQuickLookShortcut(e)) {
+      e.preventDefault();
+      void toggleQuickLook(previewed());
       return;
     }
     if (

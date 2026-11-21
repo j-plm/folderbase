@@ -682,6 +682,16 @@ export async function cancelCompress(job: string): Promise<void> {
   return invoke<void>("cancel_compress", { job });
 }
 
+/** Quick Look: opens the system panel on `paths` at `index`, or closes it if it's showing them. True when open. */
+export async function quickLook(paths: string[], index: number): Promise<boolean> {
+  return invoke<boolean>("quick_look", { paths, index });
+}
+
+/** Shows `paths` in the Quick Look panel if it's open (the selection moved). False when it's closed. */
+export async function quickLookUpdate(paths: string[], index: number): Promise<boolean> {
+  return invoke<boolean>("quick_look_update", { paths, index });
+}
+
 /** App-wide settings (the Settings window). */
 export interface AppSettings {
   /** Where Compress saves zips; null: Downloads. */
@@ -695,4 +705,22 @@ export async function getAppSettings(): Promise<AppSettings> {
 /** Sets where Compress saves zips: a folder, or null for Downloads. Resolves to the settings as they now are. */
 export async function setZipFolder(folder: string | null): Promise<AppSettings> {
   return invoke<AppSettings>("set_zip_folder", { folder });
+}
+
+/** Where the live preview goes, in CSS pixels from the window's top left. */
+export interface PreviewRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** Shows `path` in the live Quick Look preview at `rect`, or moves it there. */
+export async function previewViewShow(path: string, rect: PreviewRect): Promise<void> {
+  return invoke<void>("preview_view_show", { path, rect });
+}
+
+/** Takes the live preview away. */
+export async function previewViewHide(): Promise<void> {
+  return invoke<void>("preview_view_hide");
 }

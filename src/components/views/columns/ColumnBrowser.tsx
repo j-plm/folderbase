@@ -3,7 +3,9 @@ import type React from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { useScrollAheadVirtualizer } from "../../../hooks/useScrollAheadVirtualizer";
 import { openFiles } from "../../../lib/fileActions";
-import { hasPrimaryModifier, isOpenShortcut, isToggleSelect } from "../../../lib/platform";
+import { hasPrimaryModifier, isOpenShortcut, isQuickLookShortcut, isToggleSelect, livePreviewAvailable } from "../../../lib/platform";
+import { followSelection, previewTargets, toggleQuickLook } from "../../../lib/quickLook";
+import LivePreview from "../shared/LivePreview";
 import {
   DOUBLE_CLICK_MS,
   EMPTY_SELECTION,
@@ -210,8 +212,26 @@ export default function ColumnBrowser({
     void openFiles(paths);
   }
 
+  // Quick Look previews the files selected in the active column, and follows them while it's open
+  function previewed() {
+    const nodes = (ordered[activeDepth] ?? []).filter((n) => isSelectedAt(activeDepth, n.id));
+    const pathOf = new Map(nodes.map((n) => [n.id, n.file?.file_path]));
+    return previewTargets(nodes.map((n) => n.id), (id) => pathOf.get(id), path[activeDepth] ?? null);
+  }
+  const previewKey = previewed().paths.join("\n");
+  useEffect(() => {
+    followSelection(previewed());
+    // `previewKey` stands for the selection's files, which is what matters here
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewKey]);
+
   function handleKeyDown(e: React.KeyboardEvent) {
     const active = ordered[activeDepth] ?? [];
+    if (isQuickLookShortcut(e)) {
+      e.preventDefault();
+      void toggleQuickLook(previewed());
+      return;
+    }
     if (isOpenShortcut(e)) {
       e.preventDefault();
       open(active.filter((n) => isSelectedAt(activeDepth, n.id)));
@@ -544,6 +564,20 @@ function ColumnList({
   );
 }
 
+/**
+ * Where the preview column's picture goes, filling the space: live (the OS's
+ * Quick Look view) where it can be, with the still picture beneath.
+ */
+function Stage({ live, path, children }: { live: boolean; path: string; children: React.ReactNode }) {
+  const className = "absolute inset-0 flex items-center justify-center";
+  if (!live) return <div className={className}>{children}</div>;
+  return (
+    <LivePreview path={path} className={className}>
+      {children}
+    </LivePreview>
+  );
+}
+
 /** Largest preview icon / thumbnail edge, in points. */
 const PREVIEW_MAX = 512;
 
@@ -579,21 +613,25 @@ function PreviewColumn({ node }: { node: BrowserNode }) {
       style={{ minWidth: PREVIEW_MIN_WIDTH }}
       className="flex-1 h-full flex flex-col overflow-y-auto px-10 pt-6 pb-8"
     >
-      <div ref={stageRef} className="flex-1 min-h-[160px] flex items-center justify-center">
-        {stage.width > 0 &&
-          // An online-only image would download to show in full; its icon stands in
-          (isImageMime(file.file_type) && !file.online_only ? (
-            <img
-              src={convertFileSrc(file.file_path)}
-              alt=""
-              draggable={false}
-              style={{ maxWidth: fit, maxHeight: fit }}
-              className="object-contain shadow-sm"
-            />
-          ) : (
-            <FileIcon path={file.file_path} mimeType={file.file_type} size={iconSize} />
-          ))}
+      <div ref={stageRef} className="flex-1 min-h-[160px] relative">
+        {stage.width > 0 && (
+          <Stage live={livePreviewAvailable && !file.online_only} path={file.file_path}>
+            {/* An online-only image would download to show in full; its icon stands in */}
+            {isImageMime(file.file_type) && !file.online_only ? (
+              <img
+                src={convertFileSrc(file.file_path)}
+                alt=""
+                draggable={false}
+                style={{ maxWidth: fit, maxHeight: fit }}
+                className="object-contain shadow-sm"
+              />
+            ) : (
+              <FileIcon path={file.file_path} mimeType={file.file_type} size={iconSize} />
+            )}
+          </Stage>
+        )}
       </div>
+      {file.online_only && <p className="shrink-0 mt-2 text-center text-[11px] text-neutral-500">Not downloaded</p>}
       <div className="shrink-0 mt-6">
         <p className="text-[15px] font-semibold text-neutral-100 break-words">{node.name}</p>
         <p className="mt-0.5 text-[13px] text-neutral-500">

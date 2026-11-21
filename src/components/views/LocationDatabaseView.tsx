@@ -95,7 +95,8 @@ import {
   countFoldersNamed,
   coveredValues,
 } from "../../lib/tagDrag";
-import { hasPrimaryModifier, isToggleSelect } from "../../lib/platform";
+import { hasPrimaryModifier, isQuickLookShortcut, isToggleSelect } from "../../lib/platform";
+import { previewTargets, toggleQuickLook } from "../../lib/quickLook";
 import {
   CURRENCIES,
   DATE_DISPLAY_FORMATS,
@@ -1943,6 +1944,12 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
     const active = cellSel.active;
     if (cellSel.cells.size === 0 || !active) {
       selection.onKeyDown(e);
+      return;
+    }
+    // ⌘Y previews the files of the rows holding the selection; Space types into the cell
+    if (isQuickLookShortcut(e) && e.key !== " ") {
+      e.preventDefault();
+      void toggleQuickLook(previewTargets(rowIds.filter((id) => cellRows.has(id)), (id) => rowById.get(id)?.file_path, active.row));
       return;
     }
     const mod = hasPrimaryModifier(e);
