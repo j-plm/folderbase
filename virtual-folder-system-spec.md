@@ -16,6 +16,7 @@
 - [Virtual Folders](#virtual-folders)
 - [Key UI Features](#key-ui-features)
 - [Storage Management Features](#storage-management-features)
+- [Working Together: Shared Locations](#working-together-shared-locations)
 - [Local Desktop Application](#local-desktop-application)
 - [Architecture Summary](#architecture-summary)
 - [UI Architecture](#ui-architecture)
@@ -51,7 +52,16 @@ The names used in the interface. Code may use older or internal names (noted whe
 | **Rules** | Automations that set values on files that meet conditions |
 | **And** / **Or** | How a list of filters or conditions joins: all must hold (And) or any one (Or). Never "match all/any" |
 | **Group** | Filters or conditions in a box with their own And/Or, inside the list ("Client is Acme And (Tags has Rent Or Tags has Bills)"). *Filter Group* in the Filter panel, *Condition Group* in a rule |
-| **View modes** | Icons, List, Columns and Database |
+| **View modes** | Icons, List, Columns, Gallery and Database |
+| **Gallery** | The view mode showing the selected file large above a strip of thumbnails, as Finder's Gallery view |
+| **Preview** | The pane at the right of a view (View ▸ Show Preview) showing the selected file, its details and its values. Always shown in Gallery |
+| **Quick Look** | Previewing the selected files with the Space bar without opening them. *Preview* on Windows |
+| **Get Info** | The window showing a file's details, its values and its media properties, as Finder's Get Info. *Properties* on Windows |
+| **Media properties** | Values stored inside the file itself: EXIF (Date Taken, Camera) and music tags (Artist, Album). Read when a file is indexed. Those the file's format can hold can be edited, which writes into the file |
+| **Duplicates** | Files with exactly the same contents, wherever they are. **Similar** files (the same photo resized or re-saved) and **Versions** (the same document saved again with changes) are found too, and always shown apart |
+| **Kept copy** | The file of a set of duplicates that stays when the others are removed. Chosen by the **Keep order** |
+| **Settings** | The window holding every choice that isn't part of a view, in panes: General, Locations, New Views, Files, Duplicates, Sharing, Advanced. Never "Options"; "Preferences" only on Linux, as GNOME apps name it |
+| **Shared location** | A location whose values, views and rules everyone with its folder uses (a synced or network drive). A location is personal until it's shared |
 
 Naming rules:
 
@@ -600,12 +610,6 @@ Example — navigating to `2024 → Rig-A → Component-B → Front` and droppin
   - **On a saved view** (or the Default view), including the view that's open: "Give N files these values?", listing each property and value. The values come from the view's own filters only, never from the folders of its Hierarchy. A filter gives a value only when it names one: *is* on a Select, Text or Number property, *has* on a Multi-select, *is* a day on a date. The sheet names the filters that can't give a value (contains, is not, a range, a column read from the file such as Kind, a group matching any of several) and says how many files still won't show in the view because of them. Confirming sets the values, and it can be undone. On a Multi-select the value is added, as dropping from elsewhere adds it. Files dragged in from another app go onto a folder of the view, not its sidebar row
 - **What a drop will do is shown before it's made**: beside the cursor, the gist ("Set Project to Hermes", "Move to “Hermes”", "Add to “Hermes”", or why not); in a bar above the path bar, each level's change ("Client: Acme (3 set, 1 replaced)"). Folders open after the pointer rests on them for a second (spring-loaded), as in Finder; Escape cancels. Every drop can be undone
 
-### Settings
-
-**Settings…** (in the app menu, ⌘,; Ctrl+, on Windows and Linux) opens the app-wide settings, as a sheet. Settings that belong to a location or a view stay with those. So far:
-
-- **Save zips in**: where Compress saves zips. Downloads unless another folder is chosen (see [File Operations](#file-operations))
-
 ### File Operations
 
 | Operation | Behaviour |
@@ -616,6 +620,10 @@ Example — navigating to `2024 → Rig-A → Component-B → Front` and droppin
 | Rename file | Updates DB record; physical filename may remain unchanged |
 | Create folder | Adds property value to registry; no physical folder created |
 | Compress | Writes a zip to Downloads, or the folder chosen in Settings (or where ⌥ Compress To… says); nothing in the database points at it |
+| Edit a media property | Writes the value into the file itself (music tags, a photo's date or location). The record and its custom values stay with the file |
+| Remove duplicates | Gives the removed copies' custom values to the kept copy, then moves the copies to the Trash (or replaces them with aliases, or only hides them) |
+
+Navigating and organising never touch the disk. Changing a file itself is always a command you choose (Move to Trash, editing a media property, Remove Duplicates, Flatten). It says what it will change before it's made, and it can be undone where the OS allows.
 
 **Compress** (right-click, in every view mode) makes a zip for sharing. It's laid out as the view shows things, never as they sit on disk:
 
@@ -626,6 +634,61 @@ Example — navigating to `2024 → Rig-A → Component-B → Front` and droppin
 - **Where it lands**: Downloads, without asking, named as above (numbered if the name's taken), unless another folder is chosen: in **Settings** (*Save zips in:* Downloads / the folder / Other…), or from the notice of a zip just made: its folder's name is a pop-up ("Saved in Downloads ⌄") with Change Default Folder… and Settings…, as is its right-click menu (that zip stays where it is). A chosen folder that's gone means Downloads again. Holding ⌥ as you right-click offers *Compress … To…*, which asks where with a save panel starting in that folder. A zip saved inside a location is indexed straight away, like any other file; nothing ties it to the files it came from
 - A notice in the window's corner shows its progress, with Cancel (nothing is left behind), then its name and where it was saved. Laid out as a macOS notification: one button (Cancel, then Show in Finder), the close button at the top left on hover. It goes by itself after a few seconds, unless hovered. A file the database has but the disk doesn't stops it, naming the file
 - Photos, video, audio and files that are already zips are stored as they are; everything else is deflated
+
+### Get Info
+
+**Get Info** shows everything about a file in one window, as Finder's does: right-click ▸ Get Info, File ▸ Get Info or ⌘I, in every view mode (in the Database view from any cell of the row). On Windows it's **Properties** (Alt+Enter), laid out as File Explorer's Properties dialog.
+
+- **A window of its own**, small and floating, as Finder's Info window. It stays on its file while the selection changes, several can be open, and each closes with ⌘W
+- **Sections**, each with a disclosure triangle, as in Finder:
+  - **Header**: the file's thumbnail, name, size and modified date
+  - **Tags**: the built-in Tags, editable
+  - **General**: Kind, Size (with the exact bytes), Where (its real path; click to Show in Finder), Created, Modified, the location it belongs to
+  - **Folders**: every folder the file shows in under the open view's Hierarchy ("Acme › 2024 › Invoices"; a Multi-select can put it in several). Click one to go there
+  - **Properties**: the location's custom properties and the file's values, edited with the same editors as the Database view's cells. A conditional property appears only where it applies. Add Property… at the end
+  - **More Info**: the media properties, grouped as in the Database view (Camera, Music, Video). Those the file can hold are editable (see [Editing Media Properties](#editing-media-properties)); the others are plain text
+  - **Open With**: the file's default app, with the Open With list to change it for this file
+  - **Preview**: a larger thumbnail; Space opens Quick Look
+- **Several files**: Get Info opens one window per file, asking first above 10 ("Open 24 Info windows?"), as Finder does. **Show Inspector** (⌥⌘I) opens one window that follows the selection instead. With several files selected it sums them up ("3 items, 12.4 MB") and shows each value they share, or "Mixed" where they differ. An edit there applies to every selected file, so the Inspector is the bulk editor. On Windows, Properties on several files opens one dialog for all of them, as Explorer does, with the same summing up
+- **Edits are changes like any other**: they show at once in every view, and Edit ▸ Undo in the main window takes them back
+
+### Quick Look
+
+**Space** previews the selected files without opening them, in every view mode, as in Finder. Also right-click ▸ Quick Look “Name” and ⌘Y.
+
+- **macOS uses the system Quick Look panel** (`QLPreviewPanel`), so every type the OS can preview works, with its own controls (full screen, open in the default app, share, markup). With several files selected, the arrow keys step through them. With one selected, the arrow keys move the selection in the view and the panel follows, as in Finder. Space or Escape closes it. The panel zooms out of the file's icon and back into it
+- **Windows and Linux** have no system panel, so Folderbase opens its own preview window with the same keys: images, PDFs, video and audio (playable), text and code, and otherwise the file's icon with its Kind and size
+- **In the Database view**, Space previews when whole rows are selected. When a custom cell is selected Space starts typing in it, as it does now; ⌘Y previews from there
+- A cloud file that isn't downloaded is downloaded to preview it, with progress, as Finder does
+
+### Editing Media Properties
+
+Media properties are values stored inside the file: a photo's EXIF, a song's tags. Other apps read them (Music, Photos, Lightroom, a car stereo), so changing them changes the file. Folderbase can edit those the format can hold, which a file manager normally can't.
+
+**What's read** when a file is indexed:
+
+| Files | Read | Editable |
+|-------|------|----------|
+| Music and audio (MP3, M4A/AAC/ALAC, FLAC, Ogg/Opus, WAV, AIFF) | Title, Artist, Album, Album Artist, Track, Disc, Year, Genre, Composer, Comment, Artwork; Duration, Bit Rate, Sample Rate, Channels | The tags and Artwork. Duration and the rates are facts about the audio and stay read-only |
+| Photos | Date Taken, Camera Make and Model, Lens, ISO, Focal Length, Width, Height, Latitude, Longitude | Date Taken and the location (Latitude/Longitude), to fix a camera's wrong clock or an upload that lost its date. JPEG and TIFF first; HEIC stays read-only until it can be written safely |
+| Video | Duration, Width, Height, Date Taken | None at first |
+
+A field the file's format can't hold stays read-only, and its cell says why ("WAV files can't store Composer").
+
+**Where they're edited**: in Get Info and the Inspector (several files at once), in the Preview pane, and in the Database view, where editable media properties' cells behave as custom cells: type, fill handle, paste and Delete all work, so a whole album can be tagged in one go. **Shift Dates…** on a selection of photos moves every Date Taken by the same amount (a camera an hour out), keeping their order.
+
+**Never by filing or rules**: dragging into a folder of a level by a media property still refuses ("Artist is stored in the file — edit it in Get Info or the Database view"), and rules don't write into files. A write is always an edit someone made on purpose.
+
+**Saying so first**: the first write into files in a session asks: "Change Artist in 12 files? This writes into the files themselves, and other apps will see the change." (Don't ask again). The header menu of an editable media property says *Stored in the File*.
+
+**Safely**:
+
+- Each file is written to a hidden copy beside it, then swapped in, so a failure never leaves a broken file. The creation date, permissions and Finder tags are kept; the modified date changes, as with any edit, so sync tools pick the change up
+- The record's fingerprint, size and modified time are updated in the same step, so the next refresh sees the same file rather than a new one, and its custom values stay
+- Undo writes the old values back
+- A file that can't be written (a read-only drive, locked, open in another app) is skipped and listed; the others are still written. A cloud file that isn't downloaded has to be downloaded to edit it, and the sheet says how many will be
+
+Music tags are read and written with the `lofty` crate (ID3v2, MP4, Vorbis comments, APE, RIFF INFO); EXIF dates and GPS with an EXIF writer. Both are stored under their keys in `files.metadata`, as EXIF is now.
 
 ### View Configuration GUI
 
@@ -668,6 +731,120 @@ The export operation:
 - Creates a real folder hierarchy on disk matching that view's hierarchy
 - Populates each folder with **copies** of the relevant files (originals are untouched)
 - Optionally generates symlinks instead of copies, to avoid duplication
+
+### Finding and Removing Duplicates
+
+Photo uploads, backup drives and folders copied "just in case" leave the same files many times over. Folderbase finds them across every location, even on different drives. It shows them in sets, picks which copy to keep by an order you set, and removes the rest without losing any values.
+
+#### What counts as a duplicate
+
+Three kinds, found in order of certainty and always shown apart. Only the first is ever removed in bulk:
+
+| Kind | Meaning | How it's found | Removing |
+|------|---------|----------------|----------|
+| **Identical** | The same contents byte for byte, whatever their names, dates or places | Same size, then the same fingerprint (already read for every file), then a full content hash (BLAKE3) to be certain. Never by name | In bulk, by the Keep order |
+| **Similar** | The same photo or video saved differently: resized, re-compressed, converted (HEIC → JPEG), stripped of its metadata by a messaging app, or an edited export | Photos: the same Date Taken and camera, or near-identical perceptual hashes (each image shrunk to a tiny grey grid and compared). Video: the same duration, date and dimensions | One set at a time, compared side by side. Suggests keeping the highest quality |
+| **Versions** | The same document saved again with changes: "Report.docx", "Report v2.docx", "Report (final).docx", "Report 2.docx" | Names that match once copy and version markers are taken off ("copy", "(1)", " 2", "v2", "final", a date), with the same extension and different contents | Never suggested. Shown newest first, for removing older ones by hand |
+
+Empty files and files under 1 KB are left out unless asked for: identical tiny files are normal. Excluded Folders are never looked in.
+
+#### Finding them
+
+- **Find Duplicates…** on a location's right-click (that location), in the File menu (every location), and on a selection or folder (*Find Copies of These*: copies of those files anywhere)
+- **Only files that share a size with another file are read**. Most files have a size of their own and are never opened. Full hashes are kept in the database (`files.content_hash`, alongside the size and modified time they were taken at), so a second search is instant, and new files are checked as they're indexed
+- It runs in the background with progress and can be cancelled, as Refresh can
+- A cloud file that isn't downloaded can't be hashed without downloading it. Such files are matched by size, name and date only, marked *Not downloaded*, and Download and Check confirms them
+
+#### The Duplicates preset
+
+Results open in the Database view as the **Duplicates** preset, with Identical, Similar and Versions as three tabs:
+
+- **Grouped by set**: "IMG_2041.jpg — 3 copies, 4.2 MB each", the sets wasting most space first. Each row is a copy, with its Location, Path, Created, Modified and how many custom values it has
+- **A Keep column**: ticked for the copy that stays. More than one can be ticked; untick them all and the set's first copy stays ticked, because the last copy is never removed
+- **A summary line**: "1,204 sets · 3,180 copies to remove · 8.3 GB"
+- Quick Look and the Preview pane compare copies. Similar sets open side by side with each one's dimensions, size and date
+- The native **Copies** property (how many other identical copies a file has) can be shown and filtered in any view: "Copies > 0"
+
+#### The Keep order
+
+Which copy stays is chosen by an ordered list of rules, reordered by dragging and switched on or off, as Sort keys are. The first rule that tells the copies apart decides. It reads as a sentence at the top of the preset: "Keep the copy that has your values, then is in Photos, then has the original name, then is oldest". The defaults, in order:
+
+1. **Has your values**: the copy with the most custom values, so organising work is never thrown away (values are merged anyway, below)
+2. **Is in a preferred place**: locations and folders ranked above others (the Photos library above Camera Uploads). Places that collect copies rank last unless moved: Downloads, Added Files folders, phone and messaging uploads, backup folders
+3. **Has the original name**: not marked as a copy ("IMG_2041.jpg" over "IMG_2041 (1).jpg", "IMG_2041 copy.jpg", "IMG_2041-2.jpg")
+4. **Is oldest**: the earliest Created date, since the first one made is the original
+5. **Is nearest the top**: the fewest folders deep
+6. For Similar files, **is the best quality**: most pixels, then largest, then has a date and location
+
+A set still tied after every rule keeps the first by path and is marked *Tie* for a look. Ticking Keep by hand overrides the order for that set, and the override stays when the order changes. The order is kept between searches.
+
+#### Removing
+
+**Remove Duplicates…** asks first: "Move 3,180 copies (8.3 GB) to the Trash? Their values are given to the copies kept." The sheet offers:
+
+- **Move to Trash** (the default): they can be put back from the Trash
+- **Replace with Aliases**: each copy becomes an alias (a shortcut on Windows) to the kept copy, so other apps that point at the old paths still work, and the space is freed. Aliases aren't indexed as files
+- **Keep on Disk, Hide in Folderbase**: nothing on disk changes. The copies are marked as duplicates and hidden from views unless the filter asks for them
+
+Before anything is removed, each kept copy **gains the values of the copies going**: a Multi-select (Tags included) takes them all; an empty Select, Text, Number or Date takes the other copy's value; where they disagree the kept copy's value stays, and the sheet lists those sets ("12 sets have different Client values") with Review. **Undo** (Edit ▸ Undo Remove Duplicates) puts the files back from the Trash where the OS allows it, with their values: their records are kept, marked removed, for 30 days.
+
+Never removed: the last copy of anything; a file outside an indexed location; a copy that has changed since it was checked (it's skipped and listed). In a shared location the sheet says the copies go for everyone.
+
+#### Duplicates arriving
+
+Files dropped in from other apps that are identical to files already indexed are named in the drop sheet ("3 of these are already in Photos") with **Skip Duplicates** and **Copy Anyway**. A refresh that finds new identical copies (a phone uploading photos already in the library) shows a count beside the location ("128 copies"), which opens the Duplicates preset.
+
+#### Later
+
+**Group as Versions**: keeping the versions of a document as one stack, shown as its newest file with the older ones inside. To be designed.
+
+---
+
+## Working Together: Shared Locations
+
+Several people often work in the same folder: a OneDrive, SharePoint, Dropbox or Google Drive folder synced to each person's machine, or a folder on a network drive. The files are shared already. Their values, views and rules live in each person's own database, so today nobody else sees them. A **shared location** shares those too, with no server and no account.
+
+#### Principles
+
+- **Each person keeps their own database**, as now. Sharing never puts a SQLite file on the shared drive, because two machines writing one SQLite file through a sync tool corrupts it or leaves conflict copies
+- **What's shared travels in the folder itself**, in a hidden `.folderbase` folder at the location's top. It's synced by whatever already syncs the files, so it works the same on every drive, and nothing else is needed
+- **Each machine writes only its own files there**, so no two machines ever write the same file and the sync tool never has a conflict to make
+- **A location is personal until it's shared.** Sharing is chosen, never automatic
+
+#### What's shared and what isn't
+
+| Shared | Kept per person |
+|--------|-----------------|
+| Custom values on files | Which view is open, where you are, Back/Forward |
+| Properties and their values (the registry), conditional properties | Column widths, order and visibility, collapsed groups, Freeze Name |
+| Views marked shared: filters, sort, grouping, Hierarchy | Views you keep personal (a view is personal until shared) |
+| Rules, Map Disk Folders, Excluded Folders, the Added Files folder | The Keep order for duplicates, Appearance, other preferences |
+
+#### How it works
+
+- **Changes are written as a log.** Each machine appends what it changes ("Client of invoices/0042.pdf set to Acme by Sam at …") to its own file in `.folderbase/changes/`, one per device, as lines of JSON anyone can read
+- **Every machine reads the others' logs** when the location opens, when the sync tool brings a newer log (the folder is watched) and every few minutes, and applies them to its own database
+- **Files are named by their path inside the location** (and their fingerprint), never by a full path or a database id, since each machine has the folder somewhere different. A file moved on disk is recognised by its fingerprint, as a refresh already does
+- **Two people changing the same value**: the later change wins, by a clock that can't run backwards on one machine (a hybrid logical clock), so every machine ends up with the same value. A Multi-select merges adds and removals rather than replacing the whole list, so Sam adding *Urgent* and Alex adding *Paid* keeps both. Get Info and the Preview pane show who changed a value last and when
+- **Snapshots keep it quick**: when the logs grow large, one machine writes a snapshot of every value, and the logs before it can go. A machine joining reads the latest snapshot, then the logs after it
+- **Undo** undoes your own changes, and is written to the log like any other change
+
+#### Sharing and joining
+
+- **Share Values…** on a location's right-click: "Share this location's values, properties and shared views with everyone who uses this folder?" It writes the first snapshot to `.folderbase`
+- **Adding a location that's already shared** asks: "This folder has values shared by Sam and 2 others. Use them?" Its values then arrive with the files. If the person has their own values for it already, theirs are kept where the shared ones are empty, and where both differ the shared value is used, listed first so they can review it
+- **Who's who**: each person's name comes from their OS account and can be changed in Settings. The location's right-click shows who shares it and when each last made a change
+- **Stop Sharing** keeps your values in your own database and stops writing to `.folderbase`. It never deletes anyone else's logs
+
+#### Changes to the disk affect everyone
+
+Some commands change the shared files themselves: Move to Trash, Remove Duplicates, editing media properties, Flatten, files copied into the Added Files folder. In a shared location their sheets say so ("This moves 3 files to the Trash for everyone using Clients"). A folder that's read-only for this person opens read-only: values can be looked at, not changed.
+
+#### Not covered yet
+
+- **Permissions** (who may change which properties or views): see Future Considerations
+- **A server or cloud service** instead of the folder (for teams that want history, live updates or access from the web). The log format is chosen so that a server could later relay the same changes
+- **Connecting straight to SharePoint or OneDrive** without syncing, with SharePoint's columns as properties (in the backlog)
 
 ---
 
@@ -739,6 +916,13 @@ The virtual folder navigation experience is designed to be indistinguishable fro
 | Trash verb | Move to Trash | Delete | Move to Trash |
 | Breadcrumb style | Click-through | Editable address bar | Both |
 | Address bar | Non-editable | Editable | Configurable |
+| File details | Get Info (⌘I), Show Inspector (⌥⌘I) | Properties (Alt+Enter) | Properties |
+| Preview a file | Quick Look (Space): the system panel | Preview (Space): Folderbase's window | Preview (Space): Folderbase's window |
+| Preview pane | View ▸ Show Preview (⇧⌘P) | Preview pane (Alt+P), Details pane (Alt+Shift+P) | Preview pane |
+| Reveal a file | Show in Finder | Open File Location | Show in Files |
+| Compress | Compress “Name” | Compress to ZIP File | Compress… |
+| Settings | Folderbase ▸ Settings… (⌘,), a window with a toolbar of panes | Settings (Ctrl+,), a page with sections down the left | Preferences (Ctrl+,) |
+| Undo a Trash | Put Back from the Trash | Restore from the Recycle Bin | Restore from the Trash |
 
 ### Native Fidelity Standard
 
@@ -758,6 +942,24 @@ The application must look and feel like the host operating system's own file man
 | Behaviour | Native interaction conventions | Click headers to sort, drag dividers to resize, double-click a divider to fit, right-click headers for column options, items that don't fit the toolbar move into a » menu |
 
 Windows follows the same rule with its own defaults: Segoe UI Variable, the Fluent palette and accent colour, shell icons (`SHGetFileInfo`), Fluent icon glyphs, and File Explorer's metrics. Platform differences live in the platform adapter and the native icon command, never in individual components.
+
+#### Windows parity
+
+Folderbase must be as native on Windows as it is on macOS: a File Explorer user should feel at home. Each native piece built for macOS needs its Windows counterpart:
+
+| Concern | macOS (built) | Windows (to build) |
+|---------|---------------|--------------------|
+| Font, palette, metrics | SF Pro, Finder colours, Finder metrics | Segoe UI Variable, the Fluent palette and the user's accent colour, File Explorer's row heights and spacing; Mica window backdrop |
+| Icons and thumbnails | `NSWorkspace` icons, `QLThumbnailGenerator` | `SHGetFileInfo` / `IShellItemImageFactory`, the shell's thumbnail cache |
+| Glyphs | SF Symbols | Segoe Fluent Icons |
+| Menus | `NSMenu` | Win32 context menus (via Tauri), with Explorer's ordering and verbs |
+| Title bar and toolbar | Unified toolbar, traffic lights | Explorer's command bar and editable address bar, caption buttons on the right |
+| Open With | `NSWorkspace` app lists | `SHAssocEnumHandlers`, Explorer's Open With dialog for Choose another app |
+| Drag out | `NSDraggingSession` | OLE `DoDragDrop` carrying the files |
+| Get Info / Quick Look | Info window, `QLPreviewPanel` | Properties dialog, Folderbase's preview window |
+| Shortcuts | ⌘ shortcuts | Ctrl shortcuts, F2 to rename, Alt+Enter, Delete to the Recycle Bin |
+| Undoing a Trash | Put Back | Restoring from the Recycle Bin |
+| Cloud files | File Provider status (iCloud, OneDrive) | Cloud Files API status (OneDrive's online-only, always keep on this device) |
 
 ### Application Shell Structure
 
@@ -813,7 +1015,7 @@ The view sidebar contains three elements from top to bottom:
 The toolbar sits above the main pane and contains:
 
 - **Breadcrumb / address bar**: reflects the current navigation path through the virtual hierarchy (e.g. `2024 → Rig-A → Component-B`). Style is platform-adaptive — click-through on macOS, editable on Windows
-- **View mode switcher**: Database | Icons | List | Columns. Database is the default mode on every platform and sits first; Icons, List, and Columns follow standard OS explorer behaviour
+- **View mode switcher**: Database | Icons | List | Columns | Gallery. Database is the default mode on every platform and sits first; Icons, List, Columns and Gallery follow standard OS explorer behaviour
 - **Group button**: the OS file manager's grouping and sorting menu, shown for Icons, List and Columns
 - **Selection count**: when two or more files are selected, "3 of 1,204 selected" appears beside the location name, in every view mode. Columns counts within the active column, as Finder does. The database view shows it in its own file count line instead ("1,492 files" becomes "3 of 1,492 selected"), counting files whether rows or cells across several rows are selected
 - **Edit Hierarchy toggle**: opens or closes the active view's hierarchy (see [Hierarchy of a view](#hierarchy-of-a-view))
@@ -825,6 +1027,30 @@ The toolbar sits above the main pane and contains:
 These three modes replicate standard OS explorer behaviour exactly. Folder items, file thumbnails, selection, drag-and-drop, and context menus all behave as the user would expect from their native OS. No virtual-folder-specific chrome is introduced into these modes beyond the breadcrumb path.
 
 All three share the native **Sort By** and **Group By** options, chosen from the toolbar's group button or by right-clicking the view's background. Grouping follows the OS file manager's buckets — on macOS, Kind (Documents, Images, PDF Documents, Movies, Music, Presentations, Spreadsheets, Developer, Other), Name, Date Modified, Date Created and Size.
+
+#### Gallery
+
+Gallery is Finder's Gallery view, as a fifth mode in the switcher (Database | Icons | List | Columns | Gallery):
+
+- **The selected file large** in the middle of the pane: its Quick Look preview at the pane's size, pages of a PDF, and video and audio playable inline with native controls. A selected folder shows its icon large with its file count
+- **A strip of thumbnails** along the bottom: the folder's folders first, then its files, scrolling sideways. ← and → move the selection, Space opens Quick Look, double-click opens (a folder opens in place, with the path bar following, as in the other modes)
+- **The Preview pane** on the right, always shown in Gallery to begin with; ⇧⌘P hides it
+- **Sort By** works as in the other modes. Group By doesn't apply, as in Finder
+- **Filing by drag** works from the strip as from Icons, and the large preview drags the selected file
+- On Windows, which has no Gallery in File Explorer, the mode keeps the same layout with Explorer's controls and its Preview pane
+
+#### Preview Pane
+
+**View ▸ Show Preview** (⇧⌘P) shows a pane at the right of Icons, List and the Database view, as Finder's preview pane. Columns keeps its preview column instead, as Finder does, and that column gains the same sections. Gallery always has it.
+
+- **The preview is live, as Finder's.** On macOS it's the system's Quick Look view (`QLPreviewView`) set into the pane: scroll through a PDF's pages, play video and audio, page through a Word, Pages or Keynote document, flip through a spreadsheet's sheets — whatever Quick Look shows. Columns' preview column, the Preview pane and Gallery's large preview all use it. On Windows it's the shell's preview handlers (`IPreviewHandler`), as in File Explorer's Preview pane
+  - A native view always draws above the page, so while a sheet, popover or menu-styled panel covers any of it the still preview shows instead, and the live one comes back when it's uncovered
+  - **Online-only cloud files** aren't downloaded just because they're selected: they show the cloud provider's thumbnail when it gives one without downloading, otherwise the file's icon, with *Not downloaded* under it. The live preview appears once the file is downloaded (opening it downloads it, as now). Settings ▸ Files ▸ Preview cloud files can choose *Download when selected* instead
+- **Top to bottom**: the preview, the name with Kind and size, **Information** (Created, Modified, Where, the media properties, with Show More/Show Less), **Tags**, then **Properties**: the file's custom values, editable, as in Get Info
+- **Several files selected**: "3 items" with their total size, and the values they share, editable for all of them, as in the Inspector
+- **In the Database view** it shows the file of the row holding the selection, so a photo can be looked at while it's tagged
+- Shown or hidden per view mode, and kept
+- On Windows it's File Explorer's **Preview pane** (Alt+P). Explorer's **Details pane** (Alt+Shift+P) shows the same pane without the large preview
 
 #### Database View
 
@@ -844,7 +1070,7 @@ Key characteristics:
 
 Properties are of two kinds, and they behave differently:
 
-- **Native properties** describe the file itself: Name, Extension, Path, Kind, Size, Created, Modified, Tags, and values extracted from the file (EXIF). They are read-only in the table. Kind uses the same buckets as Group By ▸ Kind (Documents, Images, PDF Documents, Movies, Music, Presentations, Spreadsheets, Developer, Other); Extension gives the exact format
+- **Native properties** describe the file itself: Name, Extension, Path, Kind, Size, Created, Modified, Tags, and values extracted from the file (EXIF). They are read-only in the table, except the media properties a file's format can hold (Artist, Date Taken), which are edited as custom cells are and written into the file (see [Editing Media Properties](#editing-media-properties)). Kind uses the same buckets as Group By ▸ Kind (Documents, Images, PDF Documents, Movies, Music, Presentations, Spreadsheets, Developer, Other); Extension gives the exact format
 - **Custom properties** are the ones in the registry. Their cells are editable
 
 #### Adding and managing properties
@@ -932,6 +1158,107 @@ Accessed from the icon rail (dedicated entry point at the bottom). Opens as a fu
 - **Delete a node**: collapses children up or removes the branch; confirmation required if files would become unclassified
 - **Rename / duplicate view**: available in both contexts, primary in the master editor
 
+### Settings
+
+**Settings** gathers every choice that isn't part of a view into one window, as a native app's settings do: Folderbase ▸ Settings… (⌘,) on macOS, opening the platform's settings window (a toolbar of panes on macOS; a Fluent page with its sections down the left on Windows, Ctrl+,). Built so far: Settings… opens a sheet over the main window holding *Save zips in*; it becomes its own window as the panes below arrive.
+
+#### Principles
+
+- **Settings is the complete list, not the only place.** Each setting can also be changed where it's used (Added Files Folder… on a location, View ▸ Appearance, the Duplicates preset's Keep order), and both show the same value. Nothing needed in the middle of a task is only in Settings
+- **Arrangement isn't a setting.** Widths, sort, grouping, collapsed groups, which property columns show and where you are are kept as you leave them and never listed here. Neither is anything a view holds (its filters, Hierarchy and per-view switches): that belongs to the view
+- **Every setting has a scope**, shown by the pane it's in: **Folderbase** (this person on this machine), a **Location**, or **New Views** (the defaults a new view starts with). In a [shared location](#working-together-shared-locations) a location's settings are shared with everyone using it, and the pane says so; Folderbase settings never are
+- **Changes apply at once**, with no OK or Apply button, as in macOS Settings. A setting that changes files or takes a while (moving the Added Files folder, Rebuild Index) asks first, as its command does elsewhere
+- **Restore Defaults** at the foot of each pane resets that pane only. **Reset Warnings** brings back every "Don't ask again" sheet
+- **Stored**: Folderbase settings and New View defaults in the database's `app_settings` table, one row each (`commands/settings.rs`); Appearance is still its own file in the config folder; location settings in the `locations` table
+
+#### Panes
+
+Status: **exists** (built, to be listed here), **hardcoded** (built with a fixed value, to become a setting), **planned** (from a feature spec'd but not built).
+
+**General**
+
+| Setting | Choices (default first) | Status |
+|---------|------------------------|--------|
+| Appearance | Light / Dark / Use System Setting. Also View ▸ Appearance | exists (default to become Use System Setting) |
+| View mode for a location opened for the first time | Database / Icons / List / Columns / Gallery | hardcoded |
+| On launch, open | The last location and view / The first location | hardcoded (last) |
+| Show hidden files | Off / On (files starting with "."; never indexed today) | hardcoded |
+| Show file extensions | Always / As Finder does (follows the Finder setting) | planned |
+| Check for missing location folders | Every 30 seconds and when the window comes forward / Only when the window comes forward | hardcoded |
+| Confirmations | Reset Warnings | planned |
+
+**Locations** — the locations listed down the left, as in the sidebar; picking one shows its settings
+
+| Setting | Choices | Status |
+|---------|---------|--------|
+| Name | Text. Also Rename on the location | exists |
+| Folder | Its path, with Locate Folder… and Show in Finder | exists |
+| Added Files folder | A folder inside the location ("Added Files"), moving what's in the old one if asked | exists |
+| Excluded Folders | A checklist of the location's folders | exists |
+| Map Disk Folders | A summary ("3 levels mapped") with Edit… opening the panel | exists |
+| Rules | A summary ("4 rules, 3 on") with Edit… opening the panel | exists |
+| Keep up to date | Watch the folder for changes / Refresh when opened / Only when Refresh is chosen | planned (today: when opened, and Refresh) |
+| Cloud files | Never download to index (read details once downloaded) / Download to read details | exists as the fixed behaviour; planned as a choice |
+| Sharing | Personal / Shared, with who shares it and when each last made a change; Share Values… and Stop Sharing | planned |
+| Remove Location… | Confirmed in a sheet; files untouched | exists |
+
+**New Views** — what a new view starts with; existing views keep their own
+
+| Setting | Choices (default first) | Status |
+|---------|------------------------|--------|
+| Group by Hierarchy | On / Off | exists as a per-view switch |
+| Show Non-Empty Custom Properties | On / Off | exists as a per-view switch |
+| Wrap Multi-select values | On / Off | exists as a per-property switch |
+| Freeze Name | On / Off | exists as a per-view switch |
+| Files without a value | In a “No …” folder / Loose in the folder above (conditional properties always start loose) | exists as a per-level setting |
+| Skip Single Folders | Off / On | exists as a per-level setting |
+| Show All Values | Off / On | exists as a per-level setting |
+
+**Files**
+
+| Setting | Choices (default first) | Status |
+|---------|------------------------|--------|
+| Show previews | Thumbnails / File icons only | planned (thumbnails always today) |
+| Thumbnail cache | Its size, with Clear Cache | planned |
+| Preview cloud files | Only once downloaded / Download when selected (the live preview in Columns, the Preview pane and Gallery) | planned |
+| Editing media properties: ask before writing into files | On / Off (also "Don't ask again" in the sheet) | planned |
+| Editing media properties: Modified date | Update it (sync tools see the change) / Keep it as it was | planned |
+| Save zips in | Downloads / a chosen folder (Other…). ⌥ as you right-click still asks each time (Compress … To…). Also in the notice after a zip | exists |
+| Export to Folder Structure | Copies / Symlinks | planned |
+
+**Duplicates**
+
+| Setting | Choices (default first) | Status |
+|---------|------------------------|--------|
+| Keep order | The ordered rules (see [The Keep order](#the-keep-order)). Also at the top of the Duplicates preset | planned |
+| Preferred places | Locations and folders, ranked by dragging | planned |
+| Places that collect copies | Downloads, Added Files folders, phone and messaging uploads, backup folders; add or remove | planned |
+| Remove Duplicates does | Move to Trash / Replace with Aliases / Keep on Disk, Hide in Folderbase (the sheet starts on this) | planned |
+| Leave out files smaller than | 1 KB / Any size / a size | planned |
+| Check files as they arrive | On / Off (drops and refreshes flag copies of indexed files) | planned |
+| Keep removed files' values for | 30 days / 7 days / 90 days (so Undo can bring them back) | planned |
+
+**Sharing**
+
+| Setting | Choices | Status |
+|---------|---------|--------|
+| Your name | Text, from the OS account to begin with, shown to others in shared locations | planned |
+| This machine's name | Text, from the computer's name | planned |
+| Look for others' changes | When the sync tool brings them and every 5 minutes / Every minute / Only when a location opens | planned |
+| Show who changed a value | On / Off (in Get Info and the Preview pane) | planned |
+
+Which locations are shared is set per location, in Locations.
+
+**Advanced**
+
+| Setting | Choices | Status |
+|---------|---------|--------|
+| Database | Its path and size, with Show in Finder | planned |
+| Back up the database | Daily, keeping the last 7 / Weekly / Never; Back Up Now; to a chosen folder (the app data folder by default) | planned |
+| Restore from Backup… | Picks a backup; asks first | planned |
+| Rebuild Index | Re-reads every location's files; custom values are kept. Asks first | planned |
+| Reset All Settings | Folderbase settings and New View defaults back to their defaults; locations and views untouched. Asks first | planned |
+
 ### Full UI Structure Reference
 
 ```
@@ -951,12 +1278,17 @@ App Window
 │
 ├── Toolbar
 │   ├── Breadcrumb / address bar        [platform-adaptive]
-│   ├── View mode switcher              [Database | Icons | List | Columns]
+│   ├── View mode switcher              [Database | Icons | List | Columns | Gallery]
 │   └── [Edit Hierarchy toggle]         [opens local view editor panel]
 │
 └── Main Pane
-    ├── Icons / List / Columns          [standard OS explorer modes]
-    └── Database view                   [editable metadata table]
+    ├── Icons / List / Columns / Gallery [standard OS explorer modes]
+    ├── Database view                   [editable metadata table]
+    └── Preview pane                    [optional, right edge; always in Gallery]
+
+[Get Info / Inspector — separate small windows, ⌘I / ⌥⌘I]
+[Quick Look — system panel on macOS, Folderbase's preview window elsewhere]
+[Settings — its own window, ⌘, : General · Locations · New Views · Files · Duplicates · Sharing · Advanced]
 
 [Local View Editor — panel/drawer, toggled from toolbar]
     └── Tree editor, default: sub-tree from current node
@@ -972,7 +1304,7 @@ App Window
 
 - **AI-assisted tagging**: Automatic metadata extraction from file content (e.g. face recognition, object detection for photos, document text extraction)
 - **Search**: Full-text and property-based search across the single database
-- **Permissions**: Per-view or per-property access controls for shared machines or team use cases
+- **Permissions**: Per-view or per-property access controls for [shared locations](#working-together-shared-locations) and shared machines
 - **Cloud sync**: Optional integration with cloud storage providers (Dropbox, S3, etc.) as the physical storage layer, with the local database remaining the source of virtual organisation
 - **JSON index promotion**: UI tooling to identify heavily-queried metadata properties and add SQLite JSON path indexes automatically
 - **Registry health tools**: Tooling to detect orphaned property values, inconsistently cased keys, and other data hygiene issues
