@@ -236,11 +236,6 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
 
-    // App-wide settings, one row each (see commands::settings)
-    sqlx::query("CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
-        .execute(pool)
-        .await?;
-
     // The sidebar's order of locations, set by dragging (0 for all: by name)
     let _ = sqlx::query("ALTER TABLE locations ADD COLUMN position INTEGER NOT NULL DEFAULT 0")
         .execute(pool)

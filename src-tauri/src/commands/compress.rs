@@ -182,7 +182,8 @@ pub async fn compress_items(
     db: State<'_, DbPool>,
 ) -> Result<String, String> {
     let downloads = app.path().download_dir().map_err(|e| e.to_string())?;
-    let folder = crate::commands::settings::zip_folder(db.inner(), &downloads).await;
+    let settings = crate::commands::settings::settings_dir(&app, db.inner()).await?;
+    let folder = crate::commands::settings::zip_folder(&settings, &downloads);
     let target = target_path(&folder, &name, destination.as_deref())?;
 
     let cancel = Arc::new(AtomicBool::new(false));
