@@ -3,7 +3,7 @@
 //! which undoes typing in a focused field or else the app's own change history.
 //! The frontend names the change ("Undo Paste") via `set_edit_menu_labels`.
 //! Also File ▸ Save View (Cmd-S), enabled by the frontend while a view has
-//! unsaved edits (`set_save_view_enabled`).
+//! unsaved edits (`set_save_view_enabled`), and Folderbase ▸ Settings… (Cmd-,).
 
 use tauri::menu::{Menu, MenuItem, MenuItemKind};
 use tauri::{App, Emitter, Manager, Wry};
@@ -11,6 +11,7 @@ use tauri::{App, Emitter, Manager, Wry};
 pub const UNDO_ID: &str = "edit-undo";
 pub const REDO_ID: &str = "edit-redo";
 pub const SAVE_VIEW_ID: &str = "file-save-view";
+pub const SETTINGS_ID: &str = "app-settings";
 
 /// The Undo and Redo items, kept so their titles can change.
 pub struct EditMenu {
@@ -60,6 +61,12 @@ pub fn install(app: &App, menu: &Menu<Wry>) -> tauri::Result<()> {
         }
         None => None,
     };
+    // Settings… under About in the app menu (the first one), as every Mac app has it
+    if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+        let settings = MenuItem::with_id(handle, SETTINGS_ID, "Settings…", true, Some("CmdOrCtrl+,"))?;
+        let at = app_menu.items()?.len().min(2);
+        app_menu.insert(&settings, at)?;
+    }
     app.manage(EditMenu { undo, redo, save_view });
 
     handle.on_menu_event(|app, event| {
@@ -67,6 +74,7 @@ pub fn install(app: &App, menu: &Menu<Wry>) -> tauri::Result<()> {
             UNDO_ID => "menu-undo",
             REDO_ID => "menu-redo",
             SAVE_VIEW_ID => "menu-save-view",
+            SETTINGS_ID => "menu-settings",
             _ => return,
         };
         let _ = app.emit(name, ());

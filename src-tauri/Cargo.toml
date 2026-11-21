@@ -26,6 +26,7 @@ mime_guess = "2"
 kamadak-exif = "0.5"
 opener = "0.7"
 base64 = "0.22"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

@@ -31,7 +31,7 @@ interface Props {
   place?: string[];
   /** Where a folder (by its value) takes what's dropped on it. */
   folderPath?: (value: string) => string[];
-  /** A right-click on files: the menu for those (the selection, or the file clicked). */
+  /** A right-click on files, or on a selection with folders among them: the menu for those (the selection, or the file clicked). */
   fileMenu?: (items: DragItem[]) => MenuEntry[];
 }
 
@@ -276,7 +276,9 @@ export default function TilesView({
                     onClick={(e) => selection.onItemClick(e, tile.id)}
                     onDoubleClick={(e) => selection.onItemDoubleClick(e, tile.id)}
                     onContextMenu={(e) => {
-                      const entries = folder ? folderMenu?.(folder.value) : fileMenu?.(itemsAt(tile.id));
+                      // A folder alone has its own menu; in a selection with others, the selection's
+                      const items = itemsAt(tile.id);
+                      const entries = folder && items.length <= 1 ? folderMenu?.(folder.value) : fileMenu?.(items);
                       if (!entries || entries.length === 0) return;
                       e.preventDefault();
                       e.stopPropagation();

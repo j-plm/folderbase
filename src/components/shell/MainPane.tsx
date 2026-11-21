@@ -15,6 +15,7 @@ import { folderLabel, planDrop, type DragItem } from "../../lib/filing";
 import type { MenuEntry } from "../../lib/nativeMenu";
 import { getLocations } from "../../lib/commands";
 import { fileEntries } from "../../lib/fileActions";
+import { compressEntry } from "../../lib/compressActions";
 import PathBar, { type PathSegment } from "./PathBar";
 import NewFolderDialog from "./NewFolderDialog";
 import { FileDragProvider, useFileDrag } from "../../contexts/FileDragContext";
@@ -114,12 +115,13 @@ function MainPaneContent() {
       ? [{ type: "separator" }, { type: "item", text: `New View from “${made.label}”`, action: () => void made.create() }]
       : [];
   };
-  /** A folder's right-click menu in Icons and List. */
-  /** A folder's right-click menu: open it, its level's settings, New View from Folder. */
+  /** A folder's right-click menu: open it, Compress, its level's settings, New View from Folder. */
   const folderMenuAt = (path: string[]): MenuEntry[] => {
     const inner = browse.levelMenu(path);
     return [
       { type: "item", text: "Open", action: () => go(path) },
+      // Zipped as the folders shown below it
+      ...(tree ? [{ type: "separator" as const }, compressEntry([{ kind: "folder", path }], tree, null)] : []),
       ...(inner.length > 0 ? [{ type: "separator" as const }, ...inner] : []),
       ...newViewEntries(path),
       // A folder made with New Folder that nothing's been put in yet
@@ -131,14 +133,24 @@ function MainPaneContent() {
   // With single folders skipped, a folder's menu is the folder it opens into, and drops go there too
   const folderPath = (value: string) => browse.opens([...place, value]);
   const folderMenu = (value: string) => folderMenuAt(folderPath(value));
+  /** The folder several right-clicked items sit in, to name their zip after (null at the top: "Archive"). */
+  const itemsHere = (items: DragItem[]): string | null => {
+    const parents = items.map((i) => (i.kind === "file" ? i.from : i.path.slice(0, -1)));
+    const first = parents[0];
+    if (!tree || !first || first.length === 0 || parents.some((p) => JSON.stringify(p) !== JSON.stringify(first))) return null;
+    return folderLabel(tree, first, "");
+  };
   /**
-   * A right-click on files: Open, Open With, Show in Finder, and Remove from “Folder”, which takes them
-   * out of the folder they're shown in (its value only), into the one enclosing it.
+   * A right-click on files: Open, Open With, Compress, Show in Finder, and Remove from “Folder”, which
+   * takes them out of the folder they're shown in (its value only), into the one enclosing it. With
+   * folders among them (one folder alone has its own menu), Compress.
    */
   const fileMenu = (items: DragItem[]): MenuEntry[] => {
+    if (items.length === 0) return [];
+    const zip = compressEntry(items, tree ?? null, itemsHere(items));
     const files = items.flatMap((i) => (i.kind === "file" ? [i] : []));
-    if (files.length === 0 || files.length < items.length) return [];
-    const entries = fileEntries(files.map((f) => f.file.file_path));
+    if (files.length < items.length) return [zip];
+    const entries = fileEntries(files.map((f) => f.file.file_path), zip);
     const from = files[0].from;
     const ctx = browse.dropContext;
     if (!from || from.length === 0 || !ctx || files.some((f) => JSON.stringify(f.from) !== JSON.stringify(from))) return entries;

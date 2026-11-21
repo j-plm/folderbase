@@ -71,6 +71,7 @@ import {
 } from "../../lib/columns";
 import { showContextMenu, type MenuEntry } from "../../lib/nativeMenu";
 import { fileEntries } from "../../lib/fileActions";
+import { compressEntry } from "../../lib/compressActions";
 import OverflowBar from "../shell/OverflowBar";
 import { measureElements, measureText, uiFont } from "../../lib/textMeasure";
 import { useColumnLayout } from "../../hooks/useColumnLayout";
@@ -1413,11 +1414,14 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
   function showRowMenu(e: React.MouseEvent, fileId: string, columnId?: string) {
     const ids = new Set(selection.targetIds(fileId));
     setCellSel(EMPTY_CELLS);
-    const paths = sorted.flatMap((f) => (ids.has(f.file_id) ? [f.file_path] : []));
+    const picked = sorted.filter((f) => ids.has(f.file_id));
+    const paths = picked.map((f) => f.file_path);
     const col = columns.find((c) => c.id === columnId);
+    // Compress zips the rows picked as a flat list: the table has no folders
+    const zip = compressEntry(picked.map((file) => ({ kind: "file" as const, file, from: null })), null, null);
     void showContextMenu(
       [
-        ...fileEntries(paths),
+        ...fileEntries(paths, zip),
         ...(col ? ([{ type: "separator" }, { type: "submenu", text: `“${col.label}” Column`, items: headerMenuEntries(col.id) }] satisfies MenuEntry[]) : []),
       ],
       { event: e }

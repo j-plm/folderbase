@@ -18,7 +18,7 @@ interface Props {
   opens?: (path: string[]) => string[];
   /** Empty space in a column showing the folder at `path`: New Folder and its level's settings. */
   placeMenu?: (path: string[]) => MenuEntry[];
-  /** A right-click on files: the menu for those (the selection in their column, or the file clicked). */
+  /** A right-click on files, or on a selection with folders among them: the menu for those (the selection in their column, or the row clicked). */
   fileMenu?: (items: DragItem[]) => MenuEntry[];
 }
 
@@ -109,7 +109,8 @@ export default function ColumnsView({ tree, place, onPlace, folderMenu, opens = 
       onFolderPathChange={(ids) => onPlace(placeOf(ids))}
       nodeMenu={(node, parent, nodes) => {
         const path = paths.get(node);
-        if (path) return folderMenu ? folderMenu(path) : null;
+        // A folder alone has its own menu; in a selection with others, the selection's
+        if (path && nodes.length <= 1) return folderMenu ? folderMenu(path) : null;
         return fileMenu ? fileMenu(itemsOf(nodes, parent)) : null;
       }}
       columnMenu={(parent) => {

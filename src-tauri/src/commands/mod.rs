@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod compress;
 pub mod database_view;
 pub mod drag_out;
 pub mod edit_menu;
@@ -15,6 +16,7 @@ pub mod path_mapping;
 pub mod properties;
 pub mod rules;
 pub mod scopes;
+pub mod settings;
 pub mod sync;
 pub mod thumbnails;
 pub mod views;

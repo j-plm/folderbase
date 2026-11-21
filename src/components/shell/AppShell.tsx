@@ -3,6 +3,8 @@ import IconRail from "./IconRail";
 import Sidebar from "./Sidebar";
 import Toolbar from "./Toolbar";
 import MainPane from "./MainPane";
+import CompressNotices from "./CompressNotices";
+import SettingsWindow from "./SettingsWindow";
 import MasterViewEditor from "../editor/MasterViewEditor";
 import { ArrangementProvider } from "../../contexts/ArrangementContext";
 import { LocationViewsProvider } from "../../contexts/LocationViewsContext";
@@ -22,6 +24,8 @@ export default function AppShell() {
         </div>
       </div>
       {masterEditorOpen && <MasterViewEditor />}
+      <CompressNotices />
+      <SettingsWindow />
     </div>
   );
 

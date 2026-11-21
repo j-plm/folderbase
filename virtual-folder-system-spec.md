@@ -600,6 +600,12 @@ Example — navigating to `2024 → Rig-A → Component-B → Front` and droppin
   - **On a saved view** (or the Default view), including the view that's open: "Give N files these values?", listing each property and value. The values come from the view's own filters only, never from the folders of its Hierarchy. A filter gives a value only when it names one: *is* on a Select, Text or Number property, *has* on a Multi-select, *is* a day on a date. The sheet names the filters that can't give a value (contains, is not, a range, a column read from the file such as Kind, a group matching any of several) and says how many files still won't show in the view because of them. Confirming sets the values, and it can be undone. On a Multi-select the value is added, as dropping from elsewhere adds it. Files dragged in from another app go onto a folder of the view, not its sidebar row
 - **What a drop will do is shown before it's made**: beside the cursor, the gist ("Set Project to Hermes", "Move to “Hermes”", "Add to “Hermes”", or why not); in a bar above the path bar, each level's change ("Client: Acme (3 set, 1 replaced)"). Folders open after the pointer rests on them for a second (spring-loaded), as in Finder; Escape cancels. Every drop can be undone
 
+### Settings
+
+**Settings…** (in the app menu, ⌘,; Ctrl+, on Windows and Linux) opens the app-wide settings, as a sheet. Settings that belong to a location or a view stay with those. So far:
+
+- **Save zips in**: where Compress saves zips. Downloads unless another folder is chosen (see [File Operations](#file-operations))
+
 ### File Operations
 
 | Operation | Behaviour |
@@ -609,6 +615,17 @@ Example — navigating to `2024 → Rig-A → Component-B → Front` and droppin
 | Delete file | Removes from disk and DB record |
 | Rename file | Updates DB record; physical filename may remain unchanged |
 | Create folder | Adds property value to registry; no physical folder created |
+| Compress | Writes a zip to Downloads, or the folder chosen in Settings (or where ⌥ Compress To… says); nothing in the database points at it |
+
+**Compress** (right-click, in every view mode) makes a zip for sharing. It's laid out as the view shows things, never as they sit on disk:
+
+- **A folder** (right-clicked on its own): *Compress “Acme”* gives `Acme.zip` holding the folder `Acme`, with the folders below it as you'd open them (named as they show, "No Client" too) and the files at the bottom. A file in several folders (a Multi-select) is in each. Folders with nothing in them are left out
+- **A selection** of files and folders: *Compress 3 Items*. Files sit at the top of the zip, each folder beside them as above. The zip is named after the folder they're in ("2024.zip"), or "Archive.zip" at the top; one file alone gives "report.pdf.zip", as in Finder
+- **In the Database view**, the rows picked zip as a flat list
+- Two files with the same name in one folder of the zip are numbered ("invoice 2.pdf"), as Finder's Keep Both does. Hidden files are never picked
+- **Where it lands**: Downloads, without asking, named as above (numbered if the name's taken), unless another folder is chosen: in **Settings** (*Save zips in:* Downloads / the folder / Other…), or from the notice of a zip just made: its folder's name is a pop-up ("Saved in Downloads ⌄") with Change Default Folder… and Settings…, as is its right-click menu (that zip stays where it is). A chosen folder that's gone means Downloads again. Holding ⌥ as you right-click offers *Compress … To…*, which asks where with a save panel starting in that folder. A zip saved inside a location is indexed straight away, like any other file; nothing ties it to the files it came from
+- A notice in the window's corner shows its progress, with Cancel (nothing is left behind), then its name and where it was saved. Laid out as a macOS notification: one button (Cancel, then Show in Finder), the close button at the top left on hover. It goes by itself after a few seconds, unless hovered. A file the database has but the disk doesn't stops it, naming the file
+- Photos, video, audio and files that are already zips are stored as they are; everything else is deflated
 
 ### View Configuration GUI
 

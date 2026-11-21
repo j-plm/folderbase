@@ -15,7 +15,7 @@ interface Props {
   place?: string[];
   /** Where a folder (by its value) takes what's dropped on it. */
   folderPath?: (value: string) => string[];
-  /** A right-click on files: the menu for those. */
+  /** A right-click on files, or on a selection with folders among them: the menu for those. */
   fileMenu?: (items: DragItem[]) => MenuEntry[];
 }
 

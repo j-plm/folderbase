@@ -132,8 +132,8 @@ export function openWithEntries(apps: OpenWithApp[], open: (app: string) => void
   return entries;
 }
 
-/** A file's own right-click items, wherever it's shown: Open, Open With ▸, Show in Finder. */
-export function fileEntries(paths: string[]): MenuEntry[] {
+/** A file's own right-click items, wherever it's shown: Open, Open With ▸, Compress, Show in Finder. */
+export function fileEntries(paths: string[], compress?: MenuEntry): MenuEntry[] {
   return [
     { type: "item", text: "Open", action: () => void openFiles(paths) },
     {
@@ -148,6 +148,7 @@ export function fileEntries(paths: string[]): MenuEntry[] {
         ),
     },
     { type: "separator" },
+    ...(compress ? [compress, { type: "separator" as const }] : []),
     { type: "item", text: labels.reveal, action: () => void revealFiles(paths) },
   ];
 }

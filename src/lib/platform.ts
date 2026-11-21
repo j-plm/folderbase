@@ -24,6 +24,16 @@ export const labels = {
   selectAll: platform === "macos" ? "⌘A" : "Ctrl+A",
 } as const;
 
+/**
+ * Compress's menu item: Finder names what it zips ("Compress “Acme”", "Compress 3 Items");
+ * Explorer's is the same whatever's picked. `to`: the version that asks where to save it.
+ */
+export function compressLabel(count: number, name: string | null, to = false): string {
+  if (platform === "windows") return to ? "Compress to ZIP File…" : "Compress to ZIP File";
+  const what = count === 1 && name ? `“${name}”` : `${count} Items`;
+  return `Compress ${what}${to ? " To…" : ""}`;
+}
+
 export const breadcrumbSeparator = platform === "windows" ? "\\" : "/";
 
 export { platform };

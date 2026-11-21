@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   CreateFolderResult,
   DbFilter,
@@ -653,4 +653,46 @@ export async function setSaveViewEnabled(enabled: boolean): Promise<void> {
 /** A cached Quick Look thumbnail (PNG path) for a file, or null when there isn't one. */
 export async function getThumbnail(path: string, size: number, scale: number): Promise<string | null> {
   return invoke<string | null>("get_thumbnail", { path, size, scale });
+}
+
+/** Where Compress To… saves a zip: a save panel starting at `name` in Downloads. Null if cancelled. */
+export async function pickZipDestination(name: string, downloads?: string): Promise<string | null> {
+  return save({ defaultPath: downloads ? `${downloads}/${name}` : name, filters: [{ name: "ZIP Archive", extensions: ["zip"] }] });
+}
+
+/** Rust's error for a compress stopped with `cancelCompress` (`commands::compress::CANCELLED`). */
+export const COMPRESS_CANCELLED = "cancelled";
+
+/**
+ * Zips files, each at its place inside the zip, into `destination` (from a
+ * save panel), else `name` in Downloads. Resolves to the zip's path. Progress
+ * arrives as `compress_progress` events for `job`.
+ */
+export async function compressItems(
+  job: string,
+  name: string,
+  entries: { archive_path: string; disk_path: string }[],
+  destination: string | null
+): Promise<string> {
+  return invoke<string>("compress_items", { job, name, entries, destination });
+}
+
+/** Stops a compress in progress; nothing is left behind. */
+export async function cancelCompress(job: string): Promise<void> {
+  return invoke<void>("cancel_compress", { job });
+}
+
+/** App-wide settings (the Settings window). */
+export interface AppSettings {
+  /** Where Compress saves zips; null: Downloads. */
+  zip_folder: string | null;
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  return invoke<AppSettings>("get_app_settings");
+}
+
+/** Sets where Compress saves zips: a folder, or null for Downloads. Resolves to the settings as they now are. */
+export async function setZipFolder(folder: string | null): Promise<AppSettings> {
+  return invoke<AppSettings>("set_zip_folder", { folder });
 }
