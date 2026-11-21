@@ -715,12 +715,22 @@ export interface PreviewRect {
   height: number;
 }
 
+// Show and hide can reach the main thread out of order, so each carries a ticket:
+// this page's session and a rising count. Rust drops any older than the last it
+// applied (commands/preview_view.rs), so the last one sent always wins.
+const previewSession = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Math.random());
+let previewSeq = 0;
+const previewTicket = () => ({ session: previewSession, seq: ++previewSeq });
+
 /** Shows `path` in the live Quick Look preview at `rect`, or moves it there. */
 export async function previewViewShow(path: string, rect: PreviewRect): Promise<void> {
-  return invoke<void>("preview_view_show", { path, rect });
+  return invoke<void>("preview_view_show", { path, rect, ticket: previewTicket() });
 }
 
-/** Takes the live preview away. */
+/**
+ * Takes the live preview away. Also called once as the page loads: a reload
+ * runs no cleanup, so this clears a preview the old page left over the window.
+ */
 export async function previewViewHide(): Promise<void> {
-  return invoke<void>("preview_view_hide");
+  return invoke<void>("preview_view_hide", { ticket: previewTicket() });
 }
