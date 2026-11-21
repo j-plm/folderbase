@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type React from "react";
 import { createPortal } from "react-dom";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { dragOut, importFiles, setEditMenuLabels, setMetadataCells, trashAddedFiles } from "../lib/commands";
+import { copyToLocation, dragOut, importFiles, setEditMenuLabels, setMetadataCells, trashAddedFiles } from "../lib/commands";
 import { setUndoTarget } from "../lib/editMenu";
 import { planDrop, folderLabel, type DragItem, type DropContext, type DropOptions, type DropPlan } from "../lib/filing";
 import { DRAG_ICON_OFFSET, DRAG_ICON_SIZE, HOLDING_FOLDER, edgeScroll } from "../lib/fileDrag";
@@ -11,6 +11,9 @@ import { dropPositionScale, platform } from "../lib/platform";
 import { FileIcon, FolderIcon } from "../lib/fileIcons";
 import { useUndo } from "../hooks/useUndo";
 import { useBrowse } from "./BrowseContext";
+import { useOptionalLocationViews } from "./LocationViewsContext";
+import { carriedValues, planViewDrop } from "../lib/sidebarDrop";
+import { workingDefinition } from "../lib/tableViews";
 import Dialog, { DialogButton, DialogField, dialogTextField } from "../components/shared/Dialog";
 import type { FileRecord } from "../types";
 
@@ -24,10 +27,16 @@ import type { FileRecord } from "../types";
 // JSON) on folders, path bar segments and each view's background
 // (`data-drop-kind="area"`, the folder showing there). A target in another
 // hierarchy than the view's folders (the Database view's own groups) names it
-// with `data-drop-source`, registered with `registerSource`.
+// with `data-drop-source`, registered with `registerSource`. Sidebar rows are
+// marked `data-drop-sidebar` (a SidebarTarget as JSON): a drop there always
+// asks first, copying to another location or giving a view's filter values
+// (lib/sidebarDrop).
 
 /** How long a dragged item rests on a folder before it opens, as Finder's spring-loaded folders do. */
 const SPRING_MS = 1000;
+
+/** A sidebar row files can be dropped on (`data-drop-sidebar`). */
+export type SidebarTarget = { kind: "location" | "view"; id: string; name: string };
 
 /** What the drag would do, for the cursor and the bar along the bottom. */
 export interface DropStatus {
@@ -72,6 +81,8 @@ interface Hover {
   area: boolean;
   /** The hierarchy it belongs to (`registerSource`); left out: the view's folders. */
   source?: string;
+  /** A location or view in the sidebar, rather than a folder. */
+  sidebar?: SidebarTarget;
 }
 
 interface Session {
@@ -84,6 +95,22 @@ interface Session {
   y: number;
   /** Dragged in from another app: its paths, and how many aren't in the location yet. */
   external?: { paths: string[]; fresh: number };
+  /** Over the sidebar: what dropping there asks. */
+  sheet?: SidebarSheet | null;
+}
+
+/** A drop on the sidebar, waiting to be confirmed. */
+interface SidebarSheet {
+  title: string;
+  message: string;
+  /** Introduces `lines`: "With these values:". */
+  linesTitle?: string;
+  lines: string[];
+  /** What's left out, in plain sentences. */
+  notes: string[];
+  /** The confirm button: "Copy", "Give Values". */
+  action: string;
+  run: () => void;
 }
 
 /** A drop waiting on the user: which day for a date folder, or whether to replace values. */
@@ -95,7 +122,8 @@ type Pending =
       /** The plan without the replacements (Keep Existing), when it still files something. */
       keep: DropPlan | null;
       settle: (chosen: "replace" | "keep" | null) => void;
-    };
+    }
+  | { kind: "sidebar"; sheet: SidebarSheet };
 
 /** Writes a drop's plan (made with `opts`), as a change that can be undone. */
 type Commit = (plan: DropPlan, opts: DropOptions) => Promise<void>;
@@ -152,6 +180,9 @@ export function FileDragProvider({ locationId, children }: { locationId: string 
   const browse = useBrowse();
   const browseRef = useRef(browse);
   browseRef.current = browse;
+  const views = useOptionalLocationViews();
+  const viewsRef = useRef(views);
+  viewsRef.current = views;
 
   const [status, setStatus] = useState<DropStatus | null>(null);
   /** What's being dragged, and where the drag started (the ghost then follows the pointer directly). */
@@ -263,12 +294,122 @@ export function FileDragProvider({ locationId, children }: { locationId: string 
     [finish, commitPlan]
   );
 
+  // ── Dropping on the sidebar: always asks first ─────────────────────────────
+
+  /** Another location copies the files there (with their custom values); a view gives its filters' values. */
+  const sidebarDrop = (s: Session, target: SidebarTarget): { status: DropStatus; sheet: SidebarSheet | null } => {
+    const refuse = (title: string) => ({ status: { title, details: [], refused: true }, sheet: null });
+    const browse = browseRef.current;
+    const ctx = browse?.dropContext;
+    const fresh = s.external && s.external.fresh > 0 ? s.external.paths : null;
+    const files = fresh ? [] : filesOf(s.items, (path) => browse?.tree?.filesAt(path) ?? []);
+    const count = (n: number) => (n === 1 ? "1 file" : `${n} files`);
+
+    if (target.kind === "location") {
+      if (target.id === locationId) return refuse(`Already in “${target.name}”`);
+      const n = fresh ? fresh.length : files.length;
+      if (n === 0) return refuse(`Nothing to copy to “${target.name}”`);
+      const what = fresh ? (n === 1 ? "1 item" : `${n} items`) : count(n);
+      const lines = fresh || !ctx ? [] : carriedValues(files, ctx.typeOf);
+      const run = fresh ? () => void copyInFromOutside(target, fresh) : () => void copyAcross(target, files.map((f) => f.file_id));
+      return {
+        status: { title: `Copy to “${target.name}”`, details: [`${what} copied into its Added Files folder`], refused: false },
+        sheet: {
+          title: `Copy ${what} to “${target.name}”?`,
+          message: "They're copied into its Added Files folder. The originals stay where they are.",
+          linesTitle: lines.length > 0 ? "With these values:" : undefined,
+          lines,
+          notes: [],
+          action: "Copy",
+          run,
+        },
+      };
+    }
+
+    if (fresh) return refuse(`Drop on a folder to add files`);
+    const list = viewsRef.current;
+    const view = list?.views.find((v) => v.view_id === target.id);
+    if (!view || !ctx || files.length === 0) return refuse(`Can't give values of “${target.name}”`);
+    const def = view.view_id === list?.active?.view_id && list.definition ? list.definition : workingDefinition(view);
+    const plan = planViewDrop(files, def.table.filters, def.table.match, { typeOf: ctx.typeOf, scopes: ctx.scopes, label: ctx.label });
+    if (plan.lines.length === 0) {
+      return refuse(plan.unmet.length > 0 ? `“${target.name}”'s filters give no values` : `“${target.name}” has no filters to give values from`);
+    }
+    if (plan.files === 0) return refuse(`Already has the values of “${target.name}”`);
+    const notes: string[] = [];
+    if (plan.unmet.length > 0) notes.push(`${plan.unmet.length === 1 ? "This filter gives" : "These filters give"} no value: ${plan.unmet.join("; ")}.`);
+    if (plan.hidden > 0) notes.push(`${plan.hidden === files.length ? (files.length === 1 ? "It" : "They") : `${plan.hidden} of them`} still won't show in “${target.name}”.`);
+    return {
+      status: { title: `Give values of “${target.name}”`, details: plan.lines, refused: false },
+      sheet: {
+        title: `Give ${count(plan.files)} the values of “${target.name}”?`,
+        message: `From the view's filters (its Hierarchy's folders aren't given).`,
+        lines: plan.lines,
+        notes,
+        action: "Give Values",
+        run: () =>
+          void commitPlan(
+            { refusal: null, edits: plan.edits, before: plan.before, files: plan.files, left: null, replacements: [], asks: [], title: "", details: [], verb: "Set" },
+            {}
+          ),
+      },
+    };
+  };
+  const sidebarDropRef = useRef(sidebarDrop);
+  sidebarDropRef.current = sidebarDrop;
+
+  /** Copies the files to another location with their custom values; undone, the copies go to the Trash. */
+  const copyAcross = async (target: SidebarTarget, ids: string[]) => {
+    try {
+      let copied = await queue(() => copyToLocation(target.id, ids));
+      if (copied.copies.length === 0) {
+        setNotice({ title: `Already in “${target.name}”`, message: "Nothing was copied: the files are already inside that location." });
+        return;
+      }
+      push({
+        label: "Copy",
+        undo: () => trashAddedFiles(target.id, copied.folder, copied.copies),
+        redo: async () => {
+          copied = await copyToLocation(target.id, ids);
+        },
+      });
+    } catch (e) {
+      setNotice({ title: `The files couldn't be copied to “${target.name}”`, message: String(e) });
+    }
+  };
+
+  /** Dragged in from another app onto a location: copied into its Added Files folder. */
+  const copyInFromOutside = async (target: SidebarTarget, paths: string[]) => {
+    handedOff.current = null;
+    try {
+      let imported = await queue(() => importFiles(target.id, paths));
+      if (imported.copies.length === 0) return;
+      push({
+        label: "Copy",
+        undo: () => trashAddedFiles(target.id, imported.folder, imported.copies),
+        redo: async () => {
+          imported = await importFiles(target.id, paths);
+        },
+      });
+    } catch (e) {
+      setNotice({ title: `The files couldn't be copied to “${target.name}”`, message: String(e) });
+    }
+  };
+
   // ── Where the pointer is ───────────────────────────────────────────────
 
   const describe = useCallback((s: Session) => {
     const hover = s.hover;
     hover?.el.removeAttribute("data-drop-over");
     s.plan = null;
+    s.sheet = null;
+    if (hover?.sidebar) {
+      const { status: show, sheet } = sidebarDropRef.current(s, hover.sidebar);
+      s.sheet = sheet;
+      if (sheet) hover.el.setAttribute("data-drop-over", "item");
+      setStatus(show);
+      return;
+    }
     const resolved = hover ? resolve(s.items, hover.source) : null;
     if (!hover || !resolved) {
       setStatus(null);
@@ -304,21 +445,23 @@ export function FileDragProvider({ locationId, children }: { locationId: string 
       if (!s) return;
       s.x = x;
       s.y = y;
-      const el = (document.elementFromPoint(x, y) as HTMLElement | null)?.closest<HTMLElement>("[data-drop-path]") ?? null;
+      const el = (document.elementFromPoint(x, y) as HTMLElement | null)?.closest<HTMLElement>("[data-drop-path],[data-drop-sidebar]") ?? null;
       if (!force && el === (s.hover?.el ?? null)) return;
       s.hover?.el.removeAttribute("data-drop-over");
       window.clearTimeout(springTimer.current);
       let path: string[] | null = null;
+      let sidebar: SidebarTarget | undefined;
       try {
-        path = el ? (JSON.parse(el.dataset.dropPath ?? "") as string[]) : null;
+        if (el?.dataset.dropSidebar) sidebar = JSON.parse(el.dataset.dropSidebar) as SidebarTarget;
+        else path = el ? (JSON.parse(el.dataset.dropPath ?? "") as string[]) : null;
       } catch {
         path = null;
       }
-      s.hover = el && path ? { path, el, area: el.dataset.dropKind === "area", source: el.dataset.dropSource } : null;
+      s.hover = el && (path || sidebar) ? { path: path ?? [], el, area: el.dataset.dropKind === "area", source: el.dataset.dropSource, sidebar } : null;
       describe(s);
-      // Resting on a folder opens it, so a drag can go deeper (not a table group: it's no folder)
+      // Resting on a folder opens it, so a drag can go deeper (not a table group or the sidebar: they're no folders)
       const hover = s.hover;
-      if (hover && !hover.area && !hover.source) {
+      if (hover && !hover.area && !hover.source && !hover.sidebar) {
         springTimer.current = window.setTimeout(() => {
           if (session.current !== s) return;
           browseRef.current?.go(hover.path);
@@ -392,12 +535,16 @@ export function FileDragProvider({ locationId, children }: { locationId: string 
         hoverAt(e.clientX, e.clientY);
       };
       const onUp = () => {
-        const { hover, plan } = s;
+        const { hover, plan, sheet } = s;
         end();
         // The click that ends a drag isn't a click on what's under it
         const swallow = (e: MouseEvent) => e.stopPropagation();
         window.addEventListener("click", swallow, { capture: true, once: true });
         window.setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
+        if (hover?.sidebar) {
+          if (sheet) setPending({ kind: "sidebar", sheet });
+          return;
+        }
         const resolved = hover && resolve(s.items, hover.source);
         if (!hover || !plan || plan.files === 0 || !resolved) return;
         finish((extra) => planDrop(resolved.items, hover.path, resolved.ctx, { add: s.add, ...extra }), commitPlan);
@@ -550,9 +697,14 @@ export function FileDragProvider({ locationId, children }: { locationId: string 
         } else if (payload.type === "drop") {
           const s = session.current;
           if (!s?.external) return;
-          const { hover, plan, items, external } = s;
+          const { hover, plan, items, external, sheet } = s;
           end();
           if (!hover) return;
+          if (hover.sidebar) {
+            handedOff.current = null;
+            if (sheet) setPending({ kind: "sidebar", sheet });
+            return;
+          }
           // All already in the location (or dragged out and back): filed as they are, nothing copied
           if (external.fresh === 0) {
             handedOff.current = null;
@@ -619,6 +771,15 @@ export function FileDragProvider({ locationId, children }: { locationId: string 
           onChoose={(chosen) => {
             setPending(null);
             pending.settle(chosen);
+          }}
+        />
+      )}
+      {pending?.kind === "sidebar" && (
+        <SidebarDropSheet
+          sheet={pending.sheet}
+          onChoose={(ok) => {
+            setPending(null);
+            if (ok) pending.sheet.run();
           }}
         />
       )}
@@ -694,6 +855,49 @@ function ReplaceSheet({
         </>
       }
     />
+  );
+}
+
+/** A drop on the sidebar: what it will do, before anything changes. */
+function SidebarDropSheet({ sheet, onChoose }: { sheet: SidebarSheet; onChoose: (ok: boolean) => void }) {
+  return (
+    <Dialog
+      title={sheet.title}
+      message={sheet.message}
+      onCancel={() => onChoose(false)}
+      onSubmit={() => onChoose(true)}
+      footer={
+        <>
+          <span className="flex-1" />
+          <DialogButton onClick={() => onChoose(false)}>Cancel</DialogButton>
+          <DialogButton variant="default" autoFocus>
+            {sheet.action}
+          </DialogButton>
+        </>
+      }
+    >
+      {(sheet.lines.length > 0 || sheet.notes.length > 0) && (
+        <div className="flex flex-col gap-2">
+          {sheet.lines.length > 0 && (
+            <div className="flex flex-col gap-0.5">
+              {sheet.linesTitle && <p className="text-neutral-400">{sheet.linesTitle}</p>}
+              <ul className="flex flex-col gap-0.5">
+                {sheet.lines.map((line) => (
+                  <li key={line} className="truncate" title={line}>
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {sheet.notes.map((note) => (
+            <p key={note} className="text-neutral-400">
+              {note}
+            </p>
+          ))}
+        </div>
+      )}
+    </Dialog>
   );
 }
 

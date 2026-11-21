@@ -515,6 +515,20 @@ export interface Imported {
 }
 
 /** Undoes a drop from outside: the `copies` it made in `folder` go to the Trash, with their records. */
+export interface CopiedToLocation {
+  /** The Added Files folder they were copied into. */
+  folder: string;
+  /** The copies, to put in the Trash on undo. */
+  copies: string[];
+  /** Files already inside that location, left as they are. */
+  skipped: number;
+}
+
+/** Copies files (by record) into another location's Added Files folder, with their custom values. */
+export async function copyToLocation(locationId: string, fileIds: string[]): Promise<CopiedToLocation> {
+  return invoke<CopiedToLocation>("copy_to_location", { locationId, fileIds });
+}
+
 export async function trashAddedFiles(locationId: string, folder: string, copies: string[]): Promise<void> {
   return invoke<void>("trash_added_files", { locationId, folder, copies });
 }

@@ -136,6 +136,131 @@ pub async fn import_files(location_id: String, paths: Vec<String>, db: State<'_,
     import_files_impl(&location_id, &paths, db.inner()).await
 }
 
+/// Files dropped on another location in the sidebar: copied into its Added
+/// Files folder, keeping their custom values.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct CopiedToLocation {
+    /// The Added Files folder they were copied into.
+    pub folder: String,
+    /// The copies (directly in `folder`), to put in the Trash on undo.
+    pub copies: Vec<String>,
+    /// Files already inside that location, left as they are.
+    pub skipped: usize,
+}
+
+/// Copies files (by record) from their location into `target`'s Added Files
+/// folder, indexes them, and gives each copy the original's custom values.
+/// Values read from the file (EXIF) come from indexing the copy instead. Each
+/// property is matched by name in the target library (the built-in Tags by
+/// being Tags), and made there with the same type when it's missing; a value
+/// the copy already has (from Map Disk Folders, say) is kept.
+pub async fn copy_to_location_impl(target: &str, file_ids: &[String], pool: &DbPool) -> Result<CopiedToLocation, String> {
+    use crate::commands::metadata::{convert_value, property_for, set_metadata_cells_impl, CellEdit};
+    use crate::commands::properties::is_system;
+    use crate::models::Property;
+    use serde_json::{Map, Value};
+
+    let (root, holding) = location_folders(target, pool).await?;
+    let target_library = location(target, pool).await?.library;
+
+    let mut copies: Vec<(PathBuf, Map<String, Value>, Option<String>)> = Vec::new();
+    let mut skipped = 0;
+    for id in file_ids {
+        let row: Option<(String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT file_path, metadata, library FROM files WHERE file_id = ?")
+                .bind(id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        let Some((path, metadata, library)) = row else { continue };
+        let source = PathBuf::from(&path);
+        if source.starts_with(&root) {
+            skipped += 1;
+            continue;
+        }
+        let (copy, _) = copy_into(&holding, &source)?;
+        let meta = metadata
+            .and_then(|m| serde_json::from_str::<Value>(&m).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        copies.push((copy, meta, library));
+    }
+    crate::commands::sync::sync_location(target, pool, &|_| {}).await?;
+
+    let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
+    let target_props: Vec<Property> = sqlx::query_as("SELECT * FROM properties WHERE library = ?")
+        .bind(&target_library)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| e.to_string())?;
+    let target_tags = target_props.iter().find(|p| is_system(p)).map(|p| p.name.clone());
+    let extracted: Vec<&str> = crate::commands::ingest::extracted_keys().collect();
+
+    let mut edits = Vec::new();
+    for (copy, meta, library) in &copies {
+        let found: Option<(String, Option<String>)> = sqlx::query_as("SELECT file_id, metadata FROM files WHERE location_id = ? AND file_path = ?")
+            .bind(target)
+            .bind(copy.to_string_lossy().as_ref())
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|e| e.to_string())?;
+        let Some((file_id, now)) = found else { continue };
+        let now: Map<String, Value> = now
+            .and_then(|m| serde_json::from_str::<Value>(&m).ok())
+            .and_then(|v| v.as_object().cloned())
+            .unwrap_or_default();
+        for (key, value) in meta {
+            if value.is_null() || extracted.contains(&key.as_str()) {
+                continue;
+            }
+            let source_prop = property_for(&mut conn, key, library.as_deref()).await?;
+            let name = match (&source_prop, &target_tags) {
+                (Some(p), Some(tags)) if is_system(p) => tags.clone(),
+                _ => key.clone(),
+            };
+            if now.get(&name).is_some_and(|v| !v.is_null()) {
+                continue;
+            }
+            let value_type = match property_for(&mut conn, &name, Some(&target_library)).await? {
+                Some(p) => p.value_type,
+                None => {
+                    let (value_type, config) = match &source_prop {
+                        Some(p) if !is_system(p) => (p.value_type.clone(), p.config.clone()),
+                        _ => (if value.is_array() { "array" } else { "free_text" }.to_string(), None),
+                    };
+                    sqlx::query("INSERT INTO properties (property_id, name, library, value_type, config) VALUES (?, ?, ?, ?, ?)")
+                        .bind(uuid::Uuid::new_v4().to_string())
+                        .bind(&name)
+                        .bind(&target_library)
+                        .bind(&value_type)
+                        .bind(&config)
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    value_type
+                }
+            };
+            if let Some(value) = convert_value(value, &value_type) {
+                edits.push(CellEdit { file_id: file_id.clone(), key: name, value });
+            }
+        }
+    }
+    drop(conn);
+    set_metadata_cells_impl(pool, &edits).await?;
+
+    let text = |p: &PathBuf| p.to_string_lossy().into_owned();
+    Ok(CopiedToLocation {
+        folder: text(&holding),
+        copies: copies.iter().map(|(c, _, _)| text(c)).collect(),
+        skipped,
+    })
+}
+
+#[tauri::command]
+pub async fn copy_to_location(location_id: String, file_ids: Vec<String>, db: State<'_, DbPool>) -> Result<CopiedToLocation, String> {
+    copy_to_location_impl(&location_id, &file_ids, db.inner()).await
+}
+
 async fn location(location_id: &str, pool: &DbPool) -> Result<Location, String> {
     sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE location_id = ?")
         .bind(location_id)

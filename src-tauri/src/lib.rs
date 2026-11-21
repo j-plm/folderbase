@@ -57,6 +57,7 @@ pub fn run() {
             commands::ingest::ingest_directory,
             commands::import::import_files,
             commands::import::trash_added_files,
+            commands::import::copy_to_location,
             commands::import::set_added_folder,
             commands::drag_out::drag_out,
             commands::locations::get_locations,

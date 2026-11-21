@@ -414,6 +414,8 @@ export default function Sidebar() {
                       // Clicking the selected location again folds its views away, or shows them
                       onClick={() => (isActive ? setViewsFolded(viewsShown) : setActiveLocation(loc.location_id))}
                       onMouseDown={(e) => locationDrag.onMouseDown(e, locIndex)}
+                      // Files dropped here are copied to it, after asking (FileDragContext)
+                      data-drop-sidebar={JSON.stringify({ kind: "location", id: loc.location_id, name: loc.name })}
                       className={`flex items-center gap-2 w-full text-left ${gutter} h-7 rounded-md pr-7 group-hover:pr-12 ${
                         isSelected ? "bg-neutral-700 text-blue-500" : "text-neutral-100"
                       }`}
@@ -516,6 +518,8 @@ export default function Sidebar() {
                         onClick={() => void locationViews?.select(view.view_id)}
                         onMouseDown={(e) => viewDrag.onMouseDown(e, dragIndex)}
                         onContextMenu={(e) => showViewMenu(e, view)}
+                        // Files dropped here get the view's filter values, after asking (FileDragContext)
+                        data-drop-sidebar={JSON.stringify({ kind: "view", id: view.view_id, name: view.name })}
                         className={rowClass}
                       >
                         {viewDrag.lineAt(dragIndex) && <DropLine edge="top" />}

@@ -289,3 +289,66 @@ async fn import_into_a_missing_location_is_an_error() {
     let pool = setup_db().await;
     assert!(import_files_impl("nope", &[], &pool).await.is_err());
 }
+
+#[tokio::test]
+async fn copying_to_another_location_carries_custom_values() {
+    use folderbase_lib::commands::import::{copy_to_location_impl, trash_added_files_impl};
+    let pool = setup_db().await;
+    let (src_root, dst_root) = (temp_root(), temp_root());
+    write(&src_root, "a.txt", b"a");
+    write(&src_root, "b.txt", b"b");
+    let src = add_location(&pool, &src_root).await;
+    let dst = add_location(&pool, &dst_root).await;
+    sync(&pool, &src).await;
+    sync(&pool, &dst).await;
+    let src_lib: String = sqlx::query_scalar("SELECT library FROM locations WHERE location_id = ?").bind(&src).fetch_one(&pool).await.unwrap();
+    let dst_lib: String = sqlx::query_scalar("SELECT library FROM locations WHERE location_id = ?").bind(&dst).fetch_one(&pool).await.unwrap();
+    // Client is a Select in the source; each library has its own Tags, the target's renamed
+    for lib in [&src_lib, &dst_lib] {
+        folderbase_lib::commands::properties::ensure_tags_property(&pool, lib).await.unwrap();
+    }
+    sqlx::query("UPDATE properties SET name = 'Labels' WHERE library = ? AND name = 'Tags'").bind(&dst_lib).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO properties (property_id, name, library, value_type) VALUES (?, 'Client', ?, 'enum')")
+        .bind(Uuid::new_v4().to_string())
+        .bind(&src_lib)
+        .execute(&pool)
+        .await
+        .unwrap();
+    set_custom(&pool, "a.txt", r#"{"Client":"Acme","Tags":["Rent"],"camera_make":"Old"}"#).await;
+    let ids: Vec<String> = sqlx::query_scalar("SELECT file_id FROM files WHERE location_id = ? ORDER BY relative_path")
+        .bind(&src)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+    let copied = copy_to_location_impl(&dst, &ids, &pool).await.unwrap();
+    assert_eq!(copied.copies.len(), 2);
+    assert_eq!(copied.skipped, 0);
+    assert!(src_root.join("a.txt").exists() && dst_root.join("Added Files/a.txt").exists());
+
+    let meta = metadata_at(&pool, "Added Files/a.txt").await.unwrap();
+    assert_eq!(meta["Client"], "Acme");
+    // Tags go to the target's own Tags, whatever it's called; values read from the file aren't copied
+    assert_eq!(meta["Labels"], serde_json::json!(["Rent"]));
+    assert!(meta.get("Tags").is_none() && meta.get("camera_make").is_none());
+    // Client is made in the target library with its type, and its value registered
+    let (ty, values): (String, i64) = sqlx::query_as(
+        "SELECT p.value_type, (SELECT COUNT(*) FROM property_values v WHERE v.property_id = p.property_id AND v.value = 'Acme') \
+         FROM properties p WHERE p.name = 'Client' AND p.library = ?",
+    )
+    .bind(&dst_lib)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((ty.as_str(), values), ("enum", 1));
+
+    // Files already in the target aren't copied again
+    let inside: Vec<String> = sqlx::query_scalar("SELECT file_id FROM files WHERE location_id = ?").bind(&dst).fetch_all(&pool).await.unwrap();
+    let again = copy_to_location_impl(&dst, &inside, &pool).await.unwrap();
+    assert_eq!((again.copies.len(), again.skipped), (0, 2));
+
+    // Undone, the copies go
+    trash_added_files_impl(&dst, &copied.folder, &copied.copies, &pool, |p| std::fs::remove_file(p).map_err(|e| e.to_string())).await.unwrap();
+    assert_eq!(count(&pool, &dst).await, 0);
+    assert_eq!(count(&pool, &src).await, 2);
+}
