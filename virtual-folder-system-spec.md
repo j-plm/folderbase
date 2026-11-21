@@ -13,6 +13,7 @@
   - [2. The Database](#2-the-database)
   - [3. The Property Registry](#3-the-property-registry)
   - [4. Views and View Persistence](#4-views-and-view-persistence)
+  - [5. Linked Tables](#5-linked-tables)
 - [Virtual Folders](#virtual-folders)
 - [Key UI Features](#key-ui-features)
 - [Storage Management Features](#storage-management-features)
@@ -61,6 +62,8 @@ The names used in the interface. Code may use older or internal names (noted whe
 | **Duplicates** | Files with exactly the same contents, wherever they are. **Similar** files (the same photo resized or re-saved) and **Versions** (the same document saved again with changes) are found too, and always shown apart |
 | **Kept copy** | The file of a set of duplicates that stays when the others are removed. Chosen by the **Keep order** |
 | **Settings** | The window holding every choice that isn't part of a view, in panes: General, Locations, New Views, Files, Duplicates, Sharing, Advanced. Never "Options"; "Preferences" only on Linux, as GNOME apps name it |
+| **Linked table** | Data from another source (a CSV or Excel file, another database) joined to files by a key property. Its columns show as read-only **linked properties** ("Projects ▸ Client") |
+| **Shared folder** | The folder whose top holds a shared location's hidden `.folderbase` folder. A location can be that folder, inside it, or contain it |
 | **Shared location** | A location whose values, views and rules everyone with its folder uses (a synced or network drive). A location is personal until it's shared |
 
 Naming rules:
@@ -343,6 +346,28 @@ This completeness model is view-relative — the same file may be complete in a 
 Conditional properties sharpen this: a level whose property doesn't apply to a file is not missing for that file. Only the **expected** state (the condition holds, no value yet) counts as incomplete.
 
 ---
+
+### 5. Linked Tables
+
+Files often have a key that means more somewhere else: a project number that a company's project database knows the client, manager and status of; a part number with a supplier and material in an ERP; an employee ID in an HR export. A **linked table** brings that data alongside the files, joined by the key, without copying it onto them.
+
+This is approached with care. The single `files` table stays as it is, and nothing about filing changes. A linked table is a separate, read-only addition that can be removed without touching any file's values.
+
+- **The key**: a property (or a native column, or a value a rule picks out of the name) whose values match a column in the table. Project = `P-1042` on a file matches the row whose *Project Number* is `P-1042`. Matching ignores case and surrounding spaces, and treats `1042` and `1042.0` as the same number
+- **Linked properties**: the table's columns chosen to show become properties of the files, read-only, named after the table ("Projects ▸ Client"). They work everywhere a property does: shown in the Database view and Get Info, filtered, sorted, grouped, used as a level of a Hierarchy (folders by Client, from the project database) and in rules' conditions and "from property" values
+- **No match** shows empty, and a "No *Client*" folder holds those files as for any property. A key matching several rows shows all their values, as a Multi-select does, and the link's settings say how many keys matched more than one row
+- **Never written back.** Folderbase reads linked tables only. Copying a linked value onto files for good is a rule (Then set Client from property Projects ▸ Client), which makes it an ordinary custom value
+- **Kept locally**: each table is read into the local database (`linked_tables`, one row per table, and `linked_rows`, each row as JSON), so it works offline and is quick to filter. **Refresh** re-reads it, by hand or on a schedule (hourly, daily). The data can be dropped and read again at any time, like the rest of the database's cache
+
+**Sources**, in the order they're built:
+
+1. **A CSV or Excel file**: the most common case, an export from another system. It can be re-read when the file changes
+2. **Another SQLite file**
+3. **Server databases** (PostgreSQL, MySQL, SQL Server): a read-only connection, with either a table picked or a SQL query written. The password lives in the OS keychain (Keychain on macOS, Credential Manager on Windows), never in the database or a shared folder
+
+**Where**: *Linked Tables…* on a location's right-click and in the Database view's "+" menu (*Linked Property…*), and listed in Settings ▸ Locations. In a [shared location](#working-together-shared-locations) the link (source, key and columns) is shared, but each person connects with their own access and keeps their own copy of the data, which may be confidential. A colleague without access sees the linked properties empty, with a note saying why.
+
+Not yet: editing a linked table's data from Folderbase, joining one linked table to another, and live queries instead of a kept copy.
 
 ## Virtual Folders
 
@@ -802,12 +827,12 @@ Files dropped in from other apps that are identical to files already indexed are
 
 ## Working Together: Shared Locations
 
-Several people often work in the same folder: a OneDrive, SharePoint, Dropbox or Google Drive folder synced to each person's machine, or a folder on a network drive. The files are shared already. Their values, views and rules live in each person's own database, so today nobody else sees them. A **shared location** shares those too, with no server and no account.
+Several people often work in the same folder: a OneDrive, SharePoint, Dropbox or Google Drive folder synced to each person's machine, or a folder on a network drive. The files are shared already. Their values, views and rules live in each person's own database, so today nobody else sees them. A **shared location** shares those too, with no server and no account: only the storage the folder already has (the synced drive or the network share) carries them. **There is never a Folderbase server**: that's decided, not deferred.
 
 #### Principles
 
 - **Each person keeps their own database**, as now. Sharing never puts a SQLite file on the shared drive, because two machines writing one SQLite file through a sync tool corrupts it or leaves conflict copies
-- **What's shared travels in the folder itself**, in a hidden `.folderbase` folder at the location's top. It's synced by whatever already syncs the files, so it works the same on every drive, and nothing else is needed
+- **What's shared travels in the folder itself**, in a hidden `.folderbase` folder at the top of the folder that was shared (the **shared folder**; see [Where the shared files live](#where-the-shared-files-live)). It's synced by whatever already syncs the files, so it works the same on every drive, and nothing else is needed
 - **Each machine writes only its own files there**, so no two machines ever write the same file and the sync tool never has a conflict to make
 - **A location is personal until it's shared.** Sharing is chosen, never automatic
 
@@ -824,10 +849,38 @@ Several people often work in the same folder: a OneDrive, SharePoint, Dropbox or
 
 - **Changes are written as a log.** Each machine appends what it changes ("Client of invoices/0042.pdf set to Acme by Sam at …") to its own file in `.folderbase/changes/`, one per device, as lines of JSON anyone can read
 - **Every machine reads the others' logs** when the location opens, when the sync tool brings a newer log (the folder is watched) and every few minutes, and applies them to its own database
-- **Files are named by their path inside the location** (and their fingerprint), never by a full path or a database id, since each machine has the folder somewhere different. A file moved on disk is recognised by its fingerprint, as a refresh already does
+- **Files are named by their path inside the shared folder** (and their fingerprint), never by a full path or a database id, since each machine has the folder somewhere different. A file moved on disk is recognised by its fingerprint, as a refresh already does
 - **Two people changing the same value**: the later change wins, by a clock that can't run backwards on one machine (a hybrid logical clock), so every machine ends up with the same value. A Multi-select merges adds and removals rather than replacing the whole list, so Sam adding *Urgent* and Alex adding *Paid* keeps both. Get Info and the Preview pane show who changed a value last and when
 - **Snapshots keep it quick**: when the logs grow large, one machine writes a snapshot of every value, and the logs before it can go. A machine joining reads the latest snapshot, then the logs after it
 - **Undo** undoes your own changes, and is written to the log like any other change
+
+#### Where the shared files live
+
+**One `.folderbase` folder, at the top of the shared folder only**, never one in every folder. One per level would mean thousands of hidden folders for the sync tool to carry, a file moved between folders changing two logs, and a renamed folder orphaning its log. One at the top avoids all of that, because files are named by their path inside it.
+
+What people add as a location won't always be that exact folder, so Folderbase looks both ways:
+
+- **Up**: when a location is added (and on each refresh), Folderbase looks in its folder and each folder above it, up to the top of the synced drive or volume, for a `.folderbase`. Alex sharing *Clients* and Sam adding just *Clients/Acme* as a location still meet: Sam's location joins the *Clients* share, sees only the values for files under *Acme*, and writes changes with paths from *Clients*, so Alex sees them too
+- **Down**: while indexing, a `.folderbase` found inside a location marks that folder as shared. Sam adding all of *Work*, which holds the shared *Clients*, gets the shared values for the files under *Clients* and keeps personal ones for the rest. The sidebar and Get Info show which folders of a location are shared
+- **Shares never nest**: Share Values… on a folder inside or above a shared folder offers to join that share instead
+- **When the top isn't on this computer**, as when only a subfolder of a SharePoint library is synced, the hidden folder can't be reached. The location stays personal, and its right-click says why: "Shared from “Clients”, which isn't on this computer. Sync Clients to use its shared values"
+
+#### How two people's values meet
+
+Sam and Alex each have their own database, with their own ids for files, properties and values. What they share is written in names everyone can resolve, never in database ids:
+
+- **Files**: by their path inside the shared folder, and their fingerprint (so a file one of them moved or renamed is still matched)
+- **Properties**: each shared property gets a share-wide id the first time it's shared, carried in the log with its name, type and options. Each machine keeps a map from that id to its own property. A rename is logged as a rename, so both follow it
+- **Values**: by their text, ignoring case, as values already match. Renaming a value is logged too, so Alex renaming *Acme Ltd* to *Acme* renames it for Sam as well
+
+**When they've each tagged before sharing**, joining matches what's there:
+
+- A property with the same name and type on both sides becomes the one shared property; their values merge as below
+- The same name with a different type (Sam's *Client* is Text, the share's is Select) asks: use the shared one (Sam's values convert, as Property Type does) or keep both (Sam's becomes *Client (mine)*)
+- Properties only one of them has are added for the other
+- Tags: everyone's Tags are the one built-in Tags property, merged
+
+**Then, as they work**: Alex tags fifty invoices; his log syncs to Sam's machine; Folderbase reads it and sets those values in Sam's database. Sam sees them in every view, with "Changed by Alex" in Get Info. Where both changed the same value the later change wins, and a Multi-select (Tags included) keeps both people's additions. Nothing is copied into anyone's database that isn't in the log, and each person's own changes go out the same way.
 
 #### Sharing and joining
 
@@ -843,7 +896,6 @@ Some commands change the shared files themselves: Move to Trash, Remove Duplicat
 #### Not covered yet
 
 - **Permissions** (who may change which properties or views): see Future Considerations
-- **A server or cloud service** instead of the folder (for teams that want history, live updates or access from the web). The log format is chosen so that a server could later relay the same changes
 - **Connecting straight to SharePoint or OneDrive** without syncing, with SharePoint's columns as properties (in the backlog)
 
 ---
@@ -922,6 +974,7 @@ The virtual folder navigation experience is designed to be indistinguishable fro
 | Reveal a file | Show in Finder | Open File Location | Show in Files |
 | Compress | Compress “Name” | Compress to ZIP File | Compress… |
 | Settings | Folderbase ▸ Settings… (⌘,), a window with a toolbar of panes | Settings (Ctrl+,), a page with sections down the left | Preferences (Ctrl+,) |
+| New window | File ▸ New Window (⌘N) | New window (Ctrl+N) | New Window (Ctrl+N) |
 | Undo a Trash | Put Back from the Trash | Restore from the Recycle Bin | Restore from the Trash |
 
 ### Native Fidelity Standard
@@ -1197,6 +1250,7 @@ Status: **exists** (built, to be listed here), **hardcoded** (built with a fixed
 | Excluded Folders | A checklist of the location's folders | exists |
 | Map Disk Folders | A summary ("3 levels mapped") with Edit… opening the panel | exists |
 | Rules | A summary ("4 rules, 3 on") with Edit… opening the panel | exists |
+| Linked tables | Each table with its source, key and last refresh; Refresh, Edit…, Remove; Add Linked Table… | planned |
 | Keep up to date | Watch the folder for changes / Refresh when opened / Only when Refresh is chosen | planned (today: when opened, and Refresh) |
 | Cloud files | Never download to index (read details once downloaded) / Download to read details | exists as the fixed behaviour; planned as a choice |
 | Sharing | Personal / Shared, with who shares it and when each last made a change; Share Values… and Stop Sharing | planned |
@@ -1259,6 +1313,20 @@ Which locations are shared is set per location, in Locations.
 | Rebuild Index | Re-reads every location's files; custom values are kept. Asks first | planned |
 | Reset All Settings | Folderbase settings and New View defaults back to their defaults; locations and views untouched. Asks first | planned |
 
+### Multiple Windows
+
+Folderbase opens as many windows as you like, as Finder does, so two places can be side by side and files dragged between them.
+
+- **File ▸ New Window** (⌘N; Ctrl+N on Windows) opens a window on the same location, view and folder as the frontmost one. Opening a location or view with ⌘ held (or from its right-click, *Open in New Window*) opens it in a new window
+- **Each window is its own place**: its location, view, view mode, folder, Back/Forward, selection and Preview pane. Each has the full sidebar
+- **One database behind them all**: a change in any window shows at once in every other. Edit ▸ Undo in a window undoes the latest change in that window's location, whichever window made it, as a location has one history
+- **Dragging between windows** files as dragging within a window does: drop on a folder of the same location and the file moves there (Option copies, adding the value); drop into another location's window and it's copied there, as dropping on that location in the sidebar does, after the same sheet. The bar above the path bar and the gist beside the cursor show what a drop will do, in the window it's over
+- **Windows are restored** at their places and sizes when Folderbase opens again
+- Get Info, the Inspector and Settings are windows of their own and aren't counted as these
+- **Tabs** (⌘T, as in Finder) are left for later: a tab is a window in the same frame, so they follow once windows work
+
+How: each window is its own web view running the same frontend; the database, history and changes live in Rust and reach every window as events. A drag that leaves one window already becomes a system drag (Drag files out); it carries a marker naming the window and folder it came from, so the window it lands in files it as an in-app drag rather than a copy from another app.
+
 ### Full UI Structure Reference
 
 ```
@@ -1289,6 +1357,7 @@ App Window
 [Get Info / Inspector — separate small windows, ⌘I / ⌥⌘I]
 [Quick Look — system panel on macOS, Folderbase's preview window elsewhere]
 [Settings — its own window, ⌘, : General · Locations · New Views · Files · Duplicates · Sharing · Advanced]
+[More windows — File ▸ New Window (⌘N), each with its own place; files drag between them]
 
 [Local View Editor — panel/drawer, toggled from toolbar]
     └── Tree editor, default: sub-tree from current node
