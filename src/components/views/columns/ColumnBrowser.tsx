@@ -580,6 +580,12 @@ function Stage({ live, path, children }: { live: boolean; path: string; children
 
 /** Largest preview icon / thumbnail edge, in points. */
 const PREVIEW_MAX = 512;
+/**
+ * The preview area's shape, as Finder's: as wide as the column and a page's
+ * height (A4, 1 : √2), at the top with the name straight under it. It gives up
+ * height when the column is short.
+ */
+const PREVIEW_ASPECT = `1 / ${Math.SQRT2}`;
 
 /**
  * Finder's preview column: fills the remaining width; the icon or image scales
@@ -613,7 +619,7 @@ function PreviewColumn({ node }: { node: BrowserNode }) {
       style={{ minWidth: PREVIEW_MIN_WIDTH }}
       className="flex-1 h-full flex flex-col overflow-y-auto px-10 pt-6 pb-8"
     >
-      <div ref={stageRef} className="flex-1 min-h-[160px] relative">
+      <div ref={stageRef} style={{ aspectRatio: PREVIEW_ASPECT }} className="min-h-[160px] relative">
         {stage.width > 0 && (
           <Stage live={livePreviewAvailable && !file.online_only} path={file.file_path}>
             {/* An online-only image would download to show in full; its icon stands in */}

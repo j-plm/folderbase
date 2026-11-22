@@ -164,7 +164,9 @@ mod macos {
         LIVE.with(|live| {
             let mut live = live.borrow_mut();
             if live.is_none() {
-                let Some(view) = (unsafe { QLPreviewView::initWithFrame_style(QLPreviewView::alloc(mtm), frame, QLPreviewViewStyle::Normal) }) else {
+                // Compact, as Finder's preview column: a page with arrows over it,
+                // not the full Quick Look preview Space opens
+                let Some(view) = (unsafe { QLPreviewView::initWithFrame_style(QLPreviewView::alloc(mtm), frame, QLPreviewViewStyle::Compact) }) else {
                     return;
                 };
                 // Finder doesn't start video or audio until it's played
