@@ -1,12 +1,39 @@
-import { useEffect, useState } from "react";
-import { getStorageInfo, resetAppSettings, revealPaths, type StorageInfo } from "../../lib/commands";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import {
+  getStorageInfo,
+  pickDirectory,
+  resetAppSettings,
+  revealPaths,
+  setBackupFolder,
+  type BackupSchedule,
+  type StorageInfo,
+} from "../../lib/commands";
+import { appSettings, folderName } from "../../lib/appSettings";
+import { lastBackupText, scheduleNote } from "../../lib/backup";
+import { askForBackupFolder, backUp, restore } from "../../lib/backupActions";
+import { FolderIcon } from "../../lib/fileIcons";
 import { labels } from "../../lib/platform";
 import { confirmAction, refreshAllLocations } from "../../lib/settingsActions";
 import { formatBytes } from "../../lib/settingsText";
-import { Button, Divider, Form, Row } from "./controls";
+import { Button, Divider, Form, PopUp, Row, type Choice } from "./controls";
 
-/** Settings ▸ Advanced: the database, rebuilding the index, and resetting every setting. */
+const SCHEDULES: Choice<BackupSchedule>[] = [
+  { value: "daily", label: "Daily, keeping 7" },
+  { value: "weekly", label: "Weekly, keeping 4" },
+  { value: "never", label: "Never" },
+];
+
+/** Settings ▸ Advanced: the database and its backups, rebuilding the index, and resetting every setting. */
 export default function AdvancedPane() {
+  const { settings } = useSyncExternalStore(appSettings.subscribe, appSettings.snapshot);
+  useEffect(() => void appSettings.load(), []);
+  const backup = settings.backup;
+  /** "Last backup: …" moves on while the pane stays open. */
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [info, setInfo] = useState<StorageInfo | null>(null);
   /** Rebuild Index's progress: locations done of how many. */
   const [rebuilding, setRebuilding] = useState<{ done: number; total: number } | null>(null);
@@ -28,6 +55,17 @@ export default function AdvancedPane() {
     setRebuilding(null);
     setProblems(errors);
     measure();
+  }
+
+  async function changeSchedule(schedule: BackupSchedule) {
+    await appSettings.update({ backup: { schedule } });
+    // Turned on with nowhere chosen: ask, suggesting a synced folder
+    if (schedule !== "never" && !backup.folder) await askForBackupFolder();
+  }
+
+  async function chooseBackupFolder() {
+    const folder = await pickDirectory(backup.folder ?? undefined);
+    if (folder) await setBackupFolder(folder);
   }
 
   async function resetAll() {
@@ -54,6 +92,32 @@ export default function AdvancedPane() {
             {labels.reveal}
           </Button>
         </div>
+      </Row>
+      <Divider />
+      <Row
+        label="Backups"
+        note={`Last backup: ${lastBackupText(backup.last_backup, now)}. A backup keeps your values, views and settings, which can’t be read again from your files.`}
+      >
+        <div className="flex items-baseline gap-2">
+          <Button onClick={() => void backUp()}>Back Up Database…</Button>
+          <Button onClick={() => void restore()}>Restore from Backup…</Button>
+        </div>
+      </Row>
+      <Row label="Back up automatically" note={scheduleNote(backup.schedule, backup.folder)}>
+        <PopUp value={backup.schedule} choices={SCHEDULES} onChange={(v) => void changeSchedule(v)} />
+      </Row>
+      <Row label="Back up to">
+        <PopUp
+          value={backup.folder ? "chosen" : "own"}
+          choices={[
+            { value: "own", label: "Folderbase’s folder (this Mac)" },
+            ...(backup.folder ? [{ value: "chosen", label: folderName(backup.folder) }] : []),
+          ]}
+          onChange={(v) => v === "own" && void setBackupFolder(null)}
+          icon={<FolderIcon size={16} />}
+          title={backup.folder ?? undefined}
+          extra={[{ type: "item", text: "Other…", action: () => void chooseBackupFolder() }]}
+        />
       </Row>
       <Divider />
       <Row label="Index" note="Reads every location’s files again. Values you’ve given files are kept.">

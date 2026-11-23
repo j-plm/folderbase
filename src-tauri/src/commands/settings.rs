@@ -94,6 +94,51 @@ impl Default for NewViewDefaults {
     }
 }
 
+/// How often a backup of the database is made by itself (Settings ▸ Advanced).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BackupSchedule {
+    /// Every day, keeping the last 7.
+    #[default]
+    Daily,
+    /// Every week, keeping the last 4.
+    Weekly,
+    Never,
+}
+
+impl BackupSchedule {
+    /// How long after the last backup the next is made; None: never.
+    pub fn interval(self) -> Option<chrono::Duration> {
+        match self {
+            Self::Daily => Some(chrono::Duration::days(1)),
+            Self::Weekly => Some(chrono::Duration::weeks(1)),
+            Self::Never => None,
+        }
+    }
+
+    /// How many automatic backups the folder keeps.
+    pub fn keep(self) -> usize {
+        match self {
+            Self::Weekly => 4,
+            _ => 7,
+        }
+    }
+}
+
+/// Backups of the database (`commands/backup.rs`).
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BackupSettings {
+    pub schedule: BackupSchedule,
+    /// Where backups go; None: a Backups folder in the app data folder, on this Mac.
+    /// Set with `set_backup_folder`.
+    pub folder: Option<String>,
+    /// When the last backup was made (RFC 3339), by hand or by itself. Set by Rust.
+    pub last_backup: Option<String>,
+    /// Whether Folderbase has asked where to keep backups (it asks once).
+    pub folder_asked: bool,
+}
+
 /// Every app-wide setting. Missing keys take their defaults, and a newer file's
 /// unknown keys are ignored, so the file can grow without breaking older builds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,6 +152,7 @@ pub struct AppSettings {
     pub show_hidden_files: bool,
     pub missing_check: MissingCheck,
     pub new_views: NewViewDefaults,
+    pub backup: BackupSettings,
 }
 
 impl Default for AppSettings {
@@ -118,6 +164,7 @@ impl Default for AppSettings {
             show_hidden_files: false,
             missing_check: MissingCheck::default(),
             new_views: NewViewDefaults::default(),
+            backup: BackupSettings::default(),
         }
     }
 }
@@ -154,15 +201,57 @@ pub fn set_zip_folder_impl(dir: &Path, folder: Option<&str>) -> Result<AppSettin
     Ok(settings)
 }
 
+/// Sets where backups go: a folder that's there, or None for the app data
+/// folder. Either way Folderbase has now asked.
+pub fn set_backup_folder_impl(dir: &Path, folder: Option<&str>) -> Result<AppSettings, String> {
+    let folder = folder.map(str::trim).filter(|f| !f.is_empty());
+    if let Some(f) = folder {
+        let path = Path::new(f);
+        if !path.is_absolute() || !path.is_dir() {
+            return Err(format!("“{f}” isn't a folder"));
+        }
+    }
+    let mut settings = load(dir);
+    settings.backup.folder = folder.map(str::to_string);
+    settings.backup.folder_asked = true;
+    save(dir, &settings)?;
+    Ok(settings)
+}
+
+/// Notes that a backup was made at `when`.
+pub fn record_backup(dir: &Path, when: chrono::DateTime<chrono::Utc>) -> Result<AppSettings, String> {
+    let mut settings = load(dir);
+    settings.backup.last_backup = Some(when.to_rfc3339());
+    save(dir, &settings)?;
+    Ok(settings)
+}
+
+/// The folder backups go to: the chosen one while it's there, else Backups in the app data folder.
+pub fn backup_folder(dir: &Path, data_dir: &Path) -> PathBuf {
+    match load(dir).backup.folder {
+        Some(f) if Path::new(&f).is_dir() => f.into(),
+        _ => data_dir.join("Backups"),
+    }
+}
+
 /// Applies `patch` (an object of settings, nested for `new_views`) over the
 /// settings in `dir` and saves them. A key set to null goes back to its default,
 /// so Restore Defaults sends a pane's keys as null. A value of the wrong kind is
-/// refused and nothing is saved. `zip_folder` isn't changed here: it's checked
-/// by `set_zip_folder_impl`.
+/// refused and nothing is saved. `zip_folder` and `backup.folder` aren't changed
+/// here (they're checked by `set_zip_folder_impl` and `set_backup_folder_impl`),
+/// nor `backup.last_backup`, which only Rust records.
 pub fn update_impl(dir: &Path, patch: &Value) -> Result<AppSettings, String> {
     let Value::Object(changes) = patch else { return Err("settings must be an object".into()) };
     if changes.contains_key("zip_folder") {
         return Err("zip_folder is set with set_zip_folder".into());
+    }
+    if let Some(Value::Object(backup)) = changes.get("backup") {
+        if backup.contains_key("folder") {
+            return Err("backup.folder is set with set_backup_folder".into());
+        }
+        if backup.contains_key("last_backup") {
+            return Err("backup.last_backup is recorded by Folderbase".into());
+        }
     }
     let mut current = serde_json::to_value(load(dir)).map_err(|e| e.to_string())?;
     merge(&mut current, patch);
@@ -294,7 +383,7 @@ pub fn apply(settings: &AppSettings) {
 }
 
 /// Tells every window the settings changed, after putting them in place.
-fn changed(app: &tauri::AppHandle, settings: AppSettings) -> AppSettings {
+pub fn changed(app: &tauri::AppHandle, settings: AppSettings) -> AppSettings {
     apply(&settings);
     let _ = app.emit(CHANGED_EVENT, &settings);
     settings
@@ -308,6 +397,12 @@ pub async fn get_app_settings(app: tauri::AppHandle, db: State<'_, DbPool>) -> R
 #[tauri::command]
 pub async fn set_zip_folder(folder: Option<String>, app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<AppSettings, String> {
     let settings = set_zip_folder_impl(&settings_dir(&app, db.inner()).await?, folder.as_deref())?;
+    Ok(changed(&app, settings))
+}
+
+#[tauri::command]
+pub async fn set_backup_folder(folder: Option<String>, app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<AppSettings, String> {
+    let settings = set_backup_folder_impl(&settings_dir(&app, db.inner()).await?, folder.as_deref())?;
     Ok(changed(&app, settings))
 }
 
@@ -451,6 +546,47 @@ mod tests {
         update_impl(&dir, &serde_json::json!({ "on_launch": "first", "show_hidden_files": true })).unwrap();
         assert_eq!(reset_impl(&dir).unwrap(), AppSettings::default());
         assert_eq!(load(&dir), AppSettings::default());
+    }
+
+    #[test]
+    fn backups_default_to_daily_in_the_app_data_folder() {
+        let dir = temp_dir();
+        let data = Path::new("/nowhere/Application Support/app");
+        let settings = load(&dir);
+        assert_eq!(settings.backup.schedule, BackupSchedule::Daily);
+        assert_eq!(settings.backup.schedule.keep(), 7);
+        assert_eq!(BackupSchedule::Weekly.keep(), 4);
+        assert_eq!(BackupSchedule::Never.interval(), None);
+        assert_eq!(backup_folder(&dir, data), data.join("Backups"));
+    }
+
+    #[test]
+    fn choosing_a_backup_folder_counts_as_asked_and_falls_back_when_gone() {
+        let dir = temp_dir();
+        let data = Path::new("/nowhere/app");
+        let chosen = temp_dir();
+        let settings = set_backup_folder_impl(&dir, Some(&chosen.to_string_lossy())).unwrap();
+        assert!(settings.backup.folder_asked);
+        assert_eq!(backup_folder(&dir, data), chosen);
+        assert!(set_backup_folder_impl(&dir, Some("/definitely/not/here")).is_err());
+        std::fs::remove_dir(&chosen).unwrap();
+        assert_eq!(backup_folder(&dir, data), data.join("Backups"));
+        // "Not now": no folder, but asked
+        let settings = set_backup_folder_impl(&dir, None).unwrap();
+        assert_eq!(settings.backup.folder, None);
+        assert!(settings.backup.folder_asked);
+    }
+
+    #[test]
+    fn a_patch_sets_the_schedule_but_not_the_folder_or_the_last_backup() {
+        let dir = temp_dir();
+        let settings = update_impl(&dir, &serde_json::json!({ "backup": { "schedule": "weekly" } })).unwrap();
+        assert_eq!(settings.backup.schedule, BackupSchedule::Weekly);
+        assert!(update_impl(&dir, &serde_json::json!({ "backup": { "folder": "/x" } })).is_err());
+        assert!(update_impl(&dir, &serde_json::json!({ "backup": { "last_backup": "2026-01-01T00:00:00Z" } })).is_err());
+        let when = chrono::Utc::now();
+        assert_eq!(record_backup(&dir, when).unwrap().backup.last_backup, Some(when.to_rfc3339()));
+        assert_eq!(load(&dir).backup.schedule, BackupSchedule::Weekly);
     }
 
     #[test]

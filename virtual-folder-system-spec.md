@@ -136,7 +136,7 @@ There is no fixed schema for the metadata column. Each library defines the prope
 
 #### Database as a Restorable Cache
 
-The database is treated as a derived artefact, not a primary one. Standard metadata (timestamps, file types, EXIF data) can be re-extracted automatically from the files themselves. Custom metadata — properties assigned by the user — cannot be recovered from the files and represents the only irreplaceable data in the system. Regular database backups alongside the files are strongly recommended.
+The database is treated as a derived artefact, not a primary one. Standard metadata (timestamps, file types, EXIF data) can be re-extracted automatically from the files themselves. Custom metadata — properties assigned by the user — cannot be recovered from the files and represents the only irreplaceable data in the system, along with views, Hierarchies, rules and Map Disk Folders. So Folderbase backs the database up by itself, daily by default, keeping the last 7, ideally into a synced folder so a copy lives off the machine (see [Settings ▸ Advanced](#settings)). Restore from Backup… brings it back; Rebuild Index re-reads everything else from the files.
 
 ### 3. The Property Registry
 
@@ -684,7 +684,7 @@ Navigating and organising never touch the disk. Changing a file itself is always
   - **Folders**: every folder the file shows in under the open view's Hierarchy ("Acme › 2024 › Invoices"; a Multi-select can put it in several). Click one to go there
   - **Properties**: the location's custom properties and the file's values, edited with the same editors as the Database view's cells. A conditional property appears only where it applies. Add Property… at the end
   - **More Info**: the media properties, grouped as in the Database view (Camera, Music, Video). Those the file can hold are editable (see [Editing Media Properties](#editing-media-properties)); the others are plain text
-  - **Open With**: the file's default app, with the Open With list to change it for this file
+  - **Open With**: the file's default app, with the Open With list to change it for this file, and **Change All…** to make that app the default for every file of this kind, as Finder does. Both change the system's own setting (Launch Services on macOS, file associations on Windows), so Finder and every other app follow it. There's no Settings row, because the setting belongs to the OS
   - **Preview**: a larger thumbnail; Space opens Quick Look
 - **Several files**: Get Info opens one window per file, asking first above 10 ("Open 24 Info windows?"), as Finder does. **Show Inspector** (⌥⌘I) opens one window that follows the selection instead. With several files selected it sums them up ("3 items, 12.4 MB") and shows each value they share, or "Mixed" where they differ. An edit there applies to every selected file, so the Inspector is the bulk editor. On Windows, Properties on several files opens one dialog for all of them, as Explorer does, with the same summing up
 - **Edits are changes like any other**: they show at once in every view, and Edit ▸ Undo in the main window takes them back
@@ -942,8 +942,8 @@ The application is a native desktop app, targeting macOS and Windows (Linux supp
 
 All user data — files and database — lives on the local file system in user-accessible locations. There is no proprietary storage format. A user can:
 
-- Back up everything by copying their root folder(s) and the single `.db` file
-- Move a library to another machine by transferring those same files
+- Back up everything by copying their root folder(s), and backing up the database with **Back Up Database…** (Settings ▸ Advanced, or the File menu) or automatic backups. Don't copy the `.db` file while Folderbase is running: the database runs in WAL mode, so recent changes are in `folderbase.db-wal` and a copy of the `.db` alone loses them. A backup is a single zip holding a complete database and the settings
+- Move a library to another machine by transferring the root folder(s) and a backup, then **Restore from Backup…** there (Locate Folder… points a location at its folder if the path differs)
 - Inspect or query the database directly using any SQLite viewer
 
 ---
@@ -1346,10 +1346,14 @@ Which locations are shared is set per location, in Locations.
 | Setting | Choices | Status |
 |---------|---------|--------|
 | Database | Its path and size, with Show in Finder | exists |
-| Back up the database | Daily, keeping the last 7 / Weekly / Never; Back Up Now; to a chosen folder (the app data folder by default) | planned |
-| Restore from Backup… | Picks a backup; asks first | planned |
+| Back Up Database… | A save panel starting in the backup folder; also File ▸ Back Up Database…. A corner notice while it's made, then Show in Finder | exists |
+| Back up automatically | Daily, keeping the last 7 (default) / Weekly, keeping the last 4 / Never. Checked a minute after launch and every hour; skipped while there are no locations. Pruning touches only automatic backups in the backup folder, by their file name; Before Restore backups and anything else there are left alone. The pane shows when the last backup was made | exists |
+| Back up to | Folderbase's own folder (`Backups` in the app data folder, on this Mac) until a folder is chosen, or Other…. After the first automatic backup, and when backups are turned on with no folder chosen, Folderbase asks once for a folder, suggesting a synced one (OneDrive, pCloud) so there's a copy off the Mac: each backup is written once and left alone, so a synced folder is safe | exists |
+| Restore from Backup… | Picks a backup zip and checks it (our manifest, a format this version knows, a database that opens), then asks, saying when and on which machine it was made, that values, views and settings will be replaced, and which locations' folders aren't on this Mac (pointing to Locate Folder…). Makes a "Before Restore" backup of how things are now, then restarts to swap the backup in; migrations bring an older backup up to date. This Mac's backup choices are kept. Also File ▸ Restore from Backup… | exists |
 | Rebuild Index | Re-reads every location's files; custom values are kept. Asks first | exists |
 | Reset All Settings | Folderbase settings and New View defaults back to their defaults; locations and views untouched. Asks first | exists |
+
+A **backup** is one zip, "Folderbase Backup 2026-11-23 14.05.zip" (`commands/backup.rs`), holding `folderbase.db`, `settings.json` and `manifest.json` (format version, app version, when, this machine's name, and each location's name and folder). The database is copied by SQLite itself (`VACUUM INTO` on the app's open connection), because it runs in WAL mode: recent changes sit in `folderbase.db-wal`, and a copy of the `.db` file alone silently loses them. A backup is written under a hidden name and renamed when complete, so a half-written one never appears.
 
 ### Multiple Windows
 

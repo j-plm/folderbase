@@ -3,16 +3,20 @@
 //! which undoes typing in a focused field or else the app's own change history.
 //! The frontend names the change ("Undo Paste") via `set_edit_menu_labels`.
 //! Also File ▸ Save View (Cmd-S), enabled by the frontend while a view has
-//! unsaved edits (`set_save_view_enabled`), and Folderbase ▸ Settings… (Cmd-,),
+//! unsaved edits (`set_save_view_enabled`), File ▸ Back Up Database… and
+//! Restore from Backup… (`commands/backup.rs`; the window in front runs them,
+//! so their panels open over it), and Folderbase ▸ Settings… (Cmd-,),
 //! which opens the Settings window (`settings_window`).
 
-use tauri::menu::{Menu, MenuItem, MenuItemKind};
+use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::{App, Emitter, Manager, Wry};
 
 pub const UNDO_ID: &str = "edit-undo";
 pub const REDO_ID: &str = "edit-redo";
 pub const SAVE_VIEW_ID: &str = "file-save-view";
 pub const SETTINGS_ID: &str = "app-settings";
+pub const BACK_UP_ID: &str = "file-back-up";
+pub const RESTORE_ID: &str = "file-restore";
 
 /// The Undo and Redo items, kept so their titles can change.
 pub struct EditMenu {
@@ -58,6 +62,12 @@ pub fn install(app: &App, menu: &Menu<Wry>) -> tauri::Result<()> {
         Some(file) => {
             let item = MenuItem::with_id(handle, SAVE_VIEW_ID, "Save View", false, Some("CmdOrCtrl+S"))?;
             file.insert(&item, 0)?;
+            let back_up = MenuItem::with_id(handle, BACK_UP_ID, "Back Up Database…", true, None::<&str>)?;
+            let restore = MenuItem::with_id(handle, RESTORE_ID, "Restore from Backup…", true, None::<&str>)?;
+            file.insert(&PredefinedMenuItem::separator(handle)?, 1)?;
+            file.insert(&back_up, 2)?;
+            file.insert(&restore, 3)?;
+            file.insert(&PredefinedMenuItem::separator(handle)?, 4)?;
             Some(item)
         }
         None => None,
@@ -75,6 +85,8 @@ pub fn install(app: &App, menu: &Menu<Wry>) -> tauri::Result<()> {
             UNDO_ID => "menu-undo",
             REDO_ID => "menu-redo",
             SAVE_VIEW_ID => "menu-save-view",
+            BACK_UP_ID => "menu-back-up",
+            RESTORE_ID => "menu-restore",
             SETTINGS_ID => {
                 if let Err(e) = crate::settings_window::open(app, None) {
                     eprintln!("couldn't open Settings: {e}");

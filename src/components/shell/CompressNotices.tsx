@@ -6,6 +6,7 @@ import { labels } from "../../lib/platform";
 import { folderName } from "../../lib/appSettings";
 import { openSettings } from "../../lib/commands";
 import ActivityNotices from "./ActivityNotices";
+import BackupNotices from "./BackupNotices";
 import { NOTICE_CLASS, PushButton } from "./Notice";
 
 /**
@@ -18,10 +19,11 @@ import { NOTICE_CLASS, PushButton } from "./Notice";
  */
 export default function CompressNotices() {
   const jobs = useSyncExternalStore(compressJobs.subscribe, compressJobs.snapshot);
-  // One stack for every notice: refreshes and copies (ActivityNotices), then zips
+  // One stack for every notice: refreshes and copies (ActivityNotices), backups, then zips
   return (
     <div className="absolute right-3 bottom-12 z-40 flex flex-col gap-2 w-[320px] pointer-events-none">
       <ActivityNotices />
+      <BackupNotices />
       {jobs.map((job) => (
         <Notice key={job.id} job={job} />
       ))}

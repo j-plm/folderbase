@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod backup;
 pub mod cloud;
 pub mod compress;
 pub mod database_view;

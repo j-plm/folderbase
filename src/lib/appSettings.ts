@@ -29,6 +29,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     skip_single: false,
     show_all_values: false,
   },
+  backup: { schedule: "daily", folder: null, last_backup: null, folder_asked: false },
 };
 
 interface State {

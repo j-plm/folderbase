@@ -718,6 +718,20 @@ export interface NewViewDefaults {
   show_all_values: boolean;
 }
 
+/** How often a backup of the database is made by itself: daily keeping 7, weekly keeping 4, or never. */
+export type BackupSchedule = "daily" | "weekly" | "never";
+
+/** Backups of the database (Settings ▸ Advanced; commands/backup.rs). */
+export interface BackupSettings {
+  schedule: BackupSchedule;
+  /** Where backups go; null: a Backups folder in Folderbase's own folder, on this Mac. Set with `setBackupFolder`. */
+  folder: string | null;
+  /** When the last backup was made (RFC 3339), recorded by Rust. */
+  last_backup: string | null;
+  /** Whether Folderbase has asked where to keep backups (it asks once). */
+  folder_asked: boolean;
+}
+
 /** App-wide settings (the Settings window), kept in settings.json (commands/settings.rs). */
 export interface AppSettings {
   /** Where Compress saves zips; null: Downloads. */
@@ -729,12 +743,16 @@ export interface AppSettings {
   /** Check for missing location folders every 30 seconds and on coming forward, or only on coming forward. */
   missing_check: "periodic" | "focus";
   new_views: NewViewDefaults;
+  backup: BackupSettings;
 }
 
 /** A change to some settings: null puts a setting back to its default. */
 export type SettingsPatch = {
-  [K in Exclude<keyof AppSettings, "zip_folder" | "new_views">]?: AppSettings[K] | null;
-} & { new_views?: { [K in keyof NewViewDefaults]?: NewViewDefaults[K] | null } };
+  [K in Exclude<keyof AppSettings, "zip_folder" | "new_views" | "backup">]?: AppSettings[K] | null;
+} & {
+  new_views?: { [K in keyof NewViewDefaults]?: NewViewDefaults[K] | null };
+  backup?: { schedule?: BackupSchedule | null; folder_asked?: boolean | null };
+};
 
 /** Sent to every window when a setting changes, with them all as they now are. */
 export const APP_SETTINGS_CHANGED = "app-settings-changed";
@@ -746,6 +764,11 @@ export async function getAppSettings(): Promise<AppSettings> {
 /** Sets where Compress saves zips: a folder, or null for Downloads. Resolves to the settings as they now are. */
 export async function setZipFolder(folder: string | null): Promise<AppSettings> {
   return invoke<AppSettings>("set_zip_folder", { folder });
+}
+
+/** Sets where backups go: a folder, or null for Folderbase's own folder. Either way, Folderbase has asked. */
+export async function setBackupFolder(folder: string | null): Promise<AppSettings> {
+  return invoke<AppSettings>("set_backup_folder", { folder });
 }
 
 /** Changes some settings (every window is told). Resolves to the settings as they now are. */
@@ -833,4 +856,68 @@ export async function previewViewShow(path: string, rect: PreviewRect): Promise<
  */
 export async function previewViewHide(): Promise<void> {
   return invoke<void>("preview_view_hide", { ticket: previewTicket() });
+}
+
+/** A backup's location, as its manifest lists it. */
+export interface BackupLocation {
+  name: string;
+  root_path: string;
+}
+
+/** What a backup says about itself (its `manifest.json`). */
+export interface BackupManifest {
+  format_version: number;
+  app_version: string;
+  /** RFC 3339, with the offset of the machine that made it. */
+  created_at: string;
+  machine: string;
+  locations: BackupLocation[];
+}
+
+/** A backup, checked: its manifest, and its locations whose folder isn't on this Mac. */
+export interface BackupInfo {
+  manifest: BackupManifest;
+  missing: BackupLocation[];
+}
+
+/** Sent to every window as a backup starts and ends (`commands::backup::BackupStatus`). */
+export const BACKUP_STATUS = "backup-status";
+export type BackupStatus =
+  | { state: "running"; job: string; before_restore: boolean }
+  | { state: "done"; job: string; path: string }
+  | { state: "failed"; job: string; error: string };
+
+/** Sent to the main window after the first automatic backup, while Folderbase hasn't asked where backups go. */
+export const BACKUP_FOLDER_WANTED = "backup-folder-wanted";
+
+/** Where Back Up Database…'s save panel starts: a new backup's name in the backup folder. */
+export async function backupSuggestion(): Promise<string> {
+  return invoke<string>("backup_suggestion");
+}
+
+/** Backs up the database and settings to `destination`, else into the backup folder. Resolves to the backup's path. */
+export async function backUpDatabase(destination: string | null): Promise<string> {
+  return invoke<string>("back_up_database", { destination });
+}
+
+/** Checks a backup zip, refusing anything that isn't one this version can restore. */
+export async function inspectBackup(path: string): Promise<BackupInfo> {
+  return invoke<BackupInfo>("inspect_backup", { path });
+}
+
+/** Restores a backup: backs up how things are now, puts the backup in place, and restarts Folderbase. */
+export async function restoreFromBackup(path: string): Promise<void> {
+  return invoke<void>("restore_from_backup", { path });
+}
+
+/** A save panel for a backup, starting at `suggestion` (a full path). Null if cancelled. */
+export async function pickBackupDestination(suggestion: string): Promise<string | null> {
+  return save({ defaultPath: suggestion, filters: [{ name: "Folderbase Backup", extensions: ["zip"] }] });
+}
+
+/** An open panel for a backup zip, starting in `folder`. Null if cancelled. */
+export async function pickBackupFile(folder?: string): Promise<string | null> {
+  const result = await open({ multiple: false, directory: false, defaultPath: folder, filters: [{ name: "Folderbase Backup", extensions: ["zip"] }] });
+  if (Array.isArray(result)) return result[0] ?? null;
+  return result ?? null;
 }

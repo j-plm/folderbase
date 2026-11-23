@@ -17,6 +17,13 @@ pub fn run() {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
 
+            // Restore from Backup… restarts the app; its database and settings go in before anything opens them
+            if let Ok(config_dir) = app.path().app_config_dir() {
+                if let Err(e) = commands::backup::apply_staged_restore(&app_data_dir, &config_dir) {
+                    eprintln!("couldn't finish restoring a backup: {e}");
+                }
+            }
+
             let pool = tauri::async_runtime::block_on(
                 sqlx::sqlite::SqlitePoolOptions::new().connect_with(
                     sqlx::sqlite::SqliteConnectOptions::new()
@@ -32,6 +39,7 @@ pub fn run() {
                 commands::settings::apply(&commands::settings::load(&dir));
             }
             app.manage(pool);
+            commands::backup::start_schedule(app.handle().clone());
             app.manage(settings_window::PendingPane::default());
             appearance::setup(app)?;
             // macOS routes Cmd-Z through the menu bar; elsewhere the frontend's shortcuts handle it
@@ -57,6 +65,11 @@ pub fn run() {
             commands::compress::cancel_compress,
             commands::settings::get_app_settings,
             commands::settings::set_zip_folder,
+            commands::settings::set_backup_folder,
+            commands::backup::backup_suggestion,
+            commands::backup::back_up_database,
+            commands::backup::inspect_backup,
+            commands::backup::restore_from_backup,
             commands::settings::set_app_settings,
             commands::settings::reset_app_settings,
             commands::settings::get_storage_info,

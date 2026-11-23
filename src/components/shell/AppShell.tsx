@@ -11,11 +11,13 @@ import { BrowseProvider } from "../../contexts/BrowseContext";
 import { ActivityProvider } from "../../contexts/ActivityContext";
 import { useLaunchLocation } from "../../hooks/useLaunchLocation";
 import { useSettingsBridge } from "../../hooks/useSettingsBridge";
+import { useBackupMenu } from "../../hooks/useBackupMenu";
 
 export default function AppShell() {
   const { masterEditorOpen, activeLocationId } = useNavigation();
   useLaunchLocation();
   useSettingsBridge();
+  useBackupMenu({ main: true });
 
   const shell = (
     <div className="relative flex h-screen bg-neutral-900 text-neutral-100">

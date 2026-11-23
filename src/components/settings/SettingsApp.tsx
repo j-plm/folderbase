@@ -6,6 +6,7 @@ import { settingsInitialPane, type SettingsPane } from "../../lib/commands";
 import { SymbolIcon } from "../../lib/fileIcons";
 import { platform } from "../../lib/platform";
 import { useEditMenu } from "../../hooks/useEditMenu";
+import { useBackupMenu } from "../../hooks/useBackupMenu";
 import GeneralPane from "./GeneralPane";
 import LocationsPane from "./LocationsPane";
 import NewViewsPane from "./NewViewsPane";
@@ -58,6 +59,7 @@ export default function SettingsApp() {
   const body = useRef<HTMLDivElement>(null);
   // Typing in a field undoes with ⌘Z here, as anywhere
   useEditMenu();
+  useBackupMenu({ main: false });
 
   useEffect(() => {
     void settingsInitialPane().then((p) => p && setPane(p));
