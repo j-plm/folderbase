@@ -64,6 +64,7 @@ pub fn run() {
             commands::virtual_folder::get_path_metadata,
             commands::virtual_folder::create_virtual_folder,
             commands::ingest::ingest_directory,
+            commands::ingest::stop_refresh,
             commands::import::import_files,
             commands::import::trash_added_files,
             commands::import::copy_to_location,

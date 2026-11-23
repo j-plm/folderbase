@@ -113,21 +113,37 @@ pub async fn ingest_directory(
     ingest_location(&location_id, db.inner(), &app).await
 }
 
+/// Asks a refresh in progress to stop (Stop in its progress bar). It stops
+/// before writing anything, and its last `indexing_progress` says `stopped`.
+#[tauri::command]
+pub fn stop_refresh(location_id: String) {
+    crate::commands::sync::request_stop(&location_id);
+}
+
 /// Indexes or refreshes a location, reporting progress to the frontend as
-/// `indexing_progress` events (the last one with `done` and what changed).
+/// `indexing_progress` events: `progress` says what it's doing (`SyncProgress`),
+/// and the last one has `done` with what changed, or `stopped`.
 async fn ingest_location(
     location_id: &str,
     pool: &DbPool,
     app: &tauri::AppHandle,
 ) -> Result<(), String> {
-    let emit = |processed: usize| {
-        app.emit(
-            "indexing_progress",
-            serde_json::json!({ "location_id": location_id, "files_scanned": processed, "done": false }),
-        )
-        .ok();
-    };
-    let result = crate::commands::sync::sync_location(location_id, pool, &emit).await;
+    let (emitter, id) = (app.clone(), location_id.to_string());
+    let progress: crate::commands::sync::Progress = std::sync::Arc::new(move |p: crate::commands::sync::SyncProgress| {
+        let count = match p {
+            crate::commands::sync::SyncProgress::Listing { found } => found,
+            crate::commands::sync::SyncProgress::Reading { done, .. } => done,
+            crate::commands::sync::SyncProgress::Saving => 0,
+        };
+        emitter
+            .emit(
+                "indexing_progress",
+                serde_json::json!({ "location_id": id, "files_scanned": count, "done": false, "progress": p }),
+            )
+            .ok();
+    });
+    let result = crate::commands::sync::sync_location(location_id, pool, &progress).await;
+    let stopped = result.as_ref().err().is_some_and(|e| e == crate::commands::sync::STOPPED);
     let summary = result.as_ref().ok();
     app.emit(
         "indexing_progress",
@@ -135,11 +151,16 @@ async fn ingest_location(
             "location_id": location_id,
             "files_scanned": summary.map(|s| s.added + s.updated + s.moved).unwrap_or(0),
             "done": true,
+            "stopped": stopped,
             "summary": summary,
-            "error": result.as_ref().err(),
+            "error": if stopped { None } else { result.as_ref().err() },
         }),
     )
     .ok();
+    // Stopping isn't a failure: nothing changed, as asked
+    if stopped {
+        return Ok(());
+    }
     result.map(|_| ())
 }
 

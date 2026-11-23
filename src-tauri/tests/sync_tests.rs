@@ -34,7 +34,7 @@ async fn add_location(pool: &DbPool, root: &Path) -> String {
 }
 
 async fn sync(pool: &DbPool, location: &str) -> SyncSummary {
-    sync_location(location, pool, &|_| {}).await.unwrap()
+    sync_location(location, pool, &folderbase_lib::commands::sync::quiet()).await.unwrap()
 }
 
 async fn set_custom(pool: &DbPool, rel: &str, json: &str) {
@@ -139,9 +139,9 @@ async fn an_empty_or_missing_folder_removes_nothing() {
     sync(&pool, &loc).await;
 
     std::fs::remove_file(root.join("a.txt")).unwrap();
-    assert!(sync_location(&loc, &pool, &|_| {}).await.is_err());
+    assert!(sync_location(&loc, &pool, &folderbase_lib::commands::sync::quiet()).await.is_err());
     std::fs::remove_dir_all(&root).unwrap();
-    assert!(sync_location(&loc, &pool, &|_| {}).await.is_err());
+    assert!(sync_location(&loc, &pool, &folderbase_lib::commands::sync::quiet()).await.is_err());
     assert_eq!(count(&pool, &loc).await, 1);
 }
 
@@ -351,4 +351,43 @@ async fn copying_to_another_location_carries_custom_values() {
     trash_added_files_impl(&dst, &copied.folder, &copied.copies, &pool, |p| std::fs::remove_file(p).map_err(|e| e.to_string())).await.unwrap();
     assert_eq!(count(&pool, &dst).await, 0);
     assert_eq!(count(&pool, &src).await, 2);
+}
+
+#[tokio::test]
+async fn a_refresh_reports_listing_then_reading_then_saving() {
+    use folderbase_lib::commands::sync::{Progress, SyncProgress};
+    let pool = setup_db().await;
+    let root = temp_root();
+    write(&root, "a.txt", b"a");
+    write(&root, "Folder/b.txt", b"b");
+    let location = add_location(&pool, &root).await;
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = seen.clone();
+    let progress: Progress = std::sync::Arc::new(move |p| log.lock().unwrap().push(p));
+    sync_location(&location, &pool, &progress).await.unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.first(), Some(&SyncProgress::Listing { found: 2 }));
+    assert!(seen.contains(&SyncProgress::Reading { done: 2, total: 2 }));
+    assert_eq!(seen.last(), Some(&SyncProgress::Saving));
+}
+
+#[tokio::test]
+async fn a_stopped_refresh_changes_nothing() {
+    use folderbase_lib::commands::sync::{request_stop, Progress, SyncProgress, STOPPED};
+    let pool = setup_db().await;
+    let root = temp_root();
+    write(&root, "a.txt", b"a");
+    let location = add_location(&pool, &root).await;
+    let id = location.clone();
+    // Stop pressed as soon as reading starts
+    let progress: Progress = std::sync::Arc::new(move |p| {
+        if matches!(p, SyncProgress::Reading { done: 0, .. }) {
+            request_stop(&id);
+        }
+    });
+    assert_eq!(sync_location(&location, &pool, &progress).await.unwrap_err(), STOPPED);
+    assert_eq!(count(&pool, &location).await, 0);
+    // The next refresh isn't stopped by the old request
+    sync(&pool, &location).await;
+    assert_eq!(count(&pool, &location).await, 1);
 }

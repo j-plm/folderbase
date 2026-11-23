@@ -55,6 +55,11 @@ export async function ingestDirectory(
   return 0;
 }
 
+/** Asks a location's refresh to stop; it stops before changing anything. */
+export async function stopRefresh(locationId: string): Promise<void> {
+  return invoke<void>("stop_refresh", { locationId });
+}
+
 export async function getFiles(
   library?: string,
   locationId?: string

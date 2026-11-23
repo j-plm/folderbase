@@ -80,7 +80,7 @@ import { useSelection } from "../../hooks/useSelection";
 import { useUndo } from "../../hooks/useUndo";
 import { setUndoTarget } from "../../lib/editMenu";
 import { selectionLabel } from "../../lib/selectionStatus";
-import { describeRefresh, type RefreshSummary } from "../../lib/refreshSummary";
+import type { RefreshSummary } from "../../lib/refreshSummary";
 import MenuPopover, { type MenuAnchor } from "../shared/MenuPopover";
 import Dialog, { DialogButton, DialogField, dialogTextField } from "../shared/Dialog";
 import { useLocationViews } from "../../contexts/LocationViewsContext";
@@ -3056,16 +3056,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
           </button>
         </div>
       )}
-      {indexing && !indexing.done && (
-        <div className="px-4 py-2 bg-blue-950/40 text-blue-300 text-xs border-b border-blue-900/40 shrink-0">
-          Refreshing… {indexing.scanned.toLocaleString()} files read
-        </div>
-      )}
-      {indexing && indexing.done && (
-        <div className="px-4 py-2 bg-green-950/40 text-green-300 text-xs border-b border-green-900/40 shrink-0">
-          {indexing.summary ? `Refreshed: ${describeRefresh(indexing.summary)}` : "Refreshed"}
-        </div>
-      )}
+      {/* A refresh's progress shows in the bar above the path bar (ActivityBar), in every view mode */}
 
       {/* Table: one scroll container, sticky header, virtualised rows */}
       <div

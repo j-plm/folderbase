@@ -241,6 +241,19 @@ button {
   }
 }
 
+/*
+ * A progress bar whose total isn't known yet (NSProgressIndicator's
+ * indeterminate bar): a segment sweeps across, over and over.
+ */
+@keyframes progress-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   [style*="spring-flash"],
   [style*="column-arm"],

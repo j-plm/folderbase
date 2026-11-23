@@ -59,14 +59,116 @@ pub fn unique_path(dir: &Path, name: &OsStr) -> PathBuf {
         .expect("some number is free")
 }
 
+/// How a copy into a location is going, for its progress bar (sent to the frontend as is).
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct CopyProgress {
+    pub files_done: usize,
+    pub files_total: usize,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    /// The file being copied.
+    pub name: String,
+}
+
+/// Where a copy reports its progress; called from a watching thread too.
+pub type CopyReport = std::sync::Arc<dyn Fn(&CopyProgress) + Send + Sync>;
+
+/// No progress reported.
+pub fn no_report() -> CopyReport {
+    std::sync::Arc::new(|_| {})
+}
+
+/// Files at least this big are watched as they copy, so the bar moves during
+/// a long one (the system's copy says nothing until it's done).
+const WATCH_FROM: u64 = 8 * 1024 * 1024;
+/// How often progress is reported at most.
+const REPORT_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Copies files, keeping count of how far it's got.
+pub struct Copier {
+    progress: CopyProgress,
+    report: CopyReport,
+    last: Option<std::time::Instant>,
+}
+
+impl Copier {
+    /// For copying `sources` (files and folders): counts their files and bytes first.
+    pub fn new(sources: &[PathBuf], report: CopyReport) -> Self {
+        let mut progress = CopyProgress::default();
+        for source in sources {
+            for entry in WalkDir::new(source).follow_links(false).into_iter().filter_entry(not_hidden).flatten() {
+                if entry.file_type().is_file() {
+                    progress.files_total += 1;
+                    progress.bytes_total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                }
+            }
+        }
+        Copier { progress, report, last: None }
+    }
+
+    /// Copying without reporting anything.
+    pub fn silent() -> Self {
+        Copier { progress: CopyProgress::default(), report: no_report(), last: None }
+    }
+
+    /// The count so far.
+    pub fn progress(&self) -> &CopyProgress {
+        &self.progress
+    }
+
+    fn report(&mut self, force: bool) {
+        if force || self.last.is_none_or(|t| t.elapsed() >= REPORT_EVERY) {
+            (self.report)(&self.progress);
+            self.last = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Copies one file as `std::fs::copy` does (keeping its permissions, tags and
+    /// other details). A big one is watched from another thread as it grows.
+    fn copy_file(&mut self, from: &Path, to: &Path) -> std::io::Result<()> {
+        let size = std::fs::metadata(from)?.len();
+        self.progress.name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.report(true);
+        if size < WATCH_FROM {
+            std::fs::copy(from, to)?;
+        } else {
+            let finished = std::sync::atomic::AtomicBool::new(false);
+            let base = self.progress.clone();
+            let report = self.report.clone();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    while !finished.load(std::sync::atomic::Ordering::Relaxed) {
+                        std::thread::sleep(REPORT_EVERY);
+                        let copied = std::fs::metadata(to).map(|m| m.len().min(size)).unwrap_or(0);
+                        report(&CopyProgress { bytes_done: base.bytes_done + copied, ..base.clone() });
+                    }
+                });
+                let result = std::fs::copy(from, to);
+                finished.store(true, std::sync::atomic::Ordering::Relaxed);
+                result
+            })?;
+        }
+        self.progress.files_done += 1;
+        self.progress.bytes_done += size;
+        let last = self.progress.files_done >= self.progress.files_total;
+        self.report(last);
+        Ok(())
+    }
+}
+
 /// Copies a file or folder into `dest` under a free name. Returns the copy, and the files copied.
 pub fn copy_into(dest: &Path, source: &Path) -> Result<(PathBuf, Vec<PathBuf>), String> {
+    copy_into_with(dest, source, &mut Copier::silent())
+}
+
+/// [`copy_into`], counting each file in `copier`.
+pub fn copy_into_with(dest: &Path, source: &Path, copier: &mut Copier) -> Result<(PathBuf, Vec<PathBuf>), String> {
     let name = source.file_name().ok_or_else(|| format!("{} has no name", source.display()))?;
     let meta = std::fs::symlink_metadata(source).map_err(|e| format!("{}: {e}", source.display()))?;
     std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
     let target = unique_path(dest, name);
     if meta.is_file() {
-        std::fs::copy(source, &target).map_err(|e| format!("{}: {e}", source.display()))?;
+        copier.copy_file(source, &target).map_err(|e| format!("{}: {e}", source.display()))?;
         return Ok((target.clone(), vec![target]));
     }
     if !meta.is_dir() {
@@ -80,7 +182,7 @@ pub fn copy_into(dest: &Path, source: &Path) -> Result<(PathBuf, Vec<PathBuf>), 
         if entry.file_type().is_dir() {
             std::fs::create_dir_all(&to).map_err(|e| e.to_string())?;
         } else if entry.file_type().is_file() {
-            std::fs::copy(entry.path(), &to).map_err(|e| format!("{}: {e}", entry.path().display()))?;
+            copier.copy_file(entry.path(), &to).map_err(|e| format!("{}: {e}", entry.path().display()))?;
             copied.push(to);
         }
     }
@@ -100,7 +202,14 @@ pub struct Imported {
 /// Copies `paths` into the location's holding folder (those already inside it
 /// stay put) and indexes them.
 pub async fn import_files_impl(location_id: &str, paths: &[String], pool: &DbPool) -> Result<Imported, String> {
+    import_files_reporting(location_id, paths, pool, no_report()).await
+}
+
+/// [`import_files_impl`], reporting the copying to `report`.
+pub async fn import_files_reporting(location_id: &str, paths: &[String], pool: &DbPool, report: CopyReport) -> Result<Imported, String> {
     let (root, holding) = location_folders(location_id, pool).await?;
+    let outside: Vec<PathBuf> = paths.iter().map(PathBuf::from).filter(|p| !p.starts_with(&root)).collect();
+    let mut copier = Copier::new(&outside, report);
 
     let mut files = Vec::new();
     let mut copies = Vec::new();
@@ -121,19 +230,42 @@ pub async fn import_files_impl(location_id: &str, paths: &[String], pool: &DbPoo
             }
             continue;
         }
-        let (copy, copied) = copy_into(&holding, &source)?;
+        let (copy, copied) = copy_into_with(&holding, &source, &mut copier)?;
         copies.push(copy);
         files.extend(copied);
     }
 
-    crate::commands::sync::sync_location(location_id, pool, &|_| {}).await?;
+    crate::commands::sync::sync_location(location_id, pool, &crate::commands::sync::quiet()).await?;
     let text = |ps: Vec<PathBuf>| ps.into_iter().map(|p| p.to_string_lossy().into_owned()).collect();
     Ok(Imported { files: text(files), folder: holding.to_string_lossy().into_owned(), copies: text(copies) })
 }
 
 #[tauri::command]
-pub async fn import_files(location_id: String, paths: Vec<String>, db: State<'_, DbPool>) -> Result<Imported, String> {
-    import_files_impl(&location_id, &paths, db.inner()).await
+pub async fn import_files(
+    location_id: String,
+    paths: Vec<String>,
+    app: tauri::AppHandle,
+    db: State<'_, DbPool>,
+) -> Result<Imported, String> {
+    let report = copy_reporter(&app, &location_id);
+    let result = import_files_reporting(&location_id, &paths, db.inner(), report).await;
+    copy_finished(&app, &location_id, result.as_ref().err());
+    result
+}
+
+/// Reports a copy into `location_id` to the frontend as `copy_progress` events.
+fn copy_reporter(app: &tauri::AppHandle, location_id: &str) -> CopyReport {
+    use tauri::Emitter;
+    let (app, id) = (app.clone(), location_id.to_string());
+    std::sync::Arc::new(move |p: &CopyProgress| {
+        let _ = app.emit("copy_progress", serde_json::json!({ "location_id": id, "done": false, "progress": p }));
+    })
+}
+
+/// The last `copy_progress` of a copy: `done`, with the error if it failed.
+fn copy_finished(app: &tauri::AppHandle, location_id: &str, error: Option<&String>) {
+    use tauri::Emitter;
+    let _ = app.emit("copy_progress", serde_json::json!({ "location_id": location_id, "done": true, "error": error }));
 }
 
 /// Files dropped on another location in the sidebar: copied into its Added
@@ -155,6 +287,16 @@ pub struct CopiedToLocation {
 /// being Tags), and made there with the same type when it's missing; a value
 /// the copy already has (from Map Disk Folders, say) is kept.
 pub async fn copy_to_location_impl(target: &str, file_ids: &[String], pool: &DbPool) -> Result<CopiedToLocation, String> {
+    copy_to_location_reporting(target, file_ids, pool, no_report()).await
+}
+
+/// [`copy_to_location_impl`], reporting the copying to `report`.
+pub async fn copy_to_location_reporting(
+    target: &str,
+    file_ids: &[String],
+    pool: &DbPool,
+    report: CopyReport,
+) -> Result<CopiedToLocation, String> {
     use crate::commands::metadata::{convert_value, property_for, set_metadata_cells_impl, CellEdit};
     use crate::commands::properties::is_system;
     use crate::models::Property;
@@ -165,6 +307,7 @@ pub async fn copy_to_location_impl(target: &str, file_ids: &[String], pool: &DbP
 
     let mut copies: Vec<(PathBuf, Map<String, Value>, Option<String>)> = Vec::new();
     let mut skipped = 0;
+    let mut rows = Vec::new();
     for id in file_ids {
         let row: Option<(String, Option<String>, Option<String>)> =
             sqlx::query_as("SELECT file_path, metadata, library FROM files WHERE file_id = ?")
@@ -172,20 +315,24 @@ pub async fn copy_to_location_impl(target: &str, file_ids: &[String], pool: &DbP
                 .fetch_optional(pool)
                 .await
                 .map_err(|e| e.to_string())?;
-        let Some((path, metadata, library)) = row else { continue };
+        rows.extend(row);
+    }
+    let outside: Vec<PathBuf> = rows.iter().map(|(p, _, _)| PathBuf::from(p)).filter(|p| !p.starts_with(&root)).collect();
+    let mut copier = Copier::new(&outside, report);
+    for (path, metadata, library) in rows {
         let source = PathBuf::from(&path);
         if source.starts_with(&root) {
             skipped += 1;
             continue;
         }
-        let (copy, _) = copy_into(&holding, &source)?;
+        let (copy, _) = copy_into_with(&holding, &source, &mut copier)?;
         let meta = metadata
             .and_then(|m| serde_json::from_str::<Value>(&m).ok())
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default();
         copies.push((copy, meta, library));
     }
-    crate::commands::sync::sync_location(target, pool, &|_| {}).await?;
+    crate::commands::sync::sync_location(target, pool, &crate::commands::sync::quiet()).await?;
 
     let mut conn = pool.acquire().await.map_err(|e| e.to_string())?;
     let target_props: Vec<Property> = sqlx::query_as("SELECT * FROM properties WHERE library = ?")
@@ -257,8 +404,16 @@ pub async fn copy_to_location_impl(target: &str, file_ids: &[String], pool: &DbP
 }
 
 #[tauri::command]
-pub async fn copy_to_location(location_id: String, file_ids: Vec<String>, db: State<'_, DbPool>) -> Result<CopiedToLocation, String> {
-    copy_to_location_impl(&location_id, &file_ids, db.inner()).await
+pub async fn copy_to_location(
+    location_id: String,
+    file_ids: Vec<String>,
+    app: tauri::AppHandle,
+    db: State<'_, DbPool>,
+) -> Result<CopiedToLocation, String> {
+    let report = copy_reporter(&app, &location_id);
+    let result = copy_to_location_reporting(&location_id, &file_ids, db.inner(), report).await;
+    copy_finished(&app, &location_id, result.as_ref().err());
+    result
 }
 
 async fn location(location_id: &str, pool: &DbPool) -> Result<Location, String> {
@@ -399,7 +554,7 @@ pub async fn set_added_folder_impl(location_id: &str, folder: &str, move_files: 
         .await
         .map_err(|e| e.to_string())?;
     if move_files {
-        crate::commands::sync::sync_location(location_id, pool, &|_| {}).await?;
+        crate::commands::sync::sync_location(location_id, pool, &crate::commands::sync::quiet()).await?;
     }
     location(location_id, pool).await
 }
@@ -495,6 +650,47 @@ mod tests {
     #[test]
     fn copy_into_a_missing_source_is_an_error() {
         assert!(copy_into(&temp_dir(), &temp_dir().join("gone.txt")).is_err());
+    }
+
+    #[test]
+    fn copying_counts_files_and_bytes_and_reports_as_it_goes() {
+        let src = temp_dir();
+        let dest = temp_dir();
+        std::fs::write(src.join("a.txt"), b"hello").unwrap();
+        std::fs::create_dir_all(src.join("folder")).unwrap();
+        std::fs::write(src.join("folder/b.txt"), b"hi there").unwrap();
+        std::fs::write(src.join("folder/.hidden"), b"skipped").unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let sources = [src.join("a.txt"), src.join("folder")];
+        let mut copier = Copier::new(&sources, std::sync::Arc::new(move |p: &CopyProgress| log.lock().unwrap().push(p.clone())));
+        assert_eq!((copier.progress().files_total, copier.progress().bytes_total), (2, 13));
+        for source in &sources {
+            copy_into_with(&dest, source, &mut copier).unwrap();
+        }
+        let p = copier.progress();
+        assert_eq!((p.files_done, p.bytes_done), (2, 13));
+        // The last report is the finished count, whatever the throttling skipped
+        let last = seen.lock().unwrap().last().cloned().unwrap();
+        assert_eq!((last.files_done, last.files_total, last.bytes_done), (2, 2, 13));
+    }
+
+    #[test]
+    fn a_big_file_is_reported_while_it_copies() {
+        let src = temp_dir();
+        let dest = temp_dir();
+        let big = src.join("big.bin");
+        std::fs::write(&big, vec![7u8; (WATCH_FROM + 1) as usize]).unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let mut copier = Copier::new(std::slice::from_ref(&big), std::sync::Arc::new(move |p: &CopyProgress| log.lock().unwrap().push(p.clone())));
+        copy_into_with(&dest, &big, &mut copier).unwrap();
+        assert_eq!(std::fs::metadata(dest.join("big.bin")).unwrap().len(), WATCH_FROM + 1);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.first().unwrap().name, "big.bin");
+        assert_eq!(seen.last().unwrap().bytes_done, WATCH_FROM + 1);
+        // Never more than the file while it's copying
+        assert!(seen.iter().all(|p| p.bytes_done <= WATCH_FROM + 1));
     }
 
     /// Stands in for the Trash: deletes, so tests leave nothing in the real one.

@@ -26,6 +26,9 @@ import { locateLocationFolder } from "../../lib/fileActions";
 import { DefaultBadge } from "./ViewsButton";
 import { useDragReorder } from "../../hooks/useDragReorder";
 import { moveColumnId } from "../../lib/columns";
+import { useActivities } from "../../contexts/ActivityContext";
+import { activityLine } from "../../lib/activity";
+import { ProgressPie } from "../shared/Progress";
 
 const MIN_WIDTH = 150;
 const MAX_WIDTH = 400;
@@ -93,6 +96,7 @@ export default function Sidebar() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   /** Locations being indexed (a refresh, or a newly added location). */
   const [refreshing, setRefreshing] = useState<Set<string>>(() => new Set());
+  const activities = useActivities();
   const [refreshError, setRefreshError] = useState<{ id: string; message: string; action?: string } | null>(null);
 
   function setRefreshingFor(id: string, on: boolean) {
@@ -388,6 +392,9 @@ export default function Sidebar() {
             // With its views showing, the selected view is highlighted rather than the location
             const isSelected = isActive && !viewsShown;
             const isRefreshing = refreshing.has(loc.location_id);
+            // A refresh or a copy in progress: a pie once its total is known, as Finder's sidebar shows
+            const activity = activities[loc.location_id];
+            const busy = activity && !activity.finished ? activityLine(activity, loc.name) : null;
             const error = refreshError?.id === loc.location_id ? refreshError : null;
             return (
               <div
@@ -465,25 +472,29 @@ export default function Sidebar() {
                     >
                       <SymbolIcon name="map" size={12} fallback="⌖" />
                     </button>
-                    {/* Shown on hover, and kept (spinning) while the location is being indexed */}
+                    {/* Shown on hover, and kept (spinning, or a pie filling) while the location is busy */}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
                         refreshLocation(loc.location_id);
                       }}
-                      disabled={isRefreshing}
-                      title={isRefreshing ? "Refreshing…" : "Refresh"}
-                      aria-label={isRefreshing ? `Refreshing ${loc.name}` : `Refresh ${loc.name}`}
+                      disabled={isRefreshing || !!busy}
+                      title={busy ? [busy.title, busy.detail].filter(Boolean).join("\n") : "Refresh"}
+                      aria-label={busy ? `${busy.title} ${busy.detail ?? ""}` : `Refresh ${loc.name}`}
                       className={`w-5 h-5 flex items-center justify-center rounded text-neutral-500 hover:text-neutral-200 ${
-                        isRefreshing ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                        isRefreshing || busy ? "opacity-100" : "opacity-0 group-hover:opacity-100"
                       }`}
                     >
-                      <SymbolIcon
-                        name="arrow.clockwise"
-                        size={12}
-                        fallback="↻"
-                        className={isRefreshing ? "animate-spin" : ""}
-                      />
+                      {busy?.fraction != null ? (
+                        <ProgressPie fraction={busy.fraction} size={12} />
+                      ) : (
+                        <SymbolIcon
+                          name="arrow.clockwise"
+                          size={12}
+                          fallback="↻"
+                          className={isRefreshing || busy ? "animate-spin" : ""}
+                        />
+                      )}
                     </button>
                   </div>
                 </div>

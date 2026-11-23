@@ -216,7 +216,7 @@ pub async fn compress_items(
         .filter(|l| target.starts_with(&l.root_path))
         .max_by_key(|l| l.root_path.len());
     if let Some(location) = holding {
-        crate::commands::sync::sync_location(&location.location_id, db.inner(), &|_| {}).await?;
+        crate::commands::sync::sync_location(&location.location_id, db.inner(), &crate::commands::sync::quiet()).await?;
     }
     Ok(target.to_string_lossy().into_owned())
 }

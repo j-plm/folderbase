@@ -30,6 +30,54 @@ use walkdir::WalkDir;
 /// Files read and written per batch (one blocking read, one transaction).
 const BATCH: usize = 500;
 
+/// What a refresh is doing, for its progress bar (sent to the frontend as is).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum SyncProgress {
+    /// Going through the location's folders: the total isn't known yet.
+    Listing { found: usize },
+    /// Reading new and edited files (EXIF, fingerprints).
+    Reading { done: usize, total: usize },
+    /// Writing the changes and applying the folder mapping.
+    Saving,
+}
+
+/// Where a refresh reports its progress; called from the scanning thread too.
+pub type Progress = std::sync::Arc<dyn Fn(SyncProgress) + Send + Sync>;
+
+/// No progress reported (refreshes after a drop, a compress…).
+pub fn quiet() -> Progress {
+    std::sync::Arc::new(|_| {})
+}
+
+/// The error a refresh stopped by the user ends with. Nothing has changed then:
+/// it stops before writing anything.
+pub const STOPPED: &str = "Stopped";
+
+/// Locations whose refresh has been asked to stop.
+static STOPS: std::sync::Mutex<Option<HashSet<String>>> = std::sync::Mutex::new(None);
+
+/// Asks the refresh of `location_id` to stop (Stop in its progress bar).
+pub fn request_stop(location_id: &str) {
+    if let Ok(mut stops) = STOPS.lock() {
+        stops.get_or_insert_with(HashSet::new).insert(location_id.to_string());
+    }
+}
+
+fn stop_requested(location_id: &str) -> bool {
+    STOPS.lock().map(|s| s.as_ref().is_some_and(|s| s.contains(location_id))).unwrap_or(false)
+}
+
+fn clear_stop(location_id: &str) {
+    if let Ok(mut stops) = STOPS.lock() {
+        if let Some(stops) = stops.as_mut() {
+            stops.remove(location_id);
+        }
+    }
+}
+
+/// How often the count of files found is reported while listing.
+const LISTING_REPORT_EVERY: std::time::Duration = std::time::Duration::from_millis(150);
 /// Bytes hashed from each end of a file for its fingerprint.
 const FINGERPRINT_SPAN: u64 = 64 * 1024;
 
@@ -94,7 +142,14 @@ fn rfc3339(t: std::time::SystemTime) -> String {
 /// Every visible file under `root`, outside the `excluded` folders (relative
 /// paths), plus folders that couldn't be read (whose records must not be
 /// treated as missing). Only `stat` is used, so cloud placeholders stay online-only.
-fn scan_tree(root: &Path, excluded: &HashSet<String>) -> (Vec<DiskFile>, Vec<PathBuf>) {
+/// Reports how many it's found as it goes, and gives up with [`STOPPED`] when asked.
+fn scan_tree(
+    root: &Path,
+    excluded: &HashSet<String>,
+    progress: &Progress,
+    location_id: &str,
+) -> Result<(Vec<DiskFile>, Vec<PathBuf>), String> {
+    let mut last_report = std::time::Instant::now();
     // Checked once for the location: a streamed drive is mounted as a whole.
     // Its files start as Unknown; `sync_location` then asks the drive which are here
     let streamed = streamed_drive(root).is_some();
@@ -109,6 +164,13 @@ fn scan_tree(root: &Path, excluded: &HashSet<String>) -> (Vec<DiskFile>, Vec<Pat
     };
     let walker = WalkDir::new(root).follow_links(false).into_iter();
     for entry in walker.filter_entry(|e| not_hidden(e) && !is_excluded(e)) {
+        if last_report.elapsed() >= LISTING_REPORT_EVERY {
+            if stop_requested(location_id) {
+                return Err(STOPPED.into());
+            }
+            progress(SyncProgress::Listing { found: files.len() });
+            last_report = std::time::Instant::now();
+        }
         let entry = match entry {
             Ok(e) => e,
             Err(e) => {
@@ -142,7 +204,8 @@ fn scan_tree(root: &Path, excluded: &HashSet<String>) -> (Vec<DiskFile>, Vec<Pat
             streamed,
         });
     }
-    (files, unreadable)
+    progress(SyncProgress::Listing { found: files.len() });
+    Ok((files, unreadable))
 }
 
 /// FNV-1a, a small stable hash (fingerprints are stored, so the hash must not
@@ -276,12 +339,16 @@ fn under_any(path: &str, dirs: &[PathBuf]) -> bool {
 }
 
 /// Brings `location_id`'s records in line with its folder on disk, calling
-/// `on_progress` with the number of files read so far.
-pub async fn sync_location(
-    location_id: &str,
-    pool: &DbPool,
-    on_progress: &(dyn Fn(usize) + Sync),
-) -> Result<SyncSummary, String> {
+/// Reports what it's doing to `progress`. Stops with [`STOPPED`] when asked to
+/// ([`request_stop`]) while listing or reading, before anything is written.
+pub async fn sync_location(location_id: &str, pool: &DbPool, progress: &Progress) -> Result<SyncSummary, String> {
+    clear_stop(location_id);
+    let result = sync_location_inner(location_id, pool, progress).await;
+    clear_stop(location_id);
+    result
+}
+
+async fn sync_location_inner(location_id: &str, pool: &DbPool, progress: &Progress) -> Result<SyncSummary, String> {
     let location = sqlx::query_as::<_, crate::models::Location>("SELECT * FROM locations WHERE location_id = ?")
         .bind(location_id)
         .fetch_one(pool)
@@ -322,9 +389,11 @@ pub async fn sync_location(
             .into_iter()
             .collect();
     let scan_root = root.clone();
-    let (mut disk, unreadable) = tauri::async_runtime::spawn_blocking(move || scan_tree(&scan_root, &excluded))
-        .await
-        .map_err(|e| e.to_string())?;
+    let (scan_progress, scan_location) = (progress.clone(), location_id.to_string());
+    let (mut disk, unreadable) =
+        tauri::async_runtime::spawn_blocking(move || scan_tree(&scan_root, &excluded, &scan_progress, &scan_location))
+            .await
+            .map_err(|e| e.to_string())??;
     // On a streamed drive, ask it which files are here (pCloud: its cache), so
     // those are read as usual and the rest left alone. Checked on every refresh,
     // so a file opened (and so downloaded) since is read then
@@ -369,9 +438,14 @@ pub async fn sync_location(
     let known_paths: HashMap<&str, &Known> = known.iter().map(|k| (k.path.as_str(), k)).collect();
 
     // Read new and edited files (blocking I/O), a batch at a time
+    let total = to_read.len();
+    progress(SyncProgress::Reading { done: 0, total });
     let mut read: Vec<ReadFile> = Vec::with_capacity(to_read.len());
     let mut remaining = to_read.into_iter();
     loop {
+        if stop_requested(location_id) {
+            return Err(STOPPED.into());
+        }
         let batch: Vec<DiskFile> = remaining.by_ref().take(BATCH).collect();
         if batch.is_empty() {
             break;
@@ -380,8 +454,10 @@ pub async fn sync_location(
             .await
             .map_err(|e| e.to_string())?;
         read.extend(done);
-        on_progress(read.len());
+        progress(SyncProgress::Reading { done: read.len(), total });
     }
+    // Past here it finishes: the changes are written together
+    progress(SyncProgress::Saving);
 
     let (existing, added): (Vec<ReadFile>, Vec<ReadFile>) =
         read.into_iter().partition(|r| known_paths.contains_key(r.disk.path.as_str()));

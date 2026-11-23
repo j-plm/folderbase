@@ -4,6 +4,8 @@ import { FileIcon, SymbolIcon } from "../../lib/fileIcons";
 import { showContextMenu, type MenuEntry } from "../../lib/nativeMenu";
 import { labels } from "../../lib/platform";
 import { appSettings, folderName } from "../../lib/appSettings";
+import ActivityNotices from "./ActivityNotices";
+import { NOTICE_CLASS, PushButton } from "./Notice";
 
 /**
  * A notice per zip being made, in the window's bottom corner, laid out as a
@@ -15,9 +17,10 @@ import { appSettings, folderName } from "../../lib/appSettings";
  */
 export default function CompressNotices() {
   const jobs = useSyncExternalStore(compressJobs.subscribe, compressJobs.snapshot);
-  if (jobs.length === 0) return null;
+  // One stack for every notice: refreshes and copies (ActivityNotices), then zips
   return (
     <div className="absolute right-3 bottom-12 z-40 flex flex-col gap-2 w-[320px] pointer-events-none">
+      <ActivityNotices />
       {jobs.map((job) => (
         <Notice key={job.id} job={job} />
       ))}
@@ -58,7 +61,7 @@ function Notice({ job }: { job: CompressJob }) {
     <div
       onMouseEnter={() => done && compressJobs.keep(job.id)}
       onContextMenu={menu}
-      className="group relative pointer-events-auto flex items-center gap-2.5 pl-3 pr-3 py-2.5 rounded-2xl border border-neutral-700/60 bg-neutral-800 shadow-lg text-[13px] select-none"
+      className={NOTICE_CLASS}
     >
       {job.state !== "running" && (
         <button
@@ -102,18 +105,5 @@ function Notice({ job }: { job: CompressJob }) {
       {job.state === "running" && <PushButton onClick={() => compressJobs.cancel(job.id)}>Cancel</PushButton>}
       {done && <PushButton onClick={() => compressJobs.reveal(job.path!)}>{labels.reveal}</PushButton>}
     </div>
-  );
-}
-
-/** The banner's one button, a small push button as notifications have. */
-function PushButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="shrink-0 whitespace-nowrap h-[22px] px-2.5 rounded-[6px] bg-neutral-700/70 text-[12px] text-neutral-100 active:bg-neutral-700"
-    >
-      {children}
-    </button>
   );
 }

@@ -9,6 +9,7 @@ import MasterViewEditor from "../editor/MasterViewEditor";
 import { ArrangementProvider } from "../../contexts/ArrangementContext";
 import { LocationViewsProvider } from "../../contexts/LocationViewsContext";
 import { BrowseProvider } from "../../contexts/BrowseContext";
+import { ActivityProvider } from "../../contexts/ActivityContext";
 
 export default function AppShell() {
   const { masterEditorOpen, activeLocationId } = useNavigation();
@@ -30,6 +31,7 @@ export default function AppShell() {
   );
 
   return (
+    <ActivityProvider>
     <ArrangementProvider>
       {/* The location's saved views and where you are in them, shared by the sidebar, the toolbar and every view mode */}
       {activeLocationId ? (
@@ -40,5 +42,6 @@ export default function AppShell() {
         shell
       )}
     </ArrangementProvider>
+    </ActivityProvider>
   );
 }

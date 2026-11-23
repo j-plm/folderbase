@@ -1077,6 +1077,11 @@ Locations (drives and folders added to Folderbase) are listed in the sidebar, as
 
 The primary content area. Renders the current view mode (Icons, List, Columns, or Database) for the active folder context. Responds to navigation actions from both the sidebar and the breadcrumb toolbar.
 
+**Progress.** Anything long a location is doing shows as a notice in the window's bottom-right corner, stacked with the zips' notices and laid out as a macOS notification banner: the location's folder icon, a line saying what's happening, a native bar, a grey line under it, and Stop where it can stop. Notices are for every location, not only the one showing (a copy onto another location in the sidebar shows too). A finished one says how it went for a few seconds; hovering keeps it, with a close button at its top left. The sidebar shows a pie beside the location once the total is known (a spinning Refresh arrow before that), as Finder's sidebar does beside a disk being copied to.
+
+- **Refresh** (also the first indexing of a new location): "Looking for files in “Documents”… 1,240 found" (the bar sweeps: the total isn't known while listing), then "Reading new and changed files in “Documents”… 320 of 786 files" (it fills), then "Saving changes…". **Stop** works while listing and reading and changes nothing ("Refresh stopped — Nothing was changed"); saving always finishes. When done: "Refreshed “Documents”: 3 added, 1 moved" for a few seconds; a failure stays longer, in red
+- **Copying in** (files dropped from outside, or onto another location in the sidebar): "Copying 3 items to “Documents”", "45.2 MB of 1.2 GB — Talk.m4a", filling by bytes, a big file moving as it copies; then "Adding 3 items…" while they're indexed. No Stop yet
+
 ### View-Local Navigation
 
 Once a view is activated from the icon rail, the application behaves like a standard OS explorer scoped to that view's virtual hierarchy.
