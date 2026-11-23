@@ -13,6 +13,8 @@ export interface FileRecord {
   tags: string[];
   /** A cloud file not downloaded to this device; its contents are never read, so it stays that way. */
   online_only?: boolean;
+  /** On a drive that streams from the cloud as it's read (pCloud Drive): its contents are only read when it's opened or previewed. */
+  streamed?: boolean;
 }
 
 export interface PathSegmentMeta {

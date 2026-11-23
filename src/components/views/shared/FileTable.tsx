@@ -278,7 +278,7 @@ export default function FileTable({
                     <FolderIcon size={ICON_SIZE} />
                   )}
                   <span className="truncate">{file ? fileName(file.file_path) : folder?.label}</span>
-                  {file && <CloudBadge show={file.online_only} className="ml-auto" />}
+                  {file && <CloudBadge file={file} className="ml-auto" />}
                 </div>
                 <div style={width("modified")} className={`${CELL} text-neutral-400`}>
                   {file ? formatFinderDate(file.modified_at ?? file.timestamp) : FOLDER_CELLS.modified}

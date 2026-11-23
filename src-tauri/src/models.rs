@@ -15,8 +15,11 @@ pub struct FileRecord {
     pub modified_at: Option<String>,
     pub created_at: Option<String>,
     pub tags: String,
-    /// A cloud file not downloaded to this device (see `ingest::online_only`).
+    /// A cloud file not downloaded to this device, or not all of it (see `cloud::CloudState`).
     pub online_only: bool,
+    /// On a drive that streams from the cloud as it's read and can't say whether
+    /// the file is here (`cloud::CloudState::Unknown`): treated as not here.
+    pub streamed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, FromRow)]

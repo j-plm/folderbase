@@ -98,11 +98,6 @@ pub(crate) fn online_only(meta: &std::fs::Metadata) -> bool {
     }
 }
 
-/// Whether the file at `path` is online-only (false if it can't be read).
-pub(crate) fn path_online_only(path: &std::path::Path) -> bool {
-    std::fs::symlink_metadata(path).map(|m| online_only(&m)).unwrap_or(false)
-}
-
 /// A file's folder names, as the JSON tags array.
 pub(crate) fn folder_tags(relative_path: &str) -> String {
     let parts: Vec<&str> = relative_path.split('/').collect();
@@ -177,7 +172,7 @@ pub async fn ingest_directory_impl(
 
         let file_path = entry.path().to_string_lossy().to_string();
 
-        let (file_type, timestamp, _file_size, _created_at, metadata) = match extract_file_data(entry.path(), !path_online_only(entry.path())) {
+        let (file_type, timestamp, _file_size, _created_at, metadata) = match extract_file_data(entry.path(), !crate::commands::cloud::reading_downloads(entry.path()).await) {
             Some(data) => data,
             None => continue,
         };

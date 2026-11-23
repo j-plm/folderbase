@@ -294,7 +294,7 @@ export default function TilesView({
                     >
                       {file && <Thumbnail path={file.file_path} mimeType={file.file_type} size={64} />}
                       {file && (
-                        <CloudBadge show={file.online_only} className="absolute right-0.5 bottom-0.5 text-neutral-100" />
+                        <CloudBadge file={file} className="absolute right-0.5 bottom-0.5 text-neutral-100" />
                       )}
                       {folder && <FolderIcon size={64} />}
                     </div>

@@ -17,7 +17,7 @@ import {
   type SelectionState,
 } from "../../../lib/selection";
 import { FileIcon, FolderIcon, SymbolIcon, isImageMime } from "../../../lib/fileIcons";
-import CloudBadge, { CLOUD_BADGE_WIDTH } from "../shared/CloudBadge";
+import CloudBadge, { CLOUD_BADGE_WIDTH, hasCloudBadge } from "../shared/CloudBadge";
 import { formatFinderSize, formatLongDate, kindLabel } from "../../../lib/arrange";
 import {
   arrangeColumn,
@@ -542,11 +542,11 @@ function ColumnList({
                 <span className="flex-1 min-w-0 whitespace-nowrap overflow-hidden" title={node.name}>
                   {middleTruncate(
                     node.name,
-                    nameWidth(width, folder) - (node.file?.online_only ? CLOUD_BADGE_WIDTH : 0),
+                    nameWidth(width, folder) - (hasCloudBadge(node.file) ? CLOUD_BADGE_WIDTH : 0),
                     (t) => measureText(t, font)
                   )}
                 </span>
-                <CloudBadge show={node.file?.online_only} />
+                <CloudBadge file={node.file} />
                 {folder && (
                   <SymbolIcon
                     name="chevron.right"
@@ -613,6 +613,8 @@ function PreviewColumn({ node }: { node: BrowserNode }) {
     ["Modified", formatLongDate(file.modified_at ?? file.timestamp)],
   ];
   const tags = Array.isArray(file.tags) ? file.tags : [];
+  // Selecting a file never downloads it: only opening it or Quick Look does
+  const wouldDownload = !!(file.online_only || file.streamed);
 
   return (
     <div
@@ -621,9 +623,9 @@ function PreviewColumn({ node }: { node: BrowserNode }) {
     >
       <div ref={stageRef} style={{ aspectRatio: PREVIEW_ASPECT }} className="min-h-[160px] relative">
         {stage.width > 0 && (
-          <Stage live={livePreviewAvailable && !file.online_only} path={file.file_path}>
-            {/* An online-only image would download to show in full; its icon stands in */}
-            {isImageMime(file.file_type) && !file.online_only ? (
+          <Stage live={livePreviewAvailable && !wouldDownload} path={file.file_path}>
+            {/* An online-only or streamed image would download to show in full; its icon stands in */}
+            {isImageMime(file.file_type) && !wouldDownload ? (
               <img
                 src={convertFileSrc(file.file_path)}
                 alt=""
@@ -637,7 +639,11 @@ function PreviewColumn({ node }: { node: BrowserNode }) {
           </Stage>
         )}
       </div>
-      {file.online_only && <p className="shrink-0 mt-2 text-center text-[11px] text-neutral-500">Not downloaded</p>}
+      {wouldDownload && (
+        <p className="shrink-0 mt-2 text-center text-[11px] text-neutral-500">
+          {file.online_only ? "Not downloaded" : "Downloads when opened"}
+        </p>
+      )}
       <div className="shrink-0 mt-6">
         <p className="text-[15px] font-semibold text-neutral-100 break-words">{node.name}</p>
         <p className="mt-0.5 text-[13px] text-neutral-500">

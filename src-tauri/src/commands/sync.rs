@@ -14,6 +14,7 @@
 //! indexed from `stat` alone, and their fingerprint and EXIF are read on a later
 //! refresh once they've been downloaded.
 
+use crate::commands::cloud::{streamed_drive, CloudState, DriveCheck};
 use crate::commands::ingest::{bootstrap_properties, extract_file_data, extracted_keys, folder_tags, not_hidden, online_only};
 use crate::db::DbPool;
 use chrono::{DateTime, Utc};
@@ -28,6 +29,7 @@ use walkdir::WalkDir;
 
 /// Files read and written per batch (one blocking read, one transaction).
 const BATCH: usize = 500;
+
 /// Bytes hashed from each end of a file for its fingerprint.
 const FINGERPRINT_SPAN: u64 = 64 * 1024;
 
@@ -47,7 +49,18 @@ struct DiskFile {
     relative_path: String,
     size: i64,
     modified: Option<String>,
+    /// Not on this device, or not all of it: never read (see `cloud`).
     online_only: bool,
+    /// On a streamed drive that can't say whether it's here: never read either.
+    streamed: bool,
+}
+
+impl DiskFile {
+    /// Takes what a streamed drive says about the file.
+    fn set_cloud_state(&mut self, state: CloudState) {
+        self.online_only = state == CloudState::OnlineOnly;
+        self.streamed = state == CloudState::Unknown;
+    }
 }
 
 /// A record already in the database for this location.
@@ -60,6 +73,7 @@ struct Known {
     fingerprint: Option<String>,
     metadata: Option<String>,
     online_only: bool,
+    streamed: bool,
 }
 
 /// A new or edited file, read (or, when online-only, just stat'ed).
@@ -81,6 +95,9 @@ fn rfc3339(t: std::time::SystemTime) -> String {
 /// paths), plus folders that couldn't be read (whose records must not be
 /// treated as missing). Only `stat` is used, so cloud placeholders stay online-only.
 fn scan_tree(root: &Path, excluded: &HashSet<String>) -> (Vec<DiskFile>, Vec<PathBuf>) {
+    // Checked once for the location: a streamed drive is mounted as a whole.
+    // Its files start as Unknown; `sync_location` then asks the drive which are here
+    let streamed = streamed_drive(root).is_some();
     let mut files = Vec::new();
     let mut unreadable = Vec::new();
     let is_excluded = |e: &walkdir::DirEntry| {
@@ -122,6 +139,7 @@ fn scan_tree(root: &Path, excluded: &HashSet<String>) -> (Vec<DiskFile>, Vec<Pat
             size: meta.len() as i64,
             modified: meta.modified().ok().map(rfc3339),
             online_only: online_only(&meta),
+            streamed,
         });
     }
     (files, unreadable)
@@ -154,8 +172,9 @@ pub fn fingerprint(path: &Path) -> Option<String> {
 
 fn read_file(disk: DiskFile) -> Option<ReadFile> {
     let path = Path::new(&disk.path);
-    // Reading an online-only file's contents would make its cloud provider download it
-    let contents_read = !disk.online_only;
+    // Reading an online-only file's contents, or any file on a streamed drive,
+    // would make its cloud provider download it
+    let contents_read = !disk.online_only && !disk.streamed;
     let (file_type, _, _, created_at, exif) = extract_file_data(path, contents_read)?;
     let fingerprint = if contents_read { fingerprint(path) } else { None };
     Some(ReadFile { disk, file_type, created_at, exif, fingerprint, contents_read })
@@ -275,7 +294,7 @@ pub async fn sync_location(
     }
 
     let known: Vec<Known> = sqlx::query(
-        "SELECT file_id, file_path, file_size, modified_at, fingerprint, metadata, online_only FROM files WHERE location_id = ?",
+        "SELECT file_id, file_path, file_size, modified_at, fingerprint, metadata, online_only, streamed FROM files WHERE location_id = ?",
     )
     .bind(location_id)
     .fetch_all(pool)
@@ -290,6 +309,7 @@ pub async fn sync_location(
         fingerprint: r.get("fingerprint"),
         metadata: r.get("metadata"),
         online_only: r.get("online_only"),
+        streamed: r.get("streamed"),
     })
     .collect();
 
@@ -302,9 +322,19 @@ pub async fn sync_location(
             .into_iter()
             .collect();
     let scan_root = root.clone();
-    let (disk, unreadable) = tauri::async_runtime::spawn_blocking(move || scan_tree(&scan_root, &excluded))
+    let (mut disk, unreadable) = tauri::async_runtime::spawn_blocking(move || scan_tree(&scan_root, &excluded))
         .await
         .map_err(|e| e.to_string())?;
+    // On a streamed drive, ask it which files are here (pCloud: its cache), so
+    // those are read as usual and the rest left alone. Checked on every refresh,
+    // so a file opened (and so downloaded) since is read then
+    if let Some(drive) = streamed_drive(&root) {
+        let mut check = DriveCheck::new(drive).await;
+        for d in disk.iter_mut() {
+            let state = check.state(Path::new(&d.path), d.size as u64).await;
+            d.set_cloud_state(state);
+        }
+    }
     // An empty listing where there were files is far more likely an unmounted or
     // stuck drive than everything being deleted: don't remove anything
     if disk.is_empty() && !known.is_empty() {
@@ -324,7 +354,8 @@ pub async fn sync_location(
                 if k.size == Some(d.size)
                     && k.modified == d.modified
                     && k.online_only == d.online_only
-                    && (k.fingerprint.is_some() || d.online_only) => {}
+                    && k.streamed == d.streamed
+                    && (k.fingerprint.is_some() || d.online_only || d.streamed) => {}
             // Unchanged legacy record: only needs its fingerprint, done below with the edits.
             // A file that's been downloaded (or freed up) is re-read to update its state.
             _ => to_read.push(d.clone()),
@@ -398,8 +429,8 @@ pub async fn sync_location(
         sqlx::query(
             "INSERT OR IGNORE INTO files \
              (file_id, file_path, file_type, timestamp, library, metadata, location_id, \
-              relative_path, file_size, modified_at, created_at, tags, fingerprint, online_only) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+              relative_path, file_size, modified_at, created_at, tags, fingerprint, online_only, streamed) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(&r.disk.path)
@@ -415,6 +446,7 @@ pub async fn sync_location(
         .bind(folder_tags(&r.disk.relative_path))
         .bind(&r.fingerprint)
         .bind(r.disk.online_only)
+        .bind(r.disk.streamed)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -469,7 +501,7 @@ async fn update_record(tx: &mut sqlx::SqliteConnection, k: &Known, r: &ReadFile)
     };
     sqlx::query(
         "UPDATE files SET file_path = ?, relative_path = ?, file_type = ?, timestamp = ?, \
-         file_size = ?, modified_at = ?, created_at = ?, fingerprint = ?, metadata = ?, online_only = ? \
+         file_size = ?, modified_at = ?, created_at = ?, fingerprint = ?, metadata = ?, online_only = ?, streamed = ? \
          WHERE file_id = ?",
     )
     .bind(&r.disk.path)
@@ -482,6 +514,7 @@ async fn update_record(tx: &mut sqlx::SqliteConnection, k: &Known, r: &ReadFile)
     .bind(&fingerprint)
     .bind(&metadata)
     .bind(r.disk.online_only)
+    .bind(r.disk.streamed)
     .bind(&k.file_id)
     .execute(&mut *tx)
     .await
@@ -523,6 +556,7 @@ mod tests {
                 size,
                 modified: Some(modified.into()),
                 online_only: fp.is_none(),
+                streamed: false,
             },
             file_type: None,
             created_at: None,
@@ -541,7 +575,19 @@ mod tests {
             fingerprint: fp.map(Into::into),
             metadata: None,
             online_only: false,
+            streamed: false,
         }
+    }
+
+    #[test]
+    fn a_streamed_drive_decides_whether_a_file_is_read() {
+        let mut d = read("/p/a.m4a", 10, "t1", Some("fa")).disk;
+        d.set_cloud_state(CloudState::Local);
+        assert!(!d.online_only && !d.streamed);
+        d.set_cloud_state(CloudState::OnlineOnly);
+        assert!(d.online_only && !d.streamed);
+        d.set_cloud_state(CloudState::Unknown);
+        assert!(!d.online_only && d.streamed);
     }
 
     #[test]

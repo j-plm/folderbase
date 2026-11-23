@@ -2768,7 +2768,7 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
             )}
             <FileIcon path={file.file_path} mimeType={file.file_type} size={16} />
             <span className="truncate min-w-0">{fileName(file.file_path)}</span>
-            <CloudBadge show={file.online_only} className="ml-auto" />
+            <CloudBadge file={file} className="ml-auto" />
           </div>
         );
       }

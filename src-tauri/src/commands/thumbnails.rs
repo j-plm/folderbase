@@ -34,17 +34,16 @@ pub async fn get_thumbnail(path: String, size: u32, scale: u32, app: AppHandle) 
         return Err(format!("thumbnail size must be 1–{MAX_THUMBNAIL_PT}pt at 1–3×"));
     }
     let dir = app.path().app_cache_dir().map_err(|e| e.to_string())?.join("thumbnails");
-    tauri::async_runtime::spawn_blocking(move || thumbnail(Path::new(&path), size, scale, &dir))
+    // Rendering would download a cloud file that isn't here (see `cloud`)
+    let may_render = !crate::commands::cloud::reading_downloads(Path::new(&path)).await;
+    tauri::async_runtime::spawn_blocking(move || thumbnail(Path::new(&path), size, scale, &dir, may_render))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn thumbnail(path: &Path, size: u32, scale: u32, dir: &Path) -> Result<Option<String>, String> {
-    // Rendering would download an online-only cloud file; show its icon instead
-    // (not cached, so it gets a thumbnail once it's downloaded)
-    if crate::commands::ingest::path_online_only(path) {
-        return Ok(None);
-    }
+/// `may_render`: false for a cloud file that isn't here, which keeps a thumbnail
+/// made before but doesn't get a new one.
+fn thumbnail(path: &Path, size: u32, scale: u32, dir: &Path, may_render: bool) -> Result<Option<String>, String> {
     let key = cache_key(path, size, scale)?;
     let png = dir.join(format!("{key}.png"));
     let none = dir.join(format!("{key}.{NO_THUMBNAIL}"));
@@ -52,6 +51,11 @@ fn thumbnail(path: &Path, size: u32, scale: u32, dir: &Path) -> Result<Option<St
         return Ok(Some(png.to_string_lossy().into_owned()));
     }
     if none.exists() {
+        return Ok(None);
+    }
+    // A cloud file that isn't here shows its icon. Not cached, so it gets a
+    // thumbnail once it's downloaded. Thumbnails made before are still shown (above)
+    if !may_render {
         return Ok(None);
     }
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -149,7 +153,7 @@ mod tests {
 
     #[test]
     fn missing_file_is_an_error() {
-        assert!(thumbnail(&fixtures().join("no-such-file.png"), 64, 2, &temp_dir()).is_err());
+        assert!(thumbnail(&fixtures().join("no-such-file.png"), 64, 2, &temp_dir(), true).is_err());
     }
 
     #[cfg(target_os = "macos")]
@@ -157,10 +161,10 @@ mod tests {
     fn renders_and_caches_an_image_thumbnail() {
         let dir = temp_dir();
         let file = fixtures().join("sample.png");
-        let first = thumbnail(&file, 64, 2, &dir).unwrap().expect("Quick Look thumbnails a PNG");
+        let first = thumbnail(&file, 64, 2, &dir, true).unwrap().expect("Quick Look thumbnails a PNG");
         assert!(std::fs::read(&first).unwrap().starts_with(b"\x89PNG"));
         // Second request is served from the cache
-        assert_eq!(thumbnail(&file, 64, 2, &dir).unwrap(), Some(first));
+        assert_eq!(thumbnail(&file, 64, 2, &dir, true).unwrap(), Some(first));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

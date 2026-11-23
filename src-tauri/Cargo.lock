@@ -934,6 +934,7 @@ dependencies = [
  "block2",
  "chrono",
  "kamadak-exif",
+ "libc",
  "mime_guess",
  "objc2",
  "objc2-app-kit",

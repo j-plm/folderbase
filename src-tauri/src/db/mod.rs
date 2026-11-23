@@ -149,6 +149,12 @@ pub async fn run_migrations(pool: &DbPool) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
+    // 1 for a file on a drive that streams from the cloud as it's read (pCloud Drive
+    // and other FUSE drives): its contents are never read unless asked for
+    let _ = sqlx::query("ALTER TABLE files ADD COLUMN streamed INTEGER NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
     // Folders left out of a location: never scanned, their files not indexed
     sqlx::query(
         r#"CREATE TABLE IF NOT EXISTS location_exclusions (

@@ -509,6 +509,18 @@ The flow:
    - **Moved and renamed files** keep their record, and so their custom metadata. They are recognised by a content fingerprint (size plus the first and last 64 KB) stored with each record. Records made before fingerprints existed match on size and modified time. Identical copies are paired by file name, or left as an addition and a removal when that is still ambiguous
    - **Deleted files** have their records removed
    - Unchanged files cost a single `stat`; only new and edited files are read
+   - **Cloud files are never downloaded by accident.** Indexing, thumbnails and the live preview only read files that are on this device; anything else is downloaded only when asked for (opening, Quick Look, copying, compressing, dragging out). Whether a file is here depends on the drive:
+
+     | Drive | How Folderbase knows | Providers |
+     |-------|---------------------|-----------|
+     | File Provider (macOS) / Cloud Files (Windows) | The OS marks each file that isn't downloaded | OneDrive, Google Drive, Dropbox, Box, iCloud Drive |
+     | pCloud Drive | pCloud's own record of its cache: a file is here when all of it is cached | pCloud |
+     | Other streamed drives (macFUSE, WebDAV) | It can't: every file is treated as not here, with *Downloads when opened* in the preview | rclone mounts, Mountain Duck, ExpanDrive… |
+     | Everything else | Always here | Internal disks, USB drives, network shares |
+
+     Files that aren't here are only `stat`ed: no fingerprint (moves are recognised by size and modified time), no EXIF, no new thumbnail (ones made before still show), no live preview on selection, and they show the cloud badge. Each refresh asks again, so a file downloaded since (opened, or kept offline) is read then. Streamed drives are recognised by their filesystem type (`pcloudfs`, `*fuse*`, `webdav`).
+     pCloud keeps its database (`~/.pcloud/data.db`) locked for itself, so Folderbase reads a copy (a clone, so instant), copied again when it changes and at most every 15 seconds. It's pCloud's internal format, not a published one: if it can't be read or changes shape, pCloud files fall back to *Downloads when opened*. A file pCloud has no record of (not uploaded yet, or in an encrypted Crypto folder) is treated the same way. Playing audio or video from pCloud caches only what's played, so a file played in part stays "not downloaded"
+     Windows detection of streamed drive letters (pCloud's P:, Google Drive's G:) comes with Windows parity
    - **Safeguards**: refresh refuses to run when the location's folder is missing or suddenly empty (an unmounted drive or stuck cloud mount looks like that), and never removes records under a subfolder it could not read
    - Mapped values are only filled in where a file has none, so a file moved to a differently mapped folder keeps its existing value
 
@@ -684,7 +696,7 @@ Navigating and organising never touch the disk. Changing a file itself is always
 - **macOS uses the system Quick Look panel** (`QLPreviewPanel`), so every type the OS can preview works, with its own controls (full screen, open in the default app, share, markup). With several files selected, the arrow keys step through them. With one selected, the arrow keys move the selection in the view and the panel follows, as in Finder. Space or Escape closes it. The panel zooms out of the file's icon and back into it
 - **Windows and Linux** have no system panel, so Folderbase opens its own preview window with the same keys: images, PDFs, video and audio (playable), text and code, and otherwise the file's icon with its Kind and size
 - **In the Database view**, Space previews when whole rows are selected. When a custom cell is selected Space starts typing in it, as it does now; ⌘Y previews from there
-- A cloud file that isn't downloaded is downloaded to preview it, with progress, as Finder does
+- A cloud file that isn't downloaded is downloaded to preview it, with progress, as Finder does. A file on a streamed drive (pCloud) is downloaded by the drive as Quick Look reads it, with no progress: nothing tells the OS a download is happening
 
 ### Editing Media Properties
 
