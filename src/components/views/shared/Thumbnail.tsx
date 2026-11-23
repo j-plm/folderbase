@@ -40,6 +40,7 @@ export default function Thumbnail({ path, mimeType, size }: { path: string; mime
           src={src}
           alt=""
           draggable={false}
+          data-icon-of={path}
           style={{ maxWidth: size, maxHeight: size }}
           className="object-contain shadow-sm"
           onError={() => setSrc(null)}

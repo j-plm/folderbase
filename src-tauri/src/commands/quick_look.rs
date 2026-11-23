@@ -7,6 +7,9 @@
 //!   moves its selection and sends the new file (`quick_look_update`), so the
 //!   panel follows the selection as Finder's does
 //! - Space closes it; the frontend hears `quick_look_closed` however it closes
+//! - It zooms out of the file's icon and back into it, as Finder's does: the
+//!   frontend sends where each file's icon is on the page (`frames`), turned
+//!   into screen positions when the panel asks
 //!
 //! Windows and Linux have no system panel; Folderbase's own preview window comes
 //! with Windows parity, and until then these commands say so.
@@ -59,53 +62,93 @@ pub fn start_index(index: usize, count: usize) -> usize {
     index.min(count.saturating_sub(1))
 }
 
+/// Where a file's icon is on the page (CSS pixels from the webview's top left),
+/// for the panel to zoom out of; None when it isn't showing.
+pub type IconFrame = Option<crate::commands::preview_view::PreviewRect>;
+
+/// What the panel shows: the files, where it starts, and where their icons are.
+pub struct Showing {
+    pub paths: Vec<String>,
+    pub index: usize,
+    /// One per path (missing ones count as not showing).
+    pub frames: Vec<IconFrame>,
+}
+
 /// Opens the panel on `paths` (absolute), at `index`; closes it instead when it's
 /// already showing exactly these files, so Space toggles. True when it's open afterwards.
+/// `frames`: where each file's icon is on the page, to zoom from.
 #[tauri::command]
-pub async fn quick_look(window: tauri::WebviewWindow, paths: Vec<String>, index: usize) -> Result<bool, String> {
+pub async fn quick_look(
+    window: tauri::WebviewWindow,
+    paths: Vec<String>,
+    index: usize,
+    frames: Option<Vec<IconFrame>>,
+) -> Result<bool, String> {
     if paths.is_empty() {
         return Ok(false);
     }
-    on_main(&window, move |app| platform::toggle(app, paths, index))
+    let showing = Showing { paths, index, frames: frames.unwrap_or_default() };
+    on_main(&window, move |app, webview| platform::toggle(app, webview, showing))
 }
 
 /// Shows `paths` in the panel if it's open (the selection moved). False when it's closed, and nothing opens.
 #[tauri::command]
-pub async fn quick_look_update(window: tauri::WebviewWindow, paths: Vec<String>, index: usize) -> Result<bool, String> {
+pub async fn quick_look_update(
+    window: tauri::WebviewWindow,
+    paths: Vec<String>,
+    index: usize,
+    frames: Option<Vec<IconFrame>>,
+) -> Result<bool, String> {
     if paths.is_empty() {
         return Ok(false);
     }
-    on_main(&window, move |app| platform::update(app, paths, index))
+    let showing = Showing { paths, index, frames: frames.unwrap_or_default() };
+    on_main(&window, move |app, webview| platform::update(app, webview, showing))
 }
 
 /// Closes the panel if it's open.
 #[tauri::command]
 pub async fn quick_look_close(window: tauri::WebviewWindow) -> Result<(), String> {
-    on_main(&window, |_| platform::close())
+    on_main(&window, |_, _| platform::close())
 }
 
-/// Runs `f` on the main thread (AppKit's panels live there) and waits for its result.
+/// Runs `f` on the main thread (AppKit's panels live there) with the window's
+/// webview (macOS: its WKWebView; elsewhere null), and waits for its result.
 fn on_main<T: Send + 'static>(
     window: &tauri::WebviewWindow,
-    f: impl FnOnce(tauri::AppHandle) -> Result<T, String> + Send + 'static,
+    f: impl FnOnce(tauri::AppHandle, *mut std::ffi::c_void) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     use tauri::Manager;
     let (tx, rx) = std::sync::mpsc::channel();
     let app = window.app_handle().clone();
-    window.run_on_main_thread(move || {
-        let _ = tx.send(f(app));
-    })
-    .map_err(|e| e.to_string())?;
+    #[cfg(target_os = "macos")]
+    window
+        .with_webview(move |webview| {
+            let _ = tx.send(f(app, webview.inner()));
+        })
+        .map_err(|e| e.to_string())?;
+    #[cfg(not(target_os = "macos"))]
+    window
+        .run_on_main_thread(move || {
+            let _ = tx.send(f(app, std::ptr::null_mut()));
+        })
+        .map_err(|e| e.to_string())?;
     rx.recv().map_err(|e| e.to_string())?
+}
+
+/// The frame of the icon of item `index`, for the zoom: None when it isn't showing.
+pub fn frame_for(frames: &[IconFrame], index: usize) -> IconFrame {
+    frames.get(index).copied().flatten().filter(|r| r.width > 0.0 && r.height > 0.0)
 }
 
 #[cfg(not(target_os = "macos"))]
 mod platform {
+    use super::Showing;
     const UNAVAILABLE: &str = "Preview isn't available on this platform yet";
-    pub fn toggle(_: tauri::AppHandle, _: Vec<String>, _: usize) -> Result<bool, String> {
+    pub fn toggle(_: tauri::AppHandle, _: *mut std::ffi::c_void, _: Showing) -> Result<bool, String> {
         Err(UNAVAILABLE.into())
     }
-    pub fn update(_: tauri::AppHandle, _: Vec<String>, _: usize) -> Result<bool, String> {
+    pub fn update(_: tauri::AppHandle, _: *mut std::ffi::c_void, _: Showing) -> Result<bool, String> {
         Ok(false)
     }
     pub fn close() -> Result<(), String> {
@@ -115,12 +158,13 @@ mod platform {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use super::{route_key, start_index, PanelKey, CLOSED_EVENT, KEY_EVENT};
+    use super::{frame_for, route_key, start_index, IconFrame, PanelKey, Showing, CLOSED_EVENT, KEY_EVENT};
+    use crate::commands::preview_view::view_frame;
     use objc2::rc::Retained;
-    use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
-    use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
-    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSWindowDelegate};
-    use objc2_foundation::{NSInteger, NSNotification, NSString, NSURL};
+    use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
+    use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
+    use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView, NSWindowDelegate, NSWorkspace};
+    use objc2_foundation::{NSInteger, NSNotification, NSPoint, NSRect, NSSize, NSString, NSURL};
     use objc2_quick_look_ui::{QLPreviewItem, QLPreviewPanel, QLPreviewPanelDataSource, QLPreviewPanelDelegate};
     use std::cell::RefCell;
     use tauri::Emitter;
@@ -128,6 +172,9 @@ mod platform {
     pub struct Ivars {
         paths: RefCell<Vec<String>>,
         urls: RefCell<Vec<Retained<NSURL>>>,
+        /// Where each file's icon is on the page, and the page's view, for the zoom.
+        frames: RefCell<Vec<IconFrame>>,
+        webview: RefCell<Option<Retained<NSView>>>,
         app: tauri::AppHandle,
     }
 
@@ -169,12 +216,35 @@ mod platform {
             fn handle_event(&self, panel: Option<&QLPreviewPanel>, event: Option<&NSEvent>) -> bool {
                 self.key_down(panel, event)
             }
+
+            // Where the panel zooms out of as it opens, and back into as it closes
+            #[unsafe(method(previewPanel:sourceFrameOnScreenForPreviewItem:))]
+            fn source_frame(&self, _panel: Option<&QLPreviewPanel>, item: Option<&ProtocolObject<dyn QLPreviewItem>>) -> NSRect {
+                self.index_of(item).and_then(|i| self.screen_frame(i)).unwrap_or(NSRect::ZERO)
+            }
+
+            // What it zooms: the file's icon, as Finder's does
+            #[unsafe(method_id(previewPanel:transitionImageForPreviewItem:contentRect:))]
+            fn transition_image(
+                &self,
+                _panel: Option<&QLPreviewPanel>,
+                item: Option<&ProtocolObject<dyn QLPreviewItem>>,
+                _content_rect: *mut NSRect,
+            ) -> Option<Retained<AnyObject>> {
+                self.icon(item)
+            }
         }
     );
 
     impl Source {
         fn new(mtm: MainThreadMarker, app: tauri::AppHandle) -> Retained<Self> {
-            let this = Self::alloc(mtm).set_ivars(Ivars { paths: RefCell::default(), urls: RefCell::default(), app });
+            let this = Self::alloc(mtm).set_ivars(Ivars {
+                paths: RefCell::default(),
+                urls: RefCell::default(),
+                frames: RefCell::default(),
+                webview: RefCell::default(),
+                app,
+            });
             unsafe { msg_send![super(this), init] }
         }
 
@@ -203,6 +273,41 @@ mod platform {
         fn set(&self, paths: Vec<String>) {
             *self.ivars().urls.borrow_mut() = paths.iter().map(|p| NSURL::fileURLWithPath(&NSString::from_str(p))).collect();
             *self.ivars().paths.borrow_mut() = paths;
+        }
+
+        /// The file's icon (by its type: nothing is read, so a cloud file isn't downloaded).
+        fn icon(&self, item: Option<&ProtocolObject<dyn QLPreviewItem>>) -> Option<Retained<AnyObject>> {
+            let i = self.index_of(item)?;
+            let path = self.ivars().paths.borrow().get(i)?.clone();
+            let icon = NSWorkspace::sharedWorkspace().iconForFile(&NSString::from_str(&path));
+            Some(Retained::into_super(Retained::into_super(icon)))
+        }
+
+        /// Which of the files `item` is (the panel hands back the URLs it was given).
+        fn index_of(&self, item: Option<&ProtocolObject<dyn QLPreviewItem>>) -> Option<usize> {
+            let item = item? as *const ProtocolObject<dyn QLPreviewItem> as *const NSURL;
+            self.ivars().urls.borrow().iter().position(|url| std::ptr::eq(Retained::as_ptr(url), item))
+        }
+
+        /// The icon of file `index` on screen (AppKit's screen coordinates), or None
+        /// when it isn't showing, so the panel fades instead.
+        fn screen_frame(&self, index: usize) -> Option<NSRect> {
+            let rect = frame_for(&self.ivars().frames.borrow(), index)?;
+            let webview = self.ivars().webview.borrow().clone()?;
+            let window = webview.window()?;
+            let (x, y, w, h) = view_frame(rect, webview.bounds().size.height, webview.isFlipped());
+            let in_window = webview.convertRect_toView(NSRect::new(NSPoint::new(x, y), NSSize::new(w, h)), None);
+            Some(window.convertRectToScreen(in_window))
+        }
+
+        /// Keeps where the icons are on the page, for the zoom.
+        fn set_frames(&self, webview: *mut std::ffi::c_void, frames: Vec<IconFrame>) {
+            *self.ivars().frames.borrow_mut() = frames;
+            if !webview.is_null() {
+                // SAFETY: Tauri hands back its WKWebView, an NSView, on the main thread
+                let view: &NSView = unsafe { &*(webview as *const NSView) };
+                *self.ivars().webview.borrow_mut() = Some(view.retain());
+            }
         }
     }
 
@@ -233,20 +338,22 @@ mod platform {
         }
     }
 
-    pub fn toggle(app: tauri::AppHandle, paths: Vec<String>, index: usize) -> Result<bool, String> {
+    pub fn toggle(app: tauri::AppHandle, webview: *mut std::ffi::c_void, showing: Showing) -> Result<bool, String> {
         let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
         let panel = panel(mtm)?;
         let source = source(mtm, app);
-        if panel.isVisible() && *source.ivars().paths.borrow() == paths {
+        // Taken before closing too, so it shrinks back into where the icon is now
+        source.set_frames(webview, showing.frames);
+        if panel.isVisible() && *source.ivars().paths.borrow() == showing.paths {
             panel.close();
             return Ok(false);
         }
-        show_files(&panel, &source, paths, index);
+        show_files(&panel, &source, showing.paths, showing.index);
         panel.makeKeyAndOrderFront(None);
         Ok(true)
     }
 
-    pub fn update(app: tauri::AppHandle, paths: Vec<String>, index: usize) -> Result<bool, String> {
+    pub fn update(app: tauri::AppHandle, webview: *mut std::ffi::c_void, showing: Showing) -> Result<bool, String> {
         let mtm = MainThreadMarker::new().ok_or("not on the main thread")?;
         if !unsafe { QLPreviewPanel::sharedPreviewPanelExists(mtm) } {
             return Ok(false);
@@ -256,8 +363,9 @@ mod platform {
             return Ok(false);
         }
         let source = source(mtm, app);
-        if *source.ivars().paths.borrow() != paths {
-            show_files(&panel, &source, paths, index);
+        source.set_frames(webview, showing.frames);
+        if *source.ivars().paths.borrow() != showing.paths {
+            show_files(&panel, &source, showing.paths, showing.index);
         }
         Ok(true)
     }
@@ -301,6 +409,18 @@ mod tests {
         assert_eq!(route_key(SPACE, true, 1), PanelKey::Panel);
         assert_eq!(route_key(DOWN, true, 1), PanelKey::Panel);
         assert_eq!(route_key(53, false, 1), PanelKey::Panel); // Escape
+    }
+
+    #[test]
+    fn zooms_only_from_icons_that_are_showing() {
+        use crate::commands::preview_view::PreviewRect;
+        let icon = PreviewRect { x: 10.0, y: 20.0, width: 16.0, height: 16.0 };
+        let collapsed = PreviewRect { width: 0.0, ..icon };
+        let frames = [Some(icon), None, Some(collapsed)];
+        assert_eq!(frame_for(&frames, 0), Some(icon));
+        assert_eq!(frame_for(&frames, 1), None); // scrolled away
+        assert_eq!(frame_for(&frames, 2), None); // no size
+        assert_eq!(frame_for(&frames, 7), None); // not sent
     }
 
     #[test]

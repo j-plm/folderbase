@@ -162,10 +162,11 @@ export function FileIcon({
   className = "",
 }: IconProps & { path: string; mimeType: string | null }) {
   const src = useNativeIcon(fileExtension(path), size);
+  // data-icon-of: where Quick Look zooms out of (lib/quickLook.ts)
   return src ? (
-    <img src={src} width={size} height={size} draggable={false} alt="" className={`shrink-0 ${className}`} />
+    <img src={src} width={size} height={size} draggable={false} alt="" data-icon-of={path} className={`shrink-0 ${className}`} />
   ) : (
-    <div style={{ width: size, height: size }} className={`shrink-0 ${className}`}>
+    <div style={{ width: size, height: size }} data-icon-of={path} className={`shrink-0 ${className}`}>
       {src === null && <FallbackFileIcon mimeType={mimeType} />}
     </div>
   );

@@ -630,6 +630,7 @@ function PreviewColumn({ node }: { node: BrowserNode }) {
                 src={convertFileSrc(file.file_path)}
                 alt=""
                 draggable={false}
+                data-icon-of={file.file_path}
                 style={{ maxWidth: fit, maxHeight: fit }}
                 className="object-contain shadow-sm"
               />

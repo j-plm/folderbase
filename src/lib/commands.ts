@@ -682,14 +682,20 @@ export async function cancelCompress(job: string): Promise<void> {
   return invoke<void>("cancel_compress", { job });
 }
 
-/** Quick Look: opens the system panel on `paths` at `index`, or closes it if it's showing them. True when open. */
-export async function quickLook(paths: string[], index: number): Promise<boolean> {
-  return invoke<boolean>("quick_look", { paths, index });
+/** Where a file's icon is on the page (CSS pixels from the top left), for Quick Look to zoom out of; null when it isn't showing. */
+export type IconFrame = { x: number; y: number; width: number; height: number } | null;
+
+/**
+ * Quick Look: opens the system panel on `paths` at `index`, or closes it if it's showing them. True when open.
+ * `frames`: where each file's icon is, one per path, so the panel zooms out of it and back in.
+ */
+export async function quickLook(paths: string[], index: number, frames: IconFrame[] = []): Promise<boolean> {
+  return invoke<boolean>("quick_look", { paths, index, frames });
 }
 
 /** Shows `paths` in the Quick Look panel if it's open (the selection moved). False when it's closed. */
-export async function quickLookUpdate(paths: string[], index: number): Promise<boolean> {
-  return invoke<boolean>("quick_look_update", { paths, index });
+export async function quickLookUpdate(paths: string[], index: number, frames: IconFrame[] = []): Promise<boolean> {
+  return invoke<boolean>("quick_look_update", { paths, index, frames });
 }
 
 /** App-wide settings (the Settings window). */
