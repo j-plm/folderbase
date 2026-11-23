@@ -4,6 +4,19 @@ use chrono::Utc;
 use tauri::State;
 use uuid::Uuid;
 
+/// Sent to every window when a location is added, removed, renamed, moved,
+/// reordered or has its folders changed, so the sidebar and Settings ▸ Locations
+/// stay in step whichever window made the change.
+pub const LOCATIONS_CHANGED: &str = "locations-changed";
+
+/// `result`, after telling every window the locations changed if it succeeded.
+pub fn notify_changed<T>(app: &tauri::AppHandle, result: Result<T, String>) -> Result<T, String> {
+    if result.is_ok() {
+        let _ = tauri::Emitter::emit(app, LOCATIONS_CHANGED, ());
+    }
+    result
+}
+
 #[tauri::command]
 pub async fn get_locations(db: State<'_, DbPool>) -> Result<Vec<Location>, String> {
     get_locations_impl(db.inner()).await
@@ -26,7 +39,18 @@ pub async fn add_location(
     name: String,
     excluded: Option<Vec<String>>,
     added_folder: Option<String>,
+    app: tauri::AppHandle,
     db: State<'_, DbPool>,
+) -> Result<Location, String> {
+    notify_changed(&app, add_location_impl(root_path, name, excluded, added_folder, db.inner()).await)
+}
+
+async fn add_location_impl(
+    root_path: String,
+    name: String,
+    excluded: Option<Vec<String>>,
+    added_folder: Option<String>,
+    pool: &DbPool,
 ) -> Result<Location, String> {
     let added_folder = crate::commands::import::added_folder_setting(added_folder.as_deref())?;
     let location_id = Uuid::new_v4().to_string();
@@ -44,17 +68,17 @@ pub async fn add_location(
     .bind(&library)
     .bind(&added_at)
     .bind(&added_folder)
-    .execute(db.inner())
+    .execute(pool)
     .await
     .map_err(|e| e.to_string())?;
-    crate::commands::properties::ensure_tags_property(db.inner(), &library).await?;
+    crate::commands::properties::ensure_tags_property(pool, &library).await?;
     for folder in excluded.unwrap_or_default() {
-        exclude_folder_impl(&location_id, &folder, db.inner()).await?;
+        exclude_folder_impl(&location_id, &folder, pool).await?;
     }
 
     sqlx::query_as::<_, Location>("SELECT * FROM locations WHERE location_id = ?")
         .bind(&location_id)
-        .fetch_one(db.inner())
+        .fetch_one(pool)
         .await
         .map_err(|e| e.to_string())
 }
@@ -62,8 +86,8 @@ pub async fn add_location(
 /// Renames a location. Only its display name changes: the library key (which
 /// its properties and rules belong to) and the folder on disk stay as they are.
 #[tauri::command]
-pub async fn rename_location(location_id: String, name: String, db: State<'_, DbPool>) -> Result<Location, String> {
-    rename_location_impl(&location_id, &name, db.inner()).await
+pub async fn rename_location(location_id: String, name: String, app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<Location, String> {
+    notify_changed(&app, rename_location_impl(&location_id, &name, db.inner()).await)
 }
 
 pub async fn rename_location_impl(location_id: &str, name: &str, pool: &DbPool) -> Result<Location, String> {
@@ -104,8 +128,8 @@ pub async fn location_available(location_id: String, db: State<'_, DbPool>) -> R
 /// enclosing folder renamed) and are missing are pointed at their new place too.
 /// Returns every location moved, this one first.
 #[tauri::command]
-pub async fn relocate_location(location_id: String, new_root: String, db: State<'_, DbPool>) -> Result<Vec<Location>, String> {
-    relocate_location_impl(&location_id, &new_root, db.inner()).await
+pub async fn relocate_location(location_id: String, new_root: String, app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<Vec<Location>, String> {
+    notify_changed(&app, relocate_location_impl(&location_id, &new_root, db.inner()).await)
 }
 
 pub async fn relocate_location_impl(location_id: &str, new_root: &str, pool: &DbPool) -> Result<Vec<Location>, String> {
@@ -191,8 +215,8 @@ pub fn moved_parent(old: &str, new: &str) -> (String, String) {
 
 /// Puts the locations in this order (the sidebar's, after a drag).
 #[tauri::command]
-pub async fn reorder_locations(location_ids: Vec<String>, db: State<'_, DbPool>) -> Result<(), String> {
-    reorder_locations_impl(&location_ids, db.inner()).await
+pub async fn reorder_locations(location_ids: Vec<String>, app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<(), String> {
+    notify_changed(&app, reorder_locations_impl(&location_ids, db.inner()).await)
 }
 
 pub async fn reorder_locations_impl(location_ids: &[String], pool: &DbPool) -> Result<(), String> {
@@ -211,31 +235,36 @@ pub async fn reorder_locations_impl(location_ids: &[String], pool: &DbPool) -> R
 #[tauri::command]
 pub async fn delete_location(
     location_id: String,
+    app: tauri::AppHandle,
     db: State<'_, DbPool>,
 ) -> Result<(), String> {
-    let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
+    notify_changed(&app, delete_location_impl(&location_id, db.inner()).await)
+}
+
+async fn delete_location_impl(location_id: &str, pool: &DbPool) -> Result<(), String> {
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM location_views WHERE location_id = ?")
-        .bind(&location_id)
+        .bind(location_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM location_exclusions WHERE location_id = ?")
-        .bind(&location_id)
+        .bind(location_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM path_mapping_nodes WHERE location_id = ?")
-        .bind(&location_id)
+        .bind(location_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM files WHERE location_id = ?")
-        .bind(&location_id)
+        .bind(location_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM locations WHERE location_id = ?")
-        .bind(&location_id)
+        .bind(location_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -260,8 +289,8 @@ async fn exclusion_rel(location_id: &str, folder_path: &str, pool: &DbPool) -> R
 /// records (with any properties set on them) are removed. Nothing on disk changes.
 /// Returns how many records were removed.
 #[tauri::command]
-pub async fn exclude_folder(location_id: String, folder_path: String, db: State<'_, DbPool>) -> Result<u64, String> {
-    exclude_folder_impl(&location_id, &folder_path, db.inner()).await
+pub async fn exclude_folder(location_id: String, folder_path: String, app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<u64, String> {
+    notify_changed(&app, exclude_folder_impl(&location_id, &folder_path, db.inner()).await)
 }
 
 pub async fn exclude_folder_impl(location_id: &str, folder_path: &str, pool: &DbPool) -> Result<u64, String> {
@@ -294,10 +323,31 @@ pub async fn exclude_folder_impl(location_id: &str, folder_path: &str, pool: &Db
     Ok(removed)
 }
 
+/// The location's excluded folders, as absolute paths (Settings ▸ Locations).
+#[tauri::command]
+pub async fn get_excluded_folders(location_id: String, db: State<'_, DbPool>) -> Result<Vec<String>, String> {
+    get_excluded_folders_impl(&location_id, db.inner()).await
+}
+
+pub async fn get_excluded_folders_impl(location_id: &str, pool: &DbPool) -> Result<Vec<String>, String> {
+    let root: String = sqlx::query_scalar("SELECT root_path FROM locations WHERE location_id = ?")
+        .bind(location_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let rels: Vec<String> = sqlx::query_scalar("SELECT folder_rel FROM location_exclusions WHERE location_id = ? ORDER BY folder_rel")
+        .bind(location_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let root = std::path::Path::new(&root);
+    Ok(rels.into_iter().map(|rel| root.join(rel).to_string_lossy().into_owned()).collect())
+}
+
 /// Puts an excluded folder back; its files are indexed on the next refresh.
 #[tauri::command]
-pub async fn include_folder(location_id: String, folder_path: String, db: State<'_, DbPool>) -> Result<(), String> {
-    include_folder_impl(&location_id, &folder_path, db.inner()).await
+pub async fn include_folder(location_id: String, folder_path: String, app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<(), String> {
+    notify_changed(&app, include_folder_impl(&location_id, &folder_path, db.inner()).await)
 }
 
 pub async fn include_folder_impl(location_id: &str, folder_path: &str, pool: &DbPool) -> Result<(), String> {
@@ -327,6 +377,7 @@ pub async fn list_subfolders(path: String) -> Result<Vec<Subfolder>, String> {
 }
 
 pub fn list_subfolders_impl(path: &std::path::Path) -> Result<Vec<Subfolder>, String> {
+    let show_hidden = crate::commands::ingest::show_hidden();
     let mut folders: Vec<Subfolder> = std::fs::read_dir(path)
         .map_err(|e| e.to_string())?
         .filter_map(|entry| entry.ok())
@@ -334,7 +385,7 @@ pub fn list_subfolders_impl(path: &std::path::Path) -> Result<Vec<Subfolder>, St
         .filter(|entry| entry.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
-            (!name.starts_with('.')).then(|| Subfolder {
+            (!crate::commands::ingest::skipped_name(&name, show_hidden)).then(|| Subfolder {
                 path: entry.path().to_string_lossy().into_owned(),
                 name,
             })

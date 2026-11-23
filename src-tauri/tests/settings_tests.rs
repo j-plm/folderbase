@@ -35,7 +35,7 @@ async fn an_existing_file_wins_over_the_old_table() {
     sqlx::query("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)").execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO app_settings VALUES ('zip_folder', '/old')").execute(&pool).await.unwrap();
     let dir = temp_dir();
-    save(&dir, &AppSettings { zip_folder: Some("/new".into()) }).unwrap();
+    save(&dir, &AppSettings { zip_folder: Some("/new".into()), ..AppSettings::default() }).unwrap();
 
     migrate_from_db(&pool, &dir).await.unwrap();
     assert_eq!(load(&dir).zip_folder.as_deref(), Some("/new"));

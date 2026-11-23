@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { folderName, zipFolder } from "./appSettings";
+import { DEFAULT_SETTINGS, folderName, zipFolder } from "./appSettings";
 
-const state = (zip_folder: string | null, downloads: string | null) => ({ settings: { zip_folder }, downloads, open: false });
+const state = (zip_folder: string | null, downloads: string | null) => ({ settings: { ...DEFAULT_SETTINGS, zip_folder }, downloads });
 
 describe("zipFolder", () => {
   it("is Downloads until a folder is chosen", () => {

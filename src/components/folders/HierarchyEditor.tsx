@@ -15,6 +15,7 @@ import {
   type LevelSlot,
   setEveryLevel,
   settingAcross,
+  levelDefaults,
 } from "../../lib/hierarchy";
 import { FOLDER_NATIVE_COLUMNS, defaultDirection, folderColumnLabel, noValuePlacement, seedFromGroups, viewFiles } from "../../lib/folderTree";
 import { showContextMenu, type MenuEntry } from "../../lib/nativeMenu";
@@ -25,6 +26,7 @@ import Dialog, { DialogButton, DialogField, dialogTextField } from "../shared/Di
 import HierarchyLevels, { LEVEL_GRID, SPRING_FLASH, isListed, type DragItem, type DropMark, type DropTarget } from "./HierarchyLevels";
 import PropertyPalette from "./PropertyPalette";
 import { useFolderSource } from "./useFolderSource";
+import { useAppSettings } from "../../hooks/useAppSettings";
 
 interface Props {
   locationId: string;
@@ -110,6 +112,9 @@ export default function HierarchyEditor({ locationId, files, definition, onChang
   // The view's own files: its filters, as the Database view applies them
   const shown = useMemo(() => viewFiles(files, table.filters, table.match, reader), [files, table.filters, table.match, reader]);
   const direction = (column: string) => defaultDirection(column, typeOf);
+  // A new level starts as Settings ▸ New Views says
+  const newViewSettings = useAppSettings().new_views;
+  const startsWith = useMemo(() => levelDefaults(newViewSettings), [newViewSettings]);
   const lastSlot = (r: FolderLevel | null): LevelSlot => ({ chain: [], index: chainAt(r, []).length });
 
   function drop(item: DragItem, target: DropTarget) {
@@ -117,8 +122,8 @@ export default function HierarchyEditor({ locationId, files, definition, onChang
     if (item.kind === "property") {
       onChange(
         target.kind === "slot"
-          ? insertLevel(current, target.slot, item.column, direction(item.column))
-          : forkAt(current, target.slot, target.value, item.column, direction(item.column))
+          ? insertLevel(current, target.slot, item.column, direction(item.column), startsWith)
+          : forkAt(current, target.slot, target.value, item.column, direction(item.column), startsWith)
       );
     } else {
       onChange(target.kind === "slot" ? moveLevel(current, item.slot, target.slot) : moveIntoFork(current, item.slot, target.slot, target.value));
@@ -204,7 +209,7 @@ export default function HierarchyEditor({ locationId, files, definition, onChang
         await reload();
       }
       const column = PROP_PREFIX + (existing ?? name);
-      onChange(insertLevel(rootRef.current, lastSlot(rootRef.current), column, direction(column)));
+      onChange(insertLevel(rootRef.current, lastSlot(rootRef.current), column, direction(column), startsWith));
     } catch (e) {
       setError(String(e));
     }
@@ -218,7 +223,7 @@ export default function HierarchyEditor({ locationId, files, definition, onChang
       type: "item",
       text: label,
       action: () => {
-        onChange(insertLevel(rootRef.current, addSlot(), column, direction(column)));
+        onChange(insertLevel(rootRef.current, addSlot(), column, direction(column), startsWith));
         setPicked(addSlot());
       },
     });
@@ -400,8 +405,8 @@ export default function HierarchyEditor({ locationId, files, definition, onChang
             typeOf={typeOf}
             scopes={scopes}
             onStartDrag={startDrag}
-            onAdd={(column) => onChange(insertLevel(root, lastSlot(root), column, direction(column)))}
-            onFork={(slot, value, column) => onChange(forkAt(root, slot, value, column, direction(column)))}
+            onAdd={(column) => onChange(insertLevel(root, lastSlot(root), column, direction(column), startsWith))}
+            onFork={(slot, value, column) => onChange(forkAt(root, slot, value, column, direction(column), startsWith))}
             onNewProperty={() => setNaming("")}
           />
         </div>

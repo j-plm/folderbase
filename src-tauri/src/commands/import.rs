@@ -560,8 +560,8 @@ pub async fn set_added_folder_impl(location_id: &str, folder: &str, move_files: 
 }
 
 #[tauri::command]
-pub async fn set_added_folder(location_id: String, folder: String, move_files: bool, db: State<'_, DbPool>) -> Result<Location, String> {
-    set_added_folder_impl(&location_id, &folder, move_files, db.inner()).await
+pub async fn set_added_folder(location_id: String, folder: String, move_files: bool, app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<Location, String> {
+    crate::commands::locations::notify_changed(&app, set_added_folder_impl(&location_id, &folder, move_files, db.inner()).await)
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { navigationReducer } from "./NavigationContext";
+import { modeFor, navigationReducer } from "./NavigationContext";
 
 const base = {
   activeLocationId: null,
@@ -88,5 +88,18 @@ describe("navigationReducer", () => {
     expect(navigationReducer(open, { type: "SET_VIEW_MODE", mode: "list" }).rulesOpen).toBe(false);
     expect(navigationReducer(open, { type: "SET_VIEW_MODE", mode: "database" }).rulesOpen).toBe(true);
     expect(navigationReducer(open, { type: "SET_LOCATION", locationId: "b" }).rulesOpen).toBe(false);
+  });
+});
+
+describe("view modes per location", () => {
+  it("opens a location in the mode it's given, else keeps the current one", () => {
+    expect(navigationReducer(base, { type: "SET_LOCATION", locationId: "a", mode: "columns" }).viewMode).toBe("columns");
+    expect(navigationReducer(base, { type: "SET_LOCATION", locationId: "a" }).viewMode).toBe("tiles");
+  });
+
+  it("uses the mode a location was left in, or Settings' choice the first time", () => {
+    expect(modeFor("a", { a: "list" }, "database")).toBe("list");
+    expect(modeFor("b", { a: "list" }, "database")).toBe("database");
+    expect(modeFor("b", {}, "columns")).toBe("columns");
   });
 });

@@ -1,7 +1,7 @@
 mod common;
 
 use common::setup_db;
-use folderbase_lib::commands::locations::{exclude_folder_impl, include_folder_impl};
+use folderbase_lib::commands::locations::{exclude_folder_impl, get_excluded_folders_impl, include_folder_impl};
 use folderbase_lib::commands::sync::{sync_location, SyncSummary};
 use folderbase_lib::db::DbPool;
 use std::path::{Path, PathBuf};
@@ -158,11 +158,13 @@ async fn excluded_folders_are_dropped_and_not_scanned_until_included() {
 
     assert_eq!(exclude_folder_impl(&loc, &archive, &pool).await.unwrap(), 2);
     assert_eq!(count(&pool, &loc).await, 1);
+    assert_eq!(get_excluded_folders_impl(&loc, &pool).await.unwrap(), vec![archive.clone()]);
     // A refresh leaves it out, rather than adding its files back
     assert_eq!(sync(&pool, &loc).await, SyncSummary::default());
     assert_eq!(count(&pool, &loc).await, 1);
 
     include_folder_impl(&loc, &archive, &pool).await.unwrap();
+    assert!(get_excluded_folders_impl(&loc, &pool).await.unwrap().is_empty());
     assert_eq!(sync(&pool, &loc).await, SyncSummary { added: 2, ..Default::default() });
     std::fs::remove_dir_all(&root).unwrap();
 }

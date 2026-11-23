@@ -2,28 +2,124 @@
 //! config folder beside Appearance's file. They're this person's preferences on
 //! this machine, so they live apart from the database: clearing or rebuilding the
 //! library never touches them, and the file can be read or reset by hand.
-//! Location and view settings live with those instead.
+//! Location settings live in the `locations` table; Appearance in its own file
+//! (`appearance.rs`), as the View menu owns it.
 //!
-//! - `zip_folder`: where Compress saves zips (absent: Downloads)
+//! Every change goes through `set_app_settings` (or `set_zip_folder`), which
+//! saves the file and tells every window (`app-settings-changed`), so the
+//! Settings window and the main window always show the same values.
 //!
 //! Settings were briefly kept in an `app_settings` table; `migrate_from_db`
 //! carries them into the file once and drops the table.
 
 use crate::db::DbPool;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 
 const FILE_NAME: &str = "settings.json";
+/// Sent to every window, with the settings as they now are.
+pub const CHANGED_EVENT: &str = "app-settings-changed";
+
+/// The view mode a location opens in the first time (afterwards, the one it was left in).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ViewMode {
+    #[default]
+    Database,
+    Tiles,
+    List,
+    Columns,
+}
+
+/// Which location shows when Folderbase opens.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnLaunch {
+    /// The location (and its view) open when Folderbase was last quit.
+    #[default]
+    Last,
+    /// The first location in the sidebar, at its Default view.
+    First,
+}
+
+/// When locations' folders are checked for being on disk.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MissingCheck {
+    /// Every 30 seconds, and when the window comes forward.
+    #[default]
+    Periodic,
+    /// Only when the window comes forward.
+    Focus,
+}
+
+/// Where a new Hierarchy level puts files with no value in it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NoValue {
+    /// In a "No …" folder (conditional properties still start loose).
+    #[default]
+    Folder,
+    /// Loose in the folder above.
+    Loose,
+}
+
+/// What a new view starts with (Settings ▸ New Views); existing views keep their own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NewViewDefaults {
+    pub group_by_hierarchy: bool,
+    pub non_empty_columns: bool,
+    pub wrap_multi_select: bool,
+    pub freeze_name: bool,
+    pub no_value: NoValue,
+    pub skip_single: bool,
+    pub show_all_values: bool,
+}
+
+impl Default for NewViewDefaults {
+    fn default() -> Self {
+        Self {
+            // As the table has always started: off until switched on in the Group popover
+            group_by_hierarchy: false,
+            non_empty_columns: true,
+            wrap_multi_select: true,
+            freeze_name: true,
+            no_value: NoValue::Folder,
+            skip_single: false,
+            show_all_values: false,
+        }
+    }
+}
 
 /// Every app-wide setting. Missing keys take their defaults, and a newer file's
 /// unknown keys are ignored, so the file can grow without breaking older builds.
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
     /// Where Compress saves zips; None: Downloads.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub zip_folder: Option<String>,
+    pub first_view_mode: ViewMode,
+    pub on_launch: OnLaunch,
+    /// Index and show files and folders whose names start with "." (.DS_Store never).
+    pub show_hidden_files: bool,
+    pub missing_check: MissingCheck,
+    pub new_views: NewViewDefaults,
+}
+
+impl Default for AppSettings {
+    fn default() -> Self {
+        Self {
+            zip_folder: None,
+            first_view_mode: ViewMode::default(),
+            on_launch: OnLaunch::default(),
+            show_hidden_files: false,
+            missing_check: MissingCheck::default(),
+            new_views: NewViewDefaults::default(),
+        }
+    }
 }
 
 /// The settings in `dir`: the defaults when there's no file or it can't be read.
@@ -56,6 +152,47 @@ pub fn set_zip_folder_impl(dir: &Path, folder: Option<&str>) -> Result<AppSettin
     let settings = AppSettings { zip_folder: folder.map(str::to_string), ..load(dir) };
     save(dir, &settings)?;
     Ok(settings)
+}
+
+/// Applies `patch` (an object of settings, nested for `new_views`) over the
+/// settings in `dir` and saves them. A key set to null goes back to its default,
+/// so Restore Defaults sends a pane's keys as null. A value of the wrong kind is
+/// refused and nothing is saved. `zip_folder` isn't changed here: it's checked
+/// by `set_zip_folder_impl`.
+pub fn update_impl(dir: &Path, patch: &Value) -> Result<AppSettings, String> {
+    let Value::Object(changes) = patch else { return Err("settings must be an object".into()) };
+    if changes.contains_key("zip_folder") {
+        return Err("zip_folder is set with set_zip_folder".into());
+    }
+    let mut current = serde_json::to_value(load(dir)).map_err(|e| e.to_string())?;
+    merge(&mut current, patch);
+    let settings: AppSettings = serde_json::from_value(current).map_err(|e| format!("not a setting: {e}"))?;
+    save(dir, &settings)?;
+    Ok(settings)
+}
+
+/// Every setting back to its default (Reset All Settings).
+pub fn reset_impl(dir: &Path) -> Result<AppSettings, String> {
+    let settings = AppSettings::default();
+    save(dir, &settings)?;
+    Ok(settings)
+}
+
+/// `patch` laid over `target`: objects merge key by key, null removes the key
+/// (so it takes its default when read back), anything else replaces.
+fn merge(target: &mut Value, patch: &Value) {
+    match (target, patch) {
+        (Value::Object(t), Value::Object(p)) => {
+            for (key, value) in p {
+                if value.is_null() {
+                    t.remove(key);
+                } else {
+                    merge(t.entry(key.clone()).or_insert(Value::Null), value);
+                }
+            }
+        }
+        (t, p) => *t = p.clone(),
+    }
 }
 
 /// The folder Compress saves into: the chosen one while it's there, else Downloads.
@@ -93,6 +230,76 @@ pub async fn settings_dir(app: &tauri::AppHandle, pool: &DbPool) -> Result<PathB
     Ok(dir)
 }
 
+/// Settings ▸ Advanced and Files: where the database is and how big, and how
+/// much the thumbnail cache takes.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct StorageInfo {
+    pub database_path: String,
+    /// The database with its write-ahead log.
+    pub database_bytes: u64,
+    pub thumbnail_bytes: u64,
+}
+
+/// The database file's size with its `-wal` and `-shm` companions.
+pub fn database_bytes(db: &Path) -> u64 {
+    ["", "-wal", "-shm"]
+        .iter()
+        .filter_map(|suffix| std::fs::metadata(format!("{}{suffix}", db.display())).ok())
+        .map(|m| m.len())
+        .sum()
+}
+
+/// Bytes in the files directly inside `dir` (the thumbnail cache is flat); 0 when it's not there.
+pub fn folder_bytes(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .map(|entries| entries.filter_map(Result::ok).filter_map(|e| e.metadata().ok()).filter(|m| m.is_file()).map(|m| m.len()).sum())
+        .unwrap_or(0)
+}
+
+/// Empties the thumbnail cache; thumbnails are made again as they're needed.
+pub fn clear_folder(dir: &Path) -> Result<(), String> {
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+fn thumbnail_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_cache_dir().map_err(|e| e.to_string())?.join("thumbnails"))
+}
+
+#[tauri::command]
+pub async fn get_storage_info(app: tauri::AppHandle) -> Result<StorageInfo, String> {
+    let db = app.path().app_data_dir().map_err(|e| e.to_string())?.join("folderbase.db");
+    let thumbnails = thumbnail_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || StorageInfo {
+        database_bytes: database_bytes(&db),
+        database_path: db.to_string_lossy().into_owned(),
+        thumbnail_bytes: folder_bytes(&thumbnails),
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_thumbnail_cache(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = thumbnail_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || clear_folder(&dir)).await.map_err(|e| e.to_string())?
+}
+
+/// Puts the settings that take effect in Rust in place (at launch, and after each change).
+pub fn apply(settings: &AppSettings) {
+    crate::commands::ingest::set_show_hidden(settings.show_hidden_files);
+}
+
+/// Tells every window the settings changed, after putting them in place.
+fn changed(app: &tauri::AppHandle, settings: AppSettings) -> AppSettings {
+    apply(&settings);
+    let _ = app.emit(CHANGED_EVENT, &settings);
+    settings
+}
+
 #[tauri::command]
 pub async fn get_app_settings(app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<AppSettings, String> {
     Ok(load(&settings_dir(&app, db.inner()).await?))
@@ -100,7 +307,24 @@ pub async fn get_app_settings(app: tauri::AppHandle, db: State<'_, DbPool>) -> R
 
 #[tauri::command]
 pub async fn set_zip_folder(folder: Option<String>, app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<AppSettings, String> {
-    set_zip_folder_impl(&settings_dir(&app, db.inner()).await?, folder.as_deref())
+    let settings = set_zip_folder_impl(&settings_dir(&app, db.inner()).await?, folder.as_deref())?;
+    Ok(changed(&app, settings))
+}
+
+/// Changes some settings (see `update_impl`); resolves to all of them as they now are.
+#[tauri::command]
+pub async fn set_app_settings(patch: Value, app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<AppSettings, String> {
+    let settings = update_impl(&settings_dir(&app, db.inner()).await?, &patch)?;
+    Ok(changed(&app, settings))
+}
+
+/// Reset All Settings: every setting here, and Appearance, back to its default.
+/// Locations and views are untouched.
+#[tauri::command]
+pub async fn reset_app_settings(app: tauri::AppHandle, db: State<'_, DbPool>) -> Result<AppSettings, String> {
+    let settings = reset_impl(&settings_dir(&app, db.inner()).await?)?;
+    crate::appearance::set(&app, crate::appearance::Appearance::DEFAULT)?;
+    Ok(changed(&app, settings))
 }
 
 #[cfg(test)]
@@ -122,7 +346,7 @@ mod tests {
     #[test]
     fn save_then_load_round_trips() {
         let dir = temp_dir();
-        let settings = AppSettings { zip_folder: Some("/Users/sam/Zips".into()) };
+        let settings = AppSettings { zip_folder: Some("/Users/sam/Zips".into()), show_hidden_files: true, ..AppSettings::default() };
         save(&dir, &settings).unwrap();
         assert_eq!(load(&dir), settings);
         assert!(!dir.join(".settings.json.tmp").exists());
@@ -175,5 +399,78 @@ mod tests {
         std::fs::remove_dir(&gone).unwrap();
         let downloads = Path::new("/nowhere/Downloads");
         assert_eq!(zip_folder(&dir, downloads), downloads);
+    }
+
+    #[test]
+    fn an_older_file_gets_the_new_settings_at_their_defaults() {
+        let dir = temp_dir();
+        std::fs::write(dir.join(FILE_NAME), r#"{"zip_folder": "/z"}"#).unwrap();
+        let settings = load(&dir);
+        assert_eq!(settings.zip_folder.as_deref(), Some("/z"));
+        assert_eq!(settings.first_view_mode, ViewMode::Database);
+        assert_eq!(settings.on_launch, OnLaunch::Last);
+        assert_eq!(settings.new_views, NewViewDefaults::default());
+    }
+
+    #[test]
+    fn a_patch_changes_only_what_it_names() {
+        let dir = temp_dir();
+        set_zip_folder_impl(&dir, Some(&dir.to_string_lossy())).unwrap();
+        let settings = update_impl(&dir, &serde_json::json!({ "first_view_mode": "columns", "new_views": { "freeze_name": false } })).unwrap();
+        assert_eq!(settings.first_view_mode, ViewMode::Columns);
+        assert!(!settings.new_views.freeze_name);
+        // Untouched: the rest of New Views, and the zip folder
+        assert!(settings.new_views.non_empty_columns);
+        assert_eq!(settings.zip_folder.as_deref(), Some(dir.to_string_lossy().as_ref()));
+        assert_eq!(load(&dir), settings);
+    }
+
+    #[test]
+    fn null_restores_a_default() {
+        let dir = temp_dir();
+        update_impl(&dir, &serde_json::json!({ "missing_check": "focus", "new_views": { "skip_single": true, "no_value": "loose" } })).unwrap();
+        let settings = update_impl(&dir, &serde_json::json!({ "missing_check": null, "new_views": { "skip_single": null } })).unwrap();
+        assert_eq!(settings.missing_check, MissingCheck::Periodic);
+        assert!(!settings.new_views.skip_single);
+        assert_eq!(settings.new_views.no_value, NoValue::Loose);
+    }
+
+    #[test]
+    fn a_wrong_value_is_refused_and_nothing_saved() {
+        let dir = temp_dir();
+        assert!(update_impl(&dir, &serde_json::json!({ "first_view_mode": "gallery" })).is_err());
+        assert!(update_impl(&dir, &serde_json::json!({ "show_hidden_files": "yes" })).is_err());
+        assert!(update_impl(&dir, &serde_json::json!(["not", "an", "object"])).is_err());
+        assert!(update_impl(&dir, &serde_json::json!({ "zip_folder": "/elsewhere" })).is_err());
+        assert!(!dir.join(FILE_NAME).exists());
+    }
+
+    #[test]
+    fn reset_puts_everything_back() {
+        let dir = temp_dir();
+        update_impl(&dir, &serde_json::json!({ "on_launch": "first", "show_hidden_files": true })).unwrap();
+        assert_eq!(reset_impl(&dir).unwrap(), AppSettings::default());
+        assert_eq!(load(&dir), AppSettings::default());
+    }
+
+    #[test]
+    fn sizes_add_up_the_database_and_its_log_and_the_cache() {
+        let dir = temp_dir();
+        let db = dir.join("folderbase.db");
+        std::fs::write(&db, vec![0u8; 100]).unwrap();
+        std::fs::write(dir.join("folderbase.db-wal"), vec![0u8; 20]).unwrap();
+        assert_eq!(database_bytes(&db), 120);
+        assert_eq!(database_bytes(&dir.join("nothing.db")), 0);
+
+        let cache = dir.join("thumbnails");
+        assert_eq!(folder_bytes(&cache), 0);
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("a.png"), vec![0u8; 7]).unwrap();
+        std::fs::write(cache.join("b.none"), b"").unwrap();
+        assert_eq!(folder_bytes(&cache), 7);
+        clear_folder(&cache).unwrap();
+        assert_eq!(folder_bytes(&cache), 0);
+        // Clearing what's already gone is fine
+        clear_folder(&cache).unwrap();
     }
 }

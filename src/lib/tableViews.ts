@@ -130,6 +130,23 @@ export function emptyTable(): TableDefinition {
   };
 }
 
+/**
+ * The table a new view starts with (Settings ▸ New Views). `multiSelect`: the
+ * location's Multi-select properties, which stay on one line when Wrap is off.
+ */
+export function newViewTable(
+  d: { group_by_hierarchy: boolean; non_empty_columns: boolean; wrap_multi_select: boolean; freeze_name: boolean },
+  multiSelect: string[] = []
+): TableDefinition {
+  return {
+    ...emptyTable(),
+    folderGroups: d.group_by_hierarchy,
+    nonEmptyColumns: d.non_empty_columns,
+    noWrap: d.wrap_multi_select ? [] : [...multiSelect],
+    frozen: d.freeze_name,
+  };
+}
+
 const strings = (v: unknown): string[] | undefined =>
   Array.isArray(v) && v.every((x) => typeof x === "string") ? (v as string[]) : undefined;
 const bool = (v: unknown): boolean | undefined => (typeof v === "boolean" ? v : undefined);
@@ -268,10 +285,10 @@ export function workingDefinition(view: StoredView): ViewDefinition {
 /**
  * The definition a location's default view starts from: the column settings
  * it had before views existed (kept per location in local storage), so
- * nobody's columns reset. `read` returns a stored value or undefined.
+ * nobody's columns reset. `read` returns a stored value or undefined;
+ * `base` gives the rest (a new location's: Settings ▸ New Views).
  */
-export function legacyTable(read: (key: string) => unknown): TableDefinition {
-  const base = emptyTable();
+export function legacyTable(read: (key: string) => unknown, base: TableDefinition = emptyTable()): TableDefinition {
   return {
     ...base,
     groups: list<GroupLevel>(read("col-group")) ?? base.groups,

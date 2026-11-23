@@ -3,7 +3,9 @@ import type React from "react";
 import { useNavigation } from "../../contexts/NavigationContext";
 import { listen } from "@tauri-apps/api/event";
 import {
+  LOCATIONS_CHANGED,
   getLocations,
+  getProperties,
   getLocationViews,
   clearDatabase,
   deleteLocation,
@@ -20,7 +22,8 @@ import RenameField from "../shared/RenameField";
 import { SymbolIcon } from "../../lib/fileIcons";
 import { showContextMenu } from "../../lib/nativeMenu";
 import { useOptionalLocationViews } from "../../contexts/LocationViewsContext";
-import { DEFAULT_VIEW_NAME, emptyFolders, emptyTable, uniqueViewName, type StoredView } from "../../lib/tableViews";
+import { DEFAULT_VIEW_NAME, emptyFolders, newViewTable, uniqueViewName, type StoredView } from "../../lib/tableViews";
+import { useAppSettings } from "../../hooks/useAppSettings";
 import { addLocationView } from "../views/db/useTableViews";
 import { locateLocationFolder } from "../../lib/fileActions";
 import { DefaultBadge } from "./ViewsButton";
@@ -35,7 +38,7 @@ const MAX_WIDTH = 400;
 const DEFAULT_WIDTH = 220;
 const WIDTH_KEY = "sidebar-width";
 const PANEL_MARGIN = 8;
-/** How often locations' folders are checked for being on disk. */
+/** How often locations' folders are checked for being on disk (Settings ▸ General: every 30 seconds). */
 const MISSING_CHECK_MS = 30_000;
 
 function loadWidth(): number {
@@ -46,6 +49,7 @@ function loadWidth(): number {
 export default function Sidebar() {
   const { activeLocationId, setActiveLocation, openDiskFolders, setViewMode } = useNavigation();
   const [width, setWidth] = useState(loadWidth);
+  const settings = useAppSettings();
   /** The selected location's saved views, listed under it. */
   const locationViews = useOptionalLocationViews();
   /** Its views are folded away; selecting a location shows its views again. */
@@ -160,7 +164,14 @@ export default function Sidebar() {
    * its name up for editing.
    */
   async function newView(loc: Location) {
-    const def = { table: emptyTable(), folders: emptyFolders() };
+    // As Settings ▸ New Views says; with Wrap off, the location's Multi-select properties stay on one line
+    const d = settings.new_views;
+    const multiSelect = d.wrap_multi_select
+      ? []
+      : await getProperties(loc.library)
+          .then((props) => props.filter((p) => p.value_type === "array").map((p) => p.name))
+          .catch(() => []);
+    const def = { table: newViewTable(d, multiSelect), folders: emptyFolders() };
     try {
       if (loc.location_id === activeLocationId && locationViews) {
         const name = uniqueViewName("New View", locationViews.views.map((v) => v.name));
@@ -231,14 +242,22 @@ export default function Sidebar() {
     }
   }
 
+  /** Whether the locations have been read yet (until then, an open location can't be checked against them). */
+  const [locationsLoaded, setLocationsLoaded] = useState(false);
   async function loadLocations() {
     try {
       const locs = await getLocations();
       setLocations(locs);
+      setLocationsLoaded(true);
     } catch {
       // ignore
     }
   }
+
+  // The open location was removed elsewhere (Settings ▸ Locations)
+  useEffect(() => {
+    if (locationsLoaded && activeLocationId && !locations.some((l) => l.location_id === activeLocationId)) setActiveLocation(null);
+  }, [locations, locationsLoaded, activeLocationId, setActiveLocation]);
 
   useEffect(() => {
     loadLocations();
@@ -255,14 +274,15 @@ export default function Sidebar() {
       setMissing((prev) => (next.length === prev.size && next.every((id) => prev.has(id)) ? prev : new Set(next)));
     }
     void check();
-    const timer = window.setInterval(() => void check(), MISSING_CHECK_MS);
+    // Settings ▸ General ▸ Check for missing folders: also every so often, or only on coming forward
+    const timer = settings.missing_check === "periodic" ? window.setInterval(() => void check(), MISSING_CHECK_MS) : undefined;
     window.addEventListener("focus", check);
     return () => {
       stale = true;
       window.clearInterval(timer);
       window.removeEventListener("focus", check);
     };
-  }, [locations]);
+  }, [locations, settings.missing_check]);
 
   // Counted again on leaving a location, whose views may have changed while it was open
   useEffect(() => {
@@ -289,7 +309,12 @@ export default function Sidebar() {
       loadLocations();
     }
     window.addEventListener("location-added", onLocationAdded);
-    return () => window.removeEventListener("location-added", onLocationAdded);
+    // A location changed in any window (Settings ▸ Locations among them)
+    const unlisten = listen(LOCATIONS_CHANGED, onLocationAdded);
+    return () => {
+      window.removeEventListener("location-added", onLocationAdded);
+      void unlisten.then((f) => f());
+    };
   }, []);
 
   // Drag to reorder: the locations, and the selected location's views (its default among them)

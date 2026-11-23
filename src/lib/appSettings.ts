@@ -1,22 +1,52 @@
 import { downloadDir } from "@tauri-apps/api/path";
-import { getAppSettings, pickDirectory, setZipFolder, type AppSettings } from "./commands";
+import { listen } from "@tauri-apps/api/event";
+import {
+  APP_SETTINGS_CHANGED,
+  getAppSettings,
+  pickDirectory,
+  setAppSettings,
+  setZipFolder,
+  type AppSettings,
+  type SettingsPatch,
+} from "./commands";
 
-// App-wide settings, as the Settings window and the rest of the app share them,
-// and whether that window is open (Folderbase ▸ Settings…, ⌘,).
+// App-wide settings, as every window shares them. The Settings window changes
+// them; Rust saves them and tells every window (APP_SETTINGS_CHANGED), so the
+// main window follows a change made in Settings at once, and the other way round.
+
+export const DEFAULT_SETTINGS: AppSettings = {
+  zip_folder: null,
+  first_view_mode: "database",
+  on_launch: "last",
+  show_hidden_files: false,
+  missing_check: "periodic",
+  new_views: {
+    group_by_hierarchy: false,
+    non_empty_columns: true,
+    wrap_multi_select: true,
+    freeze_name: true,
+    no_value: "folder",
+    skip_single: false,
+    show_all_values: false,
+  },
+};
 
 interface State {
   settings: AppSettings;
   /** The Downloads folder's path, for showing and starting pickers there. */
   downloads: string | null;
-  open: boolean;
+  /** Read from Rust yet (until then, the defaults). */
+  loaded: boolean;
 }
 
-let state: State = { settings: { zip_folder: null }, downloads: null, open: false };
+let state: State = { settings: DEFAULT_SETTINGS, downloads: null, loaded: false };
 const listeners = new Set<() => void>();
 const set = (change: Partial<State>) => {
   state = { ...state, ...change };
   listeners.forEach((l) => l());
 };
+
+let loading: Promise<void> | null = null;
 
 export const appSettings = {
   subscribe(listener: () => void) {
@@ -24,15 +54,23 @@ export const appSettings = {
     return () => void listeners.delete(listener);
   },
   snapshot: () => state,
-  async load() {
-    const [settings, downloads] = await Promise.all([getAppSettings().catch(() => state.settings), downloadDir().catch(() => null)]);
-    set({ settings, downloads });
+  /** Reads the settings (once; later changes arrive by event). */
+  load(): Promise<void> {
+    loading ??= (async () => {
+      void listen<AppSettings>(APP_SETTINGS_CHANGED, (e) => set({ settings: e.payload, loaded: true }));
+      const [settings, downloads] = await Promise.all([getAppSettings().catch(() => state.settings), downloadDir().catch(() => null)]);
+      set({ settings, downloads, loaded: true });
+    })();
+    return loading;
   },
-  setOpen: (open: boolean) => set({ open }),
+  /** Changes some settings; every window follows. */
+  async update(patch: SettingsPatch): Promise<void> {
+    set({ settings: await setAppSettings(patch) });
+  },
 };
 
 /** The folder zips go to now: the one chosen, else Downloads (null until known). */
-export function zipFolder(s: State = state): string | null {
+export function zipFolder(s: Pick<State, "settings" | "downloads"> = state): string | null {
   return s.settings.zip_folder ?? s.downloads;
 }
 

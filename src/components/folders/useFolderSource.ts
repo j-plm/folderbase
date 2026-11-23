@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getLocationProperties, getLocations, getProperties, getPropertyScopes, getPropertyValues } from "../../lib/commands";
+import { listen } from "@tauri-apps/api/event";
+import { LOCATIONS_CHANGED, getLocationProperties, getLocations, getProperties, getPropertyScopes, getPropertyValues } from "../../lib/commands";
 import { scopesByName } from "../../lib/scopes";
 import { HOLDING_FOLDER } from "../../lib/fileDrag";
 import type { Property, PropertyScope, ValueType } from "../../types";
@@ -44,10 +45,9 @@ export function useFolderSource(locationId: string | null) {
   }, [locationId]);
   useEffect(() => {
     reload().catch(() => {});
-    // A location's settings changed elsewhere (its Added Files folder)
-    const onChanged = () => void reload().catch(() => {});
-    window.addEventListener("location-changed", onChanged);
-    return () => window.removeEventListener("location-changed", onChanged);
+    // A location's settings changed, in this window or Settings (its name, its Added Files folder)
+    const unlisten = listen(LOCATIONS_CHANGED, () => void reload().catch(() => {}));
+    return () => void unlisten.then((f) => f());
   }, [reload]);
 
   /** Library-scoped properties win over global ones of the same name. */

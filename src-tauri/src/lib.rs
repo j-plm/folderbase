@@ -3,6 +3,7 @@ pub mod commands;
 pub mod db;
 pub mod edit_menu;
 pub mod models;
+pub mod settings_window;
 
 use db::run_migrations;
 use tauri::Manager;
@@ -26,7 +27,12 @@ pub fn run() {
 
             tauri::async_runtime::block_on(run_migrations(&pool))?;
 
+            // Settings that take effect in Rust (Show hidden files), before anything is indexed
+            if let Ok(dir) = app.path().app_config_dir() {
+                commands::settings::apply(&commands::settings::load(&dir));
+            }
             app.manage(pool);
+            app.manage(settings_window::PendingPane::default());
             appearance::setup(app)?;
             // macOS routes Cmd-Z through the menu bar; elsewhere the frontend's shortcuts handle it
             #[cfg(target_os = "macos")]
@@ -51,6 +57,14 @@ pub fn run() {
             commands::compress::cancel_compress,
             commands::settings::get_app_settings,
             commands::settings::set_zip_folder,
+            commands::settings::set_app_settings,
+            commands::settings::reset_app_settings,
+            commands::settings::get_storage_info,
+            commands::settings::clear_thumbnail_cache,
+            appearance::get_appearance,
+            appearance::set_appearance,
+            settings_window::open_settings,
+            settings_window::settings_initial_pane,
             commands::feedback::haptic_feedback,
             commands::files::get_libraries,
             commands::icons::get_native_icon,
@@ -126,6 +140,7 @@ pub fn run() {
             commands::path_mapping::count_mapping_conflicts,
             commands::locations::exclude_folder,
             commands::locations::include_folder,
+            commands::locations::get_excluded_folders,
             commands::locations::list_subfolders,
             commands::metadata::rename_property_value,
             commands::path_mapping::move_property_value,

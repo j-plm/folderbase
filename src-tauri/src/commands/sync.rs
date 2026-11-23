@@ -15,7 +15,7 @@
 //! refresh once they've been downloaded.
 
 use crate::commands::cloud::{streamed_drive, CloudState, DriveCheck};
-use crate::commands::ingest::{bootstrap_properties, extract_file_data, extracted_keys, folder_tags, not_hidden, online_only};
+use crate::commands::ingest::{bootstrap_properties, extract_file_data, extracted_keys, folder_tags, online_only, show_hidden, skipped_name};
 use crate::db::DbPool;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -162,8 +162,10 @@ fn scan_tree(
                 .map(|p| excluded.contains(&p.to_string_lossy().replace('\\', "/")))
                 .unwrap_or(false)
     };
+    // Read once, so one refresh never mixes the two
+    let show_hidden = show_hidden();
     let walker = WalkDir::new(root).follow_links(false).into_iter();
-    for entry in walker.filter_entry(|e| not_hidden(e) && !is_excluded(e)) {
+    for entry in walker.filter_entry(|e| !skipped_name(&e.file_name().to_string_lossy(), show_hidden) && !is_excluded(e)) {
         if last_report.elapsed() >= LISTING_REPORT_EVERY {
             if stop_requested(location_id) {
                 return Err(STOPPED.into());

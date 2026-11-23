@@ -1244,15 +1244,22 @@ Accessed from the icon rail (dedicated entry point at the bottom). Opens as a fu
 
 ### Settings
 
-**Settings** gathers every choice that isn't part of a view into one window, as a native app's settings do: Folderbase ▸ Settings… (⌘,) on macOS, opening the platform's settings window (a toolbar of panes on macOS; a Fluent page with its sections down the left on Windows, Ctrl+,). Built so far: Settings… opens a sheet over the main window holding *Save zips in*; it becomes its own window as the panes below arrive.
+**Settings** gathers every choice that isn't part of a view into one window, as a native app's settings do: Folderbase ▸ Settings… (⌘,) on macOS, opening the platform's settings window (a toolbar of panes on macOS; a Fluent page with its sections down the left on Windows, Ctrl+,). Built: its own window (`settings_window.rs`, the same frontend rendering `components/settings/` when the window's label is `settings`), sized to each pane, with General, Locations, New Views, Files and Advanced. Duplicates and Sharing join as those features arrive, since their settings have nothing to act on yet. A change in either window shows at once in the other (`app-settings-changed`, `appearance-changed`, `locations-changed`).
 
 #### Principles
 
+- **Every feature is checked against Settings as it's specced and as it's built.** Whoever adds or changes a feature decides what it means here, and records it in the pane tables below:
+  - **A choice the feature makes** (a fixed value, a default, a "Don't ask again", a behaviour some people would want otherwise) becomes a row in the right pane, by its scope: *planned* while the feature is specced, *hardcoded* if it's built with a fixed value for now, *exists* once it can be changed. A value that belongs to a view, or is arrangement, stays out (see below)
+  - **A feature that changes how an existing setting works** updates that row, its choices and its note
+  - **A feature with no settings** needs nothing here; saying so when it's built is enough
+  - **A feature a pane waits for** (Duplicates, Sharing) brings its pane into the window when it's built, with its *planned* rows built as part of it, not left for later
+  - **Removing a feature** removes its rows
+  - **A new setting** gets a default in `AppSettings` (so older `settings.json` files still read), is reset by its pane's Restore Defaults (General lists its keys by hand) and by Reset All Settings, and if it changes files or takes a while, asks first
 - **Settings is the complete list, not the only place.** Each setting can also be changed where it's used (Added Files Folder… on a location, View ▸ Appearance, the Duplicates preset's Keep order), and both show the same value. Nothing needed in the middle of a task is only in Settings
 - **Arrangement isn't a setting.** Widths, sort, grouping, collapsed groups, which property columns show and where you are are kept as you leave them and never listed here. Neither is anything a view holds (its filters, Hierarchy and per-view switches): that belongs to the view
 - **Every setting has a scope**, shown by the pane it's in: **Folderbase** (this person on this machine), a **Location**, or **New Views** (the defaults a new view starts with). In a [shared location](#working-together-shared-locations) a location's settings are shared with everyone using it, and the pane says so; Folderbase settings never are
 - **Changes apply at once**, with no OK or Apply button, as in macOS Settings. A setting that changes files or takes a while (moving the Added Files folder, Rebuild Index) asks first, as its command does elsewhere
-- **Restore Defaults** at the foot of each pane resets that pane only. **Reset Warnings** brings back every "Don't ask again" sheet
+- **Restore Defaults** at the foot of each pane resets that pane only (Locations and Advanced have none). **Reset Warnings** brings back every "Don't ask again" sheet (planned: none exist yet)
 - **Stored**, as desktop apps conventionally keep preferences apart from their data: Folderbase settings and New View defaults in `settings.json` in the app's config folder (`commands/settings.rs`), beside Appearance's file, so clearing or rebuilding the library never touches them and the file can be read or reset by hand. Unknown keys are ignored, so the file can grow. Location settings stay in the `locations` table
 
 #### Panes
@@ -1263,12 +1270,12 @@ Status: **exists** (built, to be listed here), **hardcoded** (built with a fixed
 
 | Setting | Choices (default first) | Status |
 |---------|------------------------|--------|
-| Appearance | Light / Dark / Use System Setting. Also View ▸ Appearance | exists (default to become Use System Setting) |
-| View mode for a location opened for the first time | Database / Icons / List / Columns / Gallery | hardcoded |
-| On launch, open | The last location and view / The first location | hardcoded (last) |
-| Show hidden files | Off / On (files starting with "."; never indexed today) | hardcoded |
+| Appearance | Use System Setting / Light / Dark. Also View ▸ Appearance | exists |
+| View mode for a location opened for the first time | Database / Icons / List / Columns / Gallery (afterwards, each location opens in the mode it was left in) | exists (Gallery when built) |
+| On launch, open | The last location and view / The first location | exists |
+| Show hidden files | Off / On (files starting with "."; indexed while on, `.DS_Store` never). Asks first, then refreshes every location | exists |
 | Show file extensions | Always / As Finder does (follows the Finder setting) | planned |
-| Check for missing location folders | Every 30 seconds and when the window comes forward / Only when the window comes forward | hardcoded |
+| Check for missing location folders | Every 30 seconds and when the window comes forward / Only when the window comes forward | exists |
 | Confirmations | Reset Warnings | planned |
 
 **Locations** — the locations listed down the left, as in the sidebar; picking one shows its settings
@@ -1291,20 +1298,20 @@ Status: **exists** (built, to be listed here), **hardcoded** (built with a fixed
 
 | Setting | Choices (default first) | Status |
 |---------|------------------------|--------|
-| Group by Hierarchy | On / Off | exists as a per-view switch |
-| Show Non-Empty Custom Properties | On / Off | exists as a per-view switch |
-| Wrap Multi-select values | On / Off | exists as a per-property switch |
-| Freeze Name | On / Off | exists as a per-view switch |
-| Files without a value | In a “No …” folder / Loose in the folder above (conditional properties always start loose) | exists as a per-level setting |
-| Skip Single Folders | Off / On | exists as a per-level setting |
-| Show All Values | Off / On | exists as a per-level setting |
+| Group by Hierarchy | Off / On (as the table has always started) | exists |
+| Show Non-Empty Custom Properties | On / Off | exists |
+| Wrap Multi-select values | On / Off (off: the location's Multi-select properties start on one line) | exists |
+| Freeze Name | On / Off | exists |
+| Files without a value | In a “No …” folder / Loose in the folder above (conditional properties always start loose). For each new level | exists |
+| Skip Single Folders | Off / On. For each new level | exists |
+| Show All Values | Off / On. For each new level | exists |
 
 **Files**
 
 | Setting | Choices (default first) | Status |
 |---------|------------------------|--------|
 | Show previews | Thumbnails / File icons only | planned (thumbnails always today) |
-| Thumbnail cache | Its size, with Clear Cache | planned |
+| Thumbnail cache | Its size, with Clear Cache | exists |
 | Preview cloud files | Only once downloaded / Download when selected (the live preview in Columns, the Preview pane and Gallery) | planned |
 | Editing media properties: ask before writing into files | On / Off (also "Don't ask again" in the sheet) | planned |
 | Editing media properties: Modified date | Update it (sync tools see the change) / Keep it as it was | planned |
@@ -1338,11 +1345,11 @@ Which locations are shared is set per location, in Locations.
 
 | Setting | Choices | Status |
 |---------|---------|--------|
-| Database | Its path and size, with Show in Finder | planned |
+| Database | Its path and size, with Show in Finder | exists |
 | Back up the database | Daily, keeping the last 7 / Weekly / Never; Back Up Now; to a chosen folder (the app data folder by default) | planned |
 | Restore from Backup… | Picks a backup; asks first | planned |
-| Rebuild Index | Re-reads every location's files; custom values are kept. Asks first | planned |
-| Reset All Settings | Folderbase settings and New View defaults back to their defaults; locations and views untouched. Asks first | planned |
+| Rebuild Index | Re-reads every location's files; custom values are kept. Asks first | exists |
+| Reset All Settings | Folderbase settings and New View defaults back to their defaults; locations and views untouched. Asks first | exists |
 
 ### Multiple Windows
 

@@ -1,7 +1,9 @@
 import { createContext, useCallback, useContext, useMemo, useRef, type ReactNode } from "react";
 import { useTableViews, type TableViews } from "../components/views/db/useTableViews";
+import { appSettings } from "../lib/appSettings";
 import {
   legacyTable,
+  newViewTable,
   workingDefinition,
   type FolderDefinition,
   type TableDefinition,
@@ -50,7 +52,11 @@ export function LocationViewsProvider({ locationId, children }: { locationId: st
     else console.error(message);
   }, []);
   // The default view starts from the column settings kept before views existed
-  const initial = useCallback(() => ({ table: legacyTable((key) => loadJson(`${key}-${locationId}`)) }), [locationId]);
+  // (a new location's: as Settings ▸ New Views says)
+  const initial = useCallback(
+    () => ({ table: legacyTable((key) => loadJson(`${key}-${locationId}`), newViewTable(appSettings.snapshot().settings.new_views)) }),
+    [locationId]
+  );
   const views = useTableViews(locationId, apply, initial, onError);
   const { record, current, active } = views;
 

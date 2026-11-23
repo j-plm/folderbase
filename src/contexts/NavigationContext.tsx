@@ -9,6 +9,35 @@ import {
 import type { NavigationState, ViewMode } from "../types/navigation";
 import type { View, ViewNode } from "../types";
 import { getViews, getViewNodes } from "../lib/commands";
+import { appSettings } from "../lib/appSettings";
+
+/** Each location's view mode as it was left, so it opens that way again. */
+const MODES_KEY = "location-view-modes";
+/** The location open last, for Settings ▸ General ▸ On launch. */
+export const LAST_LOCATION_KEY = "last-location";
+
+function savedModes(): Record<string, ViewMode> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(MODES_KEY) ?? "{}");
+    return saved && typeof saved === "object" ? saved : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The mode a location opens in: as it was left, or Settings' choice for one never opened. */
+export function modeFor(locationId: string, saved: Record<string, ViewMode>, first: ViewMode): ViewMode {
+  return saved[locationId] ?? first;
+}
+
+function rememberMode(locationId: string | null, mode: ViewMode) {
+  if (!locationId) return;
+  try {
+    localStorage.setItem(MODES_KEY, JSON.stringify({ ...savedModes(), [locationId]: mode }));
+  } catch {
+    // Only a convenience
+  }
+}
 
 interface State {
   activeLocationId: string | null;
@@ -24,7 +53,8 @@ interface State {
 }
 
 export type NavAction =
-  | { type: "SET_LOCATION"; locationId: string | null }
+  /** `mode`: the view mode it opens in (the one it was left in, or Settings' choice the first time). */
+  | { type: "SET_LOCATION"; locationId: string | null; mode?: ViewMode }
   | { type: "SET_VIEW"; viewId: string }
   | { type: "NAVIGATE_TO"; path: string[] }
   | { type: "PUSH_SEGMENT"; segment: string }
@@ -57,7 +87,15 @@ const initialState: State = {
 export function navigationReducer(state: State, action: NavAction): State {
   switch (action.type) {
     case "SET_LOCATION":
-      return { ...state, activeLocationId: action.locationId, activeViewId: null, path: [], diskFoldersLocationId: null, rulesOpen: false };
+      return {
+        ...state,
+        activeLocationId: action.locationId,
+        activeViewId: null,
+        path: [],
+        diskFoldersLocationId: null,
+        rulesOpen: false,
+        viewMode: action.mode ?? state.viewMode,
+      };
     case "SET_VIEW":
       return { ...state, activeViewId: action.viewId, path: [], editHierarchy: false };
     case "NAVIGATE_TO":
@@ -99,6 +137,16 @@ export const NavigationContext = createContext<NavigationState | null>(null);
 export function NavigationProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(navigationReducer, initialState);
 
+  // Remembered for On launch: the last location and view
+  useEffect(() => {
+    if (!state.activeLocationId) return;
+    try {
+      localStorage.setItem(LAST_LOCATION_KEY, state.activeLocationId);
+    } catch {
+      // Only a convenience
+    }
+  }, [state.activeLocationId]);
+
   // Load views on mount (kept dormant — views system is hidden from UI)
   useEffect(() => {
     getViews()
@@ -137,8 +185,16 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
     navigateTo: (path) => dispatch({ type: "NAVIGATE_TO", path }),
     pushSegment: (segment) => dispatch({ type: "PUSH_SEGMENT", segment }),
     popToIndex: (index) => dispatch({ type: "POP_TO_INDEX", index }),
-    setViewMode: (mode) => dispatch({ type: "SET_VIEW_MODE", mode }),
-    setActiveLocation: (locationId) => dispatch({ type: "SET_LOCATION", locationId }),
+    setViewMode: (mode) => {
+      rememberMode(state.activeLocationId, mode);
+      dispatch({ type: "SET_VIEW_MODE", mode });
+    },
+    setActiveLocation: (locationId) =>
+      dispatch({
+        type: "SET_LOCATION",
+        locationId,
+        mode: locationId ? modeFor(locationId, savedModes(), appSettings.snapshot().settings.first_view_mode) : undefined,
+      }),
     setActiveView: (viewId) => dispatch({ type: "SET_VIEW", viewId }),
     setEditHierarchy: (v) => dispatch({ type: "SET_EDIT_HIERARCHY", value: v }),
     openMasterEditor: () => dispatch({ type: "SET_MASTER_EDITOR", open: true }),

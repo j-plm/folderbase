@@ -3,7 +3,8 @@ import { compressJobs, type CompressJob } from "../../lib/compressActions";
 import { FileIcon, SymbolIcon } from "../../lib/fileIcons";
 import { showContextMenu, type MenuEntry } from "../../lib/nativeMenu";
 import { labels } from "../../lib/platform";
-import { appSettings, folderName } from "../../lib/appSettings";
+import { folderName } from "../../lib/appSettings";
+import { openSettings } from "../../lib/commands";
 import ActivityNotices from "./ActivityNotices";
 import { NOTICE_CLASS, PushButton } from "./Notice";
 
@@ -32,7 +33,7 @@ export default function CompressNotices() {
 function folderEntries(job: CompressJob): MenuEntry[] {
   return [
     { type: "item", text: "Change Default Folder…", action: () => void compressJobs.changeFolder(job.id) },
-    { type: "item", text: "Settings…", action: () => appSettings.setOpen(true) },
+    { type: "item", text: "Settings…", action: () => void openSettings("files") },
   ];
 }
 

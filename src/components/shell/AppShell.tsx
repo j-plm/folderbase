@@ -4,15 +4,18 @@ import Sidebar from "./Sidebar";
 import Toolbar from "./Toolbar";
 import MainPane from "./MainPane";
 import CompressNotices from "./CompressNotices";
-import SettingsWindow from "./SettingsWindow";
 import MasterViewEditor from "../editor/MasterViewEditor";
 import { ArrangementProvider } from "../../contexts/ArrangementContext";
 import { LocationViewsProvider } from "../../contexts/LocationViewsContext";
 import { BrowseProvider } from "../../contexts/BrowseContext";
 import { ActivityProvider } from "../../contexts/ActivityContext";
+import { useLaunchLocation } from "../../hooks/useLaunchLocation";
+import { useSettingsBridge } from "../../hooks/useSettingsBridge";
 
 export default function AppShell() {
   const { masterEditorOpen, activeLocationId } = useNavigation();
+  useLaunchLocation();
+  useSettingsBridge();
 
   const shell = (
     <div className="relative flex h-screen bg-neutral-900 text-neutral-100">
@@ -26,7 +29,6 @@ export default function AppShell() {
       </div>
       {masterEditorOpen && <MasterViewEditor />}
       <CompressNotices />
-      <SettingsWindow />
     </div>
   );
 

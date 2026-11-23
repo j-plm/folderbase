@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capability for Folderbase main window","local":true,"windows":["main"],"permissions":["core:default","core:window:allow-start-dragging","dialog:default","fs:default"]}}
+{"default":{"identifier":"default","description":"Default capability for Folderbase's windows: the main window and Settings","local":true,"windows":["main","settings"],"permissions":["core:default","core:window:allow-start-dragging","dialog:default","fs:default","core:window:allow-set-size","core:window:allow-set-title","core:window:allow-set-focus"]}}

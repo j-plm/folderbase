@@ -703,11 +703,41 @@ export async function quickLookUpdate(paths: string[], index: number, frames: Ic
   return invoke<boolean>("quick_look_update", { paths, index, frames });
 }
 
-/** App-wide settings (the Settings window). */
+/** The view mode a location opens in the first time (Settings ▸ General). */
+export type FirstViewMode = "database" | "tiles" | "list" | "columns";
+
+/** What a new view starts with (Settings ▸ New Views); existing views keep their own. */
+export interface NewViewDefaults {
+  group_by_hierarchy: boolean;
+  non_empty_columns: boolean;
+  wrap_multi_select: boolean;
+  freeze_name: boolean;
+  /** Where a new Hierarchy level puts files with no value: a "No …" folder, or loose. */
+  no_value: "folder" | "loose";
+  skip_single: boolean;
+  show_all_values: boolean;
+}
+
+/** App-wide settings (the Settings window), kept in settings.json (commands/settings.rs). */
 export interface AppSettings {
   /** Where Compress saves zips; null: Downloads. */
   zip_folder: string | null;
+  first_view_mode: FirstViewMode;
+  /** On launch, open the last location and view, or the first location. */
+  on_launch: "last" | "first";
+  show_hidden_files: boolean;
+  /** Check for missing location folders every 30 seconds and on coming forward, or only on coming forward. */
+  missing_check: "periodic" | "focus";
+  new_views: NewViewDefaults;
 }
+
+/** A change to some settings: null puts a setting back to its default. */
+export type SettingsPatch = {
+  [K in Exclude<keyof AppSettings, "zip_folder" | "new_views">]?: AppSettings[K] | null;
+} & { new_views?: { [K in keyof NewViewDefaults]?: NewViewDefaults[K] | null } };
+
+/** Sent to every window when a setting changes, with them all as they now are. */
+export const APP_SETTINGS_CHANGED = "app-settings-changed";
 
 export async function getAppSettings(): Promise<AppSettings> {
   return invoke<AppSettings>("get_app_settings");
@@ -716,6 +746,65 @@ export async function getAppSettings(): Promise<AppSettings> {
 /** Sets where Compress saves zips: a folder, or null for Downloads. Resolves to the settings as they now are. */
 export async function setZipFolder(folder: string | null): Promise<AppSettings> {
   return invoke<AppSettings>("set_zip_folder", { folder });
+}
+
+/** Changes some settings (every window is told). Resolves to the settings as they now are. */
+export async function setAppSettings(patch: SettingsPatch): Promise<AppSettings> {
+  return invoke<AppSettings>("set_app_settings", { patch });
+}
+
+/** Reset All Settings: every setting and Appearance back to its default. Locations and views are untouched. */
+export async function resetAppSettings(): Promise<AppSettings> {
+  return invoke<AppSettings>("reset_app_settings");
+}
+
+export type Appearance = "system" | "light" | "dark";
+/** Sent to every window when the appearance changes (View ▸ Appearance or Settings). */
+export const APPEARANCE_CHANGED = "appearance-changed";
+
+export async function getAppearance(): Promise<Appearance> {
+  return invoke<Appearance>("get_appearance");
+}
+
+export async function setAppearance(appearance: Appearance): Promise<void> {
+  return invoke<void>("set_appearance", { appearance });
+}
+
+/** Where the database is and how big, and how much the thumbnail cache takes. */
+export interface StorageInfo {
+  database_path: string;
+  database_bytes: number;
+  thumbnail_bytes: number;
+}
+
+export async function getStorageInfo(): Promise<StorageInfo> {
+  return invoke<StorageInfo>("get_storage_info");
+}
+
+/** Empties the thumbnail cache; thumbnails are made again as they're needed. */
+export async function clearThumbnailCache(): Promise<void> {
+  return invoke<void>("clear_thumbnail_cache");
+}
+
+/** A pane of the Settings window. */
+export type SettingsPane = "general" | "locations" | "new-views" | "files" | "advanced";
+
+/** Opens the Settings window, or brings it forward, on `pane` (else the last one shown). */
+export async function openSettings(pane?: SettingsPane): Promise<void> {
+  return invoke<void>("open_settings", { pane: pane ?? null });
+}
+
+/** The pane the Settings window was opened on (asked once, by the window itself). */
+export async function settingsInitialPane(): Promise<SettingsPane | null> {
+  return invoke<SettingsPane | null>("settings_initial_pane");
+}
+
+/** Sent to every window when a location is added, removed, renamed, moved, reordered or has its folders changed. */
+export const LOCATIONS_CHANGED = "locations-changed";
+
+/** The location's excluded folders, as absolute paths. */
+export async function getExcludedFolders(locationId: string): Promise<string[]> {
+  return invoke<string[]>("get_excluded_folders", { locationId });
 }
 
 /** Where the live preview goes, in CSS pixels from the window's top left. */

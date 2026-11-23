@@ -4,6 +4,7 @@ import {
   chainFiles,
   forkAt,
   insertLevel,
+  levelDefaults,
   levelExamples,
   moveIntoFork,
   moveLevel,
@@ -221,5 +222,28 @@ describe("scopeSuggestion", () => {
   it("suggests nothing once it's there, or when its condition isn't a level", () => {
     expect(scopeSuggestion(forkAt(root, top(1), "housing", "prop:Housing", "asc"), scope)).toBeNull();
     expect(scopeSuggestion(removeLevel(root, top(1)), scope)).toBeNull();
+  });
+});
+
+describe("new levels from Settings ▸ New Views", () => {
+  const settings = { no_value: "folder" as const, skip_single: false, show_all_values: false };
+
+  it("writes only what differs from a bare level", () => {
+    expect(levelDefaults(settings)).toEqual({});
+    expect(levelDefaults({ no_value: "loose", skip_single: true, show_all_values: true })).toEqual({
+      noValue: "loose",
+      skipSingle: true,
+      allValues: true,
+    });
+  });
+
+  it("starts levels added or forked with the defaults", () => {
+    const defaults = levelDefaults({ ...settings, skip_single: true });
+    let tree = insertLevel(null, { chain: [], index: 0 }, "prop:Client", "asc", defaults);
+    expect(tree).toMatchObject({ column: "prop:Client", skipSingle: true });
+    tree = forkAt(tree, { chain: [], index: 0 }, "Acme", "prop:Year", "desc", defaults);
+    expect(tree?.branches.Acme).toMatchObject({ column: "prop:Year", skipSingle: true });
+    // Without defaults, as before
+    expect(insertLevel(null, { chain: [], index: 0 }, "type", "asc")).toEqual({ column: "type", direction: "asc", next: null, branches: {} });
   });
 });

@@ -111,7 +111,29 @@ export function tidyFolders(root: FolderLevel | null): FolderLevel | null {
   );
 }
 
-const newLevel = (column: string, direction: Direction): FolderLevel => ({ column, direction, next: null, branches: {} });
+/** What a new level starts with (Settings ▸ New Views): only the settings that differ from a bare level. */
+export type LevelDefaults = Partial<Pick<FolderLevel, "noValue" | "skipSingle" | "allValues">>;
+
+/**
+ * A new level's settings from Settings ▸ New Views. "In a No … folder" is a
+ * bare level's own behaviour (conditional properties still start loose), so
+ * only Loose is written.
+ */
+export function levelDefaults(d: { no_value: "folder" | "loose"; skip_single: boolean; show_all_values: boolean }): LevelDefaults {
+  return {
+    ...(d.no_value === "loose" ? { noValue: "loose" as const } : {}),
+    ...(d.skip_single ? { skipSingle: true as const } : {}),
+    ...(d.show_all_values ? { allValues: true as const } : {}),
+  };
+}
+
+const newLevel = (column: string, direction: Direction, defaults: LevelDefaults = {}): FolderLevel => ({
+  column,
+  direction,
+  ...defaults,
+  next: null,
+  branches: {},
+});
 
 /** Every level's skipping of single folders, on or off (branches' levels too). */
 export function setSkipSingleEverywhere(root: FolderLevel | null, on: boolean): FolderLevel | null {
@@ -158,9 +180,15 @@ export function setEveryLevel(root: FolderLevel | null, patch: (level: FolderLev
   );
 }
 
-/** Adds a level at a slot. */
-export function insertLevel(root: FolderLevel | null, slot: LevelSlot, column: string, direction: Direction): FolderLevel | null {
-  return editChain(root, slot.chain, (levels) => [...levels.slice(0, slot.index), newLevel(column, direction), ...levels.slice(slot.index)]);
+/** Adds a level at a slot, starting with `defaults` (Settings ▸ New Views). */
+export function insertLevel(
+  root: FolderLevel | null,
+  slot: LevelSlot,
+  column: string,
+  direction: Direction,
+  defaults: LevelDefaults = {}
+): FolderLevel | null {
+  return editChain(root, slot.chain, (levels) => [...levels.slice(0, slot.index), newLevel(column, direction, defaults), ...levels.slice(slot.index)]);
 }
 
 /** Removes a level, with its forks; the chain closes up. */
@@ -194,12 +222,19 @@ export function setLevel(root: FolderLevel | null, slot: LevelSlot, patch: Level
  * Adds a level just inside one folder of a level: that folder's contents
  * get it first, then carry on as before (as usual, or as its fork already ran).
  */
-export function forkAt(root: FolderLevel | null, slot: LevelSlot, value: string, column: string, direction: Direction): FolderLevel | null {
+export function forkAt(
+  root: FolderLevel | null,
+  slot: LevelSlot,
+  value: string,
+  column: string,
+  direction: Direction,
+  defaults: LevelDefaults = {}
+): FolderLevel | null {
   return editChain(root, slot.chain, (levels) =>
     levels.map((level, i) => {
       if (i !== slot.index) return level;
       const inside = has(level.branches, value) ? level.branches[value] : linkList(levels.slice(i + 1));
-      return { ...level, branches: { ...level.branches, [value]: { ...newLevel(column, direction), next: inside } } };
+      return { ...level, branches: { ...level.branches, [value]: { ...newLevel(column, direction, defaults), next: inside } } };
     })
   );
 }

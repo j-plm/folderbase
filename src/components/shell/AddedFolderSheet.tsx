@@ -50,7 +50,6 @@ export default function AddedFolderSheet({ location, onClose }: { location: Loca
     setError("");
     try {
       await setAddedFolder(location.location_id, folder, move && inside > 0);
-      window.dispatchEvent(new CustomEvent("location-changed"));
       onClose();
     } catch (e) {
       setError(String(e));

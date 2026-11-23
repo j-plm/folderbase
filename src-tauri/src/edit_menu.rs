@@ -3,7 +3,8 @@
 //! which undoes typing in a focused field or else the app's own change history.
 //! The frontend names the change ("Undo Paste") via `set_edit_menu_labels`.
 //! Also File ▸ Save View (Cmd-S), enabled by the frontend while a view has
-//! unsaved edits (`set_save_view_enabled`), and Folderbase ▸ Settings… (Cmd-,).
+//! unsaved edits (`set_save_view_enabled`), and Folderbase ▸ Settings… (Cmd-,),
+//! which opens the Settings window (`settings_window`).
 
 use tauri::menu::{Menu, MenuItem, MenuItemKind};
 use tauri::{App, Emitter, Manager, Wry};
@@ -74,10 +75,18 @@ pub fn install(app: &App, menu: &Menu<Wry>) -> tauri::Result<()> {
             UNDO_ID => "menu-undo",
             REDO_ID => "menu-redo",
             SAVE_VIEW_ID => "menu-save-view",
-            SETTINGS_ID => "menu-settings",
+            SETTINGS_ID => {
+                if let Err(e) = crate::settings_window::open(app, None) {
+                    eprintln!("couldn't open Settings: {e}");
+                }
+                return;
+            }
             _ => return,
         };
-        let _ = app.emit(name, ());
+        // To the window in front only: Undo while typing in Settings mustn't undo a change in the main window
+        let focused = app.webview_windows().into_iter().find(|(_, w)| w.is_focused().unwrap_or(false));
+        let label = focused.map(|(label, _)| label).unwrap_or_else(|| "main".into());
+        let _ = app.emit_to(label.as_str(), name, ());
     });
     Ok(())
 }

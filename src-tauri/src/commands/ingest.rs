@@ -61,12 +61,32 @@ pub(crate) fn extract_file_data(
 }
 
 /// Hidden files and folders (dot-names) are skipped, as Finder hides them.
+/// Used where hidden files are always left out (copying folders in).
 pub(crate) fn not_hidden(entry: &walkdir::DirEntry) -> bool {
     !entry
         .file_name()
         .to_str()
         .map(|s| s.starts_with('.'))
         .unwrap_or(false)
+}
+
+/// Settings ▸ General ▸ Show hidden files, put in place by `settings::apply`.
+static SHOW_HIDDEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_show_hidden(on: bool) {
+    SHOW_HIDDEN.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a file or folder named `name` is left out of a location: dot-names
+/// unless Show hidden files is on. Finder's own `.DS_Store` files never count,
+/// as Finder doesn't show them even when showing hidden files.
+pub(crate) fn skipped_name(name: &str, show_hidden: bool) -> bool {
+    name == ".DS_Store" || (!show_hidden && name.starts_with('.'))
+}
+
+/// Whether Show hidden files is on now.
+pub(crate) fn show_hidden() -> bool {
+    SHOW_HIDDEN.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Whether a file is an online-only cloud placeholder (OneDrive, Dropbox, Google
@@ -339,6 +359,15 @@ pub(crate) async fn bootstrap_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_names_are_skipped_unless_shown_but_ds_store_always_is() {
+        assert!(skipped_name(".git", false));
+        assert!(!skipped_name(".git", true));
+        assert!(!skipped_name("Report.pdf", false));
+        assert!(skipped_name(".DS_Store", true));
+        assert!(skipped_name(".DS_Store", false));
+    }
 
     #[test]
     fn folder_tags_lists_parent_folders() {

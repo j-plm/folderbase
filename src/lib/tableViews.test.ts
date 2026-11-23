@@ -3,6 +3,7 @@ import {
   emptyFolders,
   emptyTable,
   legacyTable,
+  newViewTable,
   parseViewDefinition,
   sameViewDefinition,
   serializeViewDefinition,
@@ -136,5 +137,29 @@ describe("uniqueViewName", () => {
     expect(uniqueViewName("By Client", [])).toBe("By Client");
     expect(uniqueViewName("By Client", ["by client"])).toBe("By Client 2");
     expect(uniqueViewName("By Client", ["By Client", "By Client 2"])).toBe("By Client 3");
+  });
+});
+
+describe("newViewTable", () => {
+  const defaults = { group_by_hierarchy: false, non_empty_columns: true, wrap_multi_select: true, freeze_name: true };
+
+  it("starts as the table always has with the default settings", () => {
+    expect(newViewTable(defaults, ["Tags"])).toEqual(emptyTable());
+  });
+
+  it("follows Settings ▸ New Views", () => {
+    const table = newViewTable({ group_by_hierarchy: true, non_empty_columns: false, wrap_multi_select: false, freeze_name: false }, ["Tags", "People"]);
+    expect(table.folderGroups).toBe(true);
+    expect(table.nonEmptyColumns).toBe(false);
+    expect(table.frozen).toBe(false);
+    // Wrap off: the Multi-select properties there now stay on one line
+    expect(table.noWrap).toEqual(["Tags", "People"]);
+  });
+
+  it("gives a new location's default view its base", () => {
+    const base = newViewTable({ ...defaults, freeze_name: false });
+    expect(legacyTable(() => undefined, base).frozen).toBe(false);
+    // Columns kept from before views existed still win
+    expect(legacyTable((k) => (k === "col-freeze" ? true : undefined), base).frozen).toBe(true);
   });
 });

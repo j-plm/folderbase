@@ -1,11 +1,13 @@
 //! Light / dark appearance, chosen from View ▸ Appearance in the native menu bar
-//! and persisted across launches. The webview's `prefers-color-scheme` follows
-//! the window theme, so the frontend only needs CSS media queries.
+//! or Settings ▸ General, and persisted across launches. The webview's
+//! `prefers-color-scheme` follows the window theme, so the frontend only needs
+//! CSS media queries. Every change goes through `set`, which keeps the menu's
+//! checkmarks, every window and the Settings window (`appearance-changed`) in step.
 
 use std::path::{Path, PathBuf};
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItemKind, Submenu};
-use tauri::{App, AppHandle, Manager, Theme, Wry};
+use tauri::{App, AppHandle, Emitter, Manager, Theme, Wry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Appearance {
@@ -16,9 +18,10 @@ pub enum Appearance {
 
 impl Appearance {
     const ALL: [Appearance; 3] = [Appearance::System, Appearance::Light, Appearance::Dark];
-    const DEFAULT: Appearance = Appearance::Light;
+    /// As the OS is set, the way native apps start.
+    pub const DEFAULT: Appearance = Appearance::System;
 
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Appearance::System => "system",
             Appearance::Light => "light",
@@ -26,7 +29,7 @@ impl Appearance {
         }
     }
 
-    fn parse(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|a| a.as_str() == s)
     }
 
@@ -46,7 +49,7 @@ impl Appearance {
         }
     }
 
-    fn theme(self) -> Option<Theme> {
+    pub fn theme(self) -> Option<Theme> {
         match self {
             Appearance::System => None,
             Appearance::Light => Some(Theme::Light),
@@ -69,10 +72,56 @@ fn save(dir: &Path, appearance: Appearance) -> std::io::Result<()> {
     std::fs::write(dir.join(FILE_NAME), appearance.as_str())
 }
 
+/// Sent to every window with the new appearance ("system", "light" or "dark").
+pub const CHANGED_EVENT: &str = "appearance-changed";
+
+/// The View ▸ Appearance items, kept so their checkmarks follow every change.
+struct AppearanceMenu {
+    items: Vec<CheckMenuItem<Wry>>,
+    config_dir: PathBuf,
+}
+
+/// Puts `appearance` on every window (windows opened later get it from `current`).
 fn apply(app: &AppHandle, appearance: Appearance) {
     for window in app.webview_windows().values() {
         let _ = window.set_theme(appearance.theme());
     }
+}
+
+/// The appearance chosen now.
+pub fn current(app: &AppHandle) -> Appearance {
+    match app.try_state::<AppearanceMenu>() {
+        Some(menu) => load(&menu.config_dir),
+        None => app.path().app_config_dir().map(|d| load(&d)).unwrap_or(Appearance::DEFAULT),
+    }
+}
+
+/// Chooses an appearance: applied, checked in the menu, saved and announced.
+pub fn set(app: &AppHandle, chosen: Appearance) -> Result<(), String> {
+    apply(app, chosen);
+    let dir = match app.try_state::<AppearanceMenu>() {
+        Some(menu) => {
+            for (item, a) in menu.items.iter().zip(Appearance::ALL) {
+                let _ = item.set_checked(a == chosen);
+            }
+            menu.config_dir.clone()
+        }
+        None => app.path().app_config_dir().map_err(|e| e.to_string())?,
+    };
+    save(&dir, chosen).map_err(|e| format!("failed to save appearance: {e}"))?;
+    let _ = app.emit(CHANGED_EVENT, chosen.as_str());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_appearance(app: AppHandle) -> String {
+    current(&app).as_str().to_string()
+}
+
+#[tauri::command]
+pub fn set_appearance(appearance: String, app: AppHandle) -> Result<(), String> {
+    let chosen = Appearance::parse(&appearance).ok_or_else(|| format!("no appearance “{appearance}”"))?;
+    set(&app, chosen)
 }
 
 /// Applies the saved appearance and installs the default menu bar with a
@@ -103,17 +152,14 @@ pub fn setup(app: &App) -> tauri::Result<()> {
     }
     app.set_menu(menu)?;
     apply(handle, current);
+    app.manage(AppearanceMenu { items, config_dir });
 
     handle.on_menu_event(move |app, event| {
         let Some(chosen) = Appearance::from_menu_id(event.id().as_ref()) else {
             return;
         };
-        apply(app, chosen);
-        for (item, a) in items.iter().zip(Appearance::ALL) {
-            let _ = item.set_checked(a == chosen);
-        }
-        if let Err(e) = save(&config_dir, chosen) {
-            eprintln!("failed to save appearance: {e}");
+        if let Err(e) = set(app, chosen) {
+            eprintln!("{e}");
         }
     });
     Ok(())
@@ -137,12 +183,12 @@ mod tests {
     }
 
     #[test]
-    fn load_defaults_to_light_when_missing_or_invalid() {
+    fn load_defaults_to_the_system_setting_when_missing_or_invalid() {
         let dir = temp_dir();
-        assert_eq!(load(&dir), Appearance::Light);
+        assert_eq!(load(&dir), Appearance::System);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(FILE_NAME), "sepia").unwrap();
-        assert_eq!(load(&dir), Appearance::Light);
+        assert_eq!(load(&dir), Appearance::System);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
