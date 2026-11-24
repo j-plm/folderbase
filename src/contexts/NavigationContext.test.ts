@@ -12,6 +12,7 @@ const base = {
   masterEditorOpen: false,
   diskFoldersLocationId: null,
   rulesOpen: false,
+  previewModes: {},
 };
 
 describe("navigationReducer", () => {
@@ -101,5 +102,12 @@ describe("view modes per location", () => {
     expect(modeFor("a", { a: "list" }, "database")).toBe("list");
     expect(modeFor("b", { a: "list" }, "database")).toBe("database");
     expect(modeFor("b", {}, "columns")).toBe("columns");
+  });
+
+  it("shows and hides the Preview pane in the current view mode only", () => {
+    const s = navigationReducer({ ...base, viewMode: "list" }, { type: "TOGGLE_PREVIEW" });
+    expect(s.previewModes).toEqual({ list: true });
+    const t = navigationReducer({ ...s, viewMode: "tiles" }, { type: "SET_VIEW_MODE", mode: "list" });
+    expect(t.previewModes.list).toBe(true);
   });
 });

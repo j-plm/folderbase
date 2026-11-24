@@ -93,6 +93,69 @@ pub async fn open_paths_with(paths: Vec<String>, app: String) -> Result<(), Stri
     }
 }
 
+/// Makes `app` the app `paths` open in, as Get Info's Open With and *Always Open With* do.
+/// With `all_of_kind` (Change All…), every file of each one's kind opens in it.
+/// Either way it's the system's own setting (Launch Services), so Finder and
+/// every other app follow it.
+#[tauri::command]
+pub async fn set_default_app(paths: Vec<String>, app: String, all_of_kind: bool) -> Result<(), String> {
+    crate::commands::admin::check_exist(&paths)?;
+    if paths.is_empty() {
+        return Ok(());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let targets: Vec<String> = if all_of_kind {
+            one_per_kind(&paths).into_iter().map(str::to_string).collect()
+        } else {
+            paths
+        };
+        for path in &targets {
+            set_default_for(path, &app, all_of_kind)?;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// macOS 12 and later; asks Launch Services and waits for its answer (it may
+/// ask the user to confirm a change for a whole kind first).
+#[cfg(target_os = "macos")]
+fn set_default_for(path: &str, app: &str, all_of_kind: bool) -> Result<(), String> {
+    use block2::RcBlock;
+    use objc2_app_kit::NSWorkspace;
+    use objc2_foundation::{NSError, NSString, NSURL};
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel::<Option<String>>();
+    objc2::rc::autoreleasepool(|_| {
+        let file = NSURL::fileURLWithPath(&NSString::from_str(path));
+        let app_url = NSURL::fileURLWithPath(&NSString::from_str(app));
+        let done = RcBlock::new(move |error: *mut NSError| {
+            // SAFETY: Launch Services passes either null or a valid NSError for the call's duration
+            let message = unsafe { error.as_ref() }.map(|e| e.localizedDescription().to_string());
+            let _ = tx.send(message);
+        });
+        let workspace = NSWorkspace::sharedWorkspace();
+        if all_of_kind {
+            workspace.setDefaultApplicationAtURL_toOpenContentTypeOfFileAtURL_completionHandler(&app_url, &file, Some(&done));
+        } else {
+            workspace.setDefaultApplicationAtURL_toOpenFileAtURL_completionHandler(&app_url, &file, Some(&done));
+        }
+    });
+    // A confirmation the system shows for a whole kind waits on the user
+    match rx.recv_timeout(std::time::Duration::from_secs(300)) {
+        Ok(None) => Ok(()),
+        Ok(Some(message)) => Err(message),
+        Err(_) => Err("The system didn’t answer.".into()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_default_for(_path: &str, _app: &str, _all_of_kind: bool) -> Result<(), String> {
+    Err("Changing the default app isn’t available on this system yet.".into())
+}
+
 /// Shows `paths` selected in the file manager (Finder's Show in Enclosing Folder).
 #[tauri::command]
 pub async fn reveal_paths(paths: Vec<String>) -> Result<(), String> {
@@ -208,6 +271,19 @@ mod tests {
     #[test]
     fn nothing_asked_about_offers_nothing() {
         assert!(common_apps(vec![]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn setting_the_default_for_a_missing_file_is_an_error() {
+        let err = set_default_app(vec!["/definitely/not/here.dxf".into()], "/Applications/Preview.app".into(), false)
+            .await
+            .unwrap_err();
+        assert_eq!(err, "file not found: /definitely/not/here.dxf");
+    }
+
+    #[tokio::test]
+    async fn setting_the_default_for_nothing_does_nothing() {
+        assert!(set_default_app(vec![], "/Applications/Preview.app".into(), true).await.is_ok());
     }
 
     #[tokio::test]

@@ -20,6 +20,8 @@ export const labels = {
   reveal: platform === "macos" ? "Show in Finder" : platform === "windows" ? "Show in Explorer" : "Show in Folder",
   /** How to name a toggle-click in hints ("⌘-click to select several"). */
   toggleClick: platform === "macos" ? "⌘-click" : "Ctrl-click",
+  /** Get Info, as the file manager names it (Explorer's Properties). */
+  getInfo: platform === "macos" ? "Get Info" : "Properties",
   /** The Select All shortcut, in hints. */
   selectAll: platform === "macos" ? "⌘A" : "Ctrl+A",
 } as const;
@@ -58,6 +60,24 @@ export function hasPrimaryModifier(e: ModifierEvent): boolean {
 
 /** The preview column shows files live (scroll a PDF, play a video) with the OS's own preview view: macOS only so far. */
 export const livePreviewAvailable = platform === "macos";
+
+/** View ▸ Show Preview / Hide Preview, as Finder names it; Explorer calls it the Preview pane. */
+export function previewLabel(shown: boolean): string {
+  if (platform === "windows") return "Preview pane";
+  return shown ? "Hide Preview" : "Show Preview";
+}
+
+/**
+ * Where there's no app menu to carry them (macOS has View ▸ as Icons … and
+ * Show Preview): Ctrl+1 … Ctrl+5 for the view modes, in Finder's order, and
+ * Alt+P for the Preview pane, as in File Explorer.
+ */
+export function viewMenuShortcut(e: ModifierEvent): { mode: number } | { preview: true } | null {
+  if (platform === "macos") return null;
+  if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key?.toLowerCase() === "p") return { preview: true };
+  if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key && /^[1-5]$/.test(e.key)) return { mode: Number(e.key) };
+  return null;
+}
 
 /** Space previews the selection (Quick Look), as in Finder; ⌘Y too on macOS. */
 export function isQuickLookShortcut(e: ModifierEvent): boolean {

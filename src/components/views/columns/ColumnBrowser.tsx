@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type React from "react";
-import { convertFileSrc } from "@tauri-apps/api/core";
 import { useScrollAheadVirtualizer } from "../../../hooks/useScrollAheadVirtualizer";
 import { openFiles } from "../../../lib/fileActions";
-import { hasPrimaryModifier, isOpenShortcut, isQuickLookShortcut, isToggleSelect, livePreviewAvailable } from "../../../lib/platform";
+import { hasPrimaryModifier, isOpenShortcut, isQuickLookShortcut, isToggleSelect } from "../../../lib/platform";
 import { followSelection, previewTargets, toggleQuickLook } from "../../../lib/quickLook";
-import LivePreview from "../shared/LivePreview";
+import InfoPanel from "../../info/InfoPanel";
 import {
   DOUBLE_CLICK_MS,
   EMPTY_SELECTION,
@@ -16,9 +15,8 @@ import {
   singleSelection,
   type SelectionState,
 } from "../../../lib/selection";
-import { FileIcon, FolderIcon, SymbolIcon, isImageMime } from "../../../lib/fileIcons";
+import { FileIcon, FolderIcon, SymbolIcon } from "../../../lib/fileIcons";
 import CloudBadge, { CLOUD_BADGE_WIDTH, hasCloudBadge } from "../shared/CloudBadge";
-import { formatFinderSize, formatLongDate, kindLabel } from "../../../lib/arrange";
 import {
   arrangeColumn,
   inheritWidths,
@@ -32,7 +30,7 @@ import {
 } from "../../../lib/columnBrowser";
 import { middleTruncate } from "../../../lib/tileLabel";
 import { measureText, uiFont } from "../../../lib/textMeasure";
-import { useReportSelection } from "../../../lib/selectionStatus";
+import { useReportSelectedPaths, useReportSelection } from "../../../lib/selectionStatus";
 import { showContextMenu, withLead, type MenuEntry } from "../../../lib/nativeMenu";
 import { arrangementMenu, useArrangedBy, useArrangement, useGroupProperties } from "../../../contexts/ArrangementContext";
 import { ARRANGED_GROUPS } from "../../../lib/fileDrag";
@@ -219,6 +217,8 @@ export default function ColumnBrowser({
     return previewTargets(nodes.map((n) => n.id), (id) => pathOf.get(id), path[activeDepth] ?? null);
   }
   const previewKey = previewed().paths.join("\n");
+  // Get Info and the Inspector act on the same files
+  useReportSelectedPaths(useMemo(() => (previewKey ? previewKey.split("\n") : []), [previewKey]));
   useEffect(() => {
     followSelection(previewed());
     // `previewKey` stands for the selection's files, which is what matters here
@@ -565,110 +565,14 @@ function ColumnList({
 }
 
 /**
- * Where the preview column's picture goes, filling the space: live (the OS's
- * Quick Look view) where it can be, with the still picture beneath.
- */
-function Stage({ live, path, children }: { live: boolean; path: string; children: React.ReactNode }) {
-  const className = "absolute inset-0 flex items-center justify-center";
-  if (!live) return <div className={className}>{children}</div>;
-  return (
-    <LivePreview path={path} className={className}>
-      {children}
-    </LivePreview>
-  );
-}
-
-/** Largest preview icon / thumbnail edge, in points. */
-const PREVIEW_MAX = 512;
-/**
- * The preview area's shape, as Finder's: as wide as the column and a page's
- * height (A4, 1 : √2), at the top with the name straight under it. It gives up
- * height when the column is short.
- */
-const PREVIEW_ASPECT = `1 / ${Math.SQRT2}`;
-
-/**
- * Finder's preview column: fills the remaining width; the icon or image scales
- * to the space, with name, kind – size, Information and Tags below.
+ * Finder's preview column: fills the remaining width, with the preview scaling
+ * to the space and the name, Information, Tags and Properties below (InfoPanel,
+ * shared with the Preview pane).
  */
 function PreviewColumn({ node }: { node: BrowserNode }) {
-  const file = node.file!;
-  const stageRef = useRef<HTMLDivElement>(null);
-  const [stage, setStage] = useState({ width: 0, height: 0 });
-
-  useEffect(() => {
-    const el = stageRef.current;
-    if (!el) return;
-    const observer = new ResizeObserver(() => setStage({ width: el.clientWidth, height: el.clientHeight }));
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, []);
-
-  // Native icons are rendered at fixed sizes; step in 32pt increments so
-  // resizing doesn't request a new icon for every pixel.
-  const fit = Math.min(stage.width, stage.height, PREVIEW_MAX);
-  const iconSize = Math.max(64, Math.floor(fit / 32) * 32);
-  const info: [string, string][] = [
-    ["Created", formatLongDate(file.timestamp)],
-    ["Modified", formatLongDate(file.modified_at ?? file.timestamp)],
-  ];
-  const tags = Array.isArray(file.tags) ? file.tags : [];
-  // Selecting a file never downloads it: only opening it or Quick Look does
-  const wouldDownload = !!(file.online_only || file.streamed);
-
   return (
-    <div
-      style={{ minWidth: PREVIEW_MIN_WIDTH }}
-      className="flex-1 h-full flex flex-col overflow-y-auto px-10 pt-6 pb-8"
-    >
-      <div ref={stageRef} style={{ aspectRatio: PREVIEW_ASPECT }} className="min-h-[160px] relative">
-        {stage.width > 0 && (
-          <Stage live={livePreviewAvailable && !wouldDownload} path={file.file_path}>
-            {/* An online-only or streamed image would download to show in full; its icon stands in */}
-            {isImageMime(file.file_type) && !wouldDownload ? (
-              <img
-                src={convertFileSrc(file.file_path)}
-                alt=""
-                draggable={false}
-                data-icon-of={file.file_path}
-                style={{ maxWidth: fit, maxHeight: fit }}
-                className="object-contain shadow-sm"
-              />
-            ) : (
-              <FileIcon path={file.file_path} mimeType={file.file_type} size={iconSize} />
-            )}
-          </Stage>
-        )}
-      </div>
-      {wouldDownload && (
-        <p className="shrink-0 mt-2 text-center text-[11px] text-neutral-500">
-          {file.online_only ? "Not downloaded" : "Downloads when opened"}
-        </p>
-      )}
-      <div className="shrink-0 mt-6">
-        <p className="text-[15px] font-semibold text-neutral-100 break-words">{node.name}</p>
-        <p className="mt-0.5 text-[13px] text-neutral-500">
-          {kindLabel(file)} - {formatFinderSize(file.file_size)}
-        </p>
-        <p className="mt-4 mb-1 text-[15px] font-semibold text-neutral-100">Information</p>
-        <dl className="text-xs">
-          {info.map(([label, value], i) => (
-            <div
-              key={label}
-              className={`flex justify-between gap-3 py-1.5 ${i > 0 ? "border-t border-neutral-700/60" : ""}`}
-            >
-              <dt className="text-neutral-500">{label}</dt>
-              <dd className="font-semibold text-neutral-100 text-right">{value}</dd>
-            </div>
-          ))}
-        </dl>
-        <p className="mt-4 mb-1 text-[15px] font-semibold text-neutral-100">Tags</p>
-        {tags.length > 0 ? (
-          <p className="text-[13px] text-neutral-100">{tags.join(", ")}</p>
-        ) : (
-          <p className="text-[13px] text-neutral-500">No Tags</p>
-        )}
-      </div>
+    <div style={{ minWidth: PREVIEW_MIN_WIDTH }} className="flex-1 h-full flex flex-col overflow-y-auto px-10 pt-6 pb-8">
+      <InfoPanel files={[node.file!]} preview="live" iconOf />
     </div>
   );
 }

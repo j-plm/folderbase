@@ -3,6 +3,7 @@ import { useNavigation } from "../../contexts/NavigationContext";
 import TilesView from "../views/TilesView";
 import ListView from "../views/ListView";
 import ColumnsView from "../views/ColumnsView";
+import GalleryView from "../views/GalleryView";
 import LocationDatabaseView, { type TablePlace } from "../views/LocationDatabaseView";
 import PathMappingPanel from "../mapping/PathMappingPanel";
 import HierarchyPanel from "../folders/HierarchyPanel";
@@ -18,7 +19,9 @@ import { fileEntries } from "../../lib/fileActions";
 import { compressEntry } from "../../lib/compressActions";
 import PathBar, { type PathSegment } from "./PathBar";
 import NewFolderDialog from "./NewFolderDialog";
+import PreviewPane from "./PreviewPane";
 import { FileDragProvider, useFileDrag } from "../../contexts/FileDragContext";
+import { useInfoBridge } from "../../hooks/useInfoBridge";
 import { useArrangedBy } from "../../contexts/ArrangementContext";
 import { isPropertyGroup } from "../../lib/arrange";
 import { ARRANGED_GROUPS } from "../../lib/fileDrag";
@@ -53,6 +56,8 @@ export default function MainPane() {
 
 function MainPaneContent() {
   const drag = useFileDrag();
+  // Get Info and the Inspector: their windows' edits go into this location's history
+  useInfoBridge();
   const browseNow = useBrowse();
   // Grouped by a property of one value, Icons and List headings file into it (FileDragContext `registerSource`)
   const { arrangement: arranged, byProperty, groupsTakeDrops } = useArrangedBy();
@@ -65,8 +70,16 @@ function MainPaneContent() {
       fromOf: (file) => [byProperty.keyOf(file, column)?.label ?? ""],
     });
   }, [drag, browseNow, arranged.groupBy, byProperty, groupsTakeDrops]);
-  const { activeLocationId, setActiveLocation, viewMode, diskFoldersLocationId, closeDiskFolders, editHierarchy, setEditHierarchy } =
-    useNavigation();
+  const {
+    activeLocationId,
+    setActiveLocation,
+    viewMode,
+    previewShown,
+    diskFoldersLocationId,
+    closeDiskFolders,
+    editHierarchy,
+    setEditHierarchy,
+  } = useNavigation();
   const browse = useBrowse();
   // Arrow keys move through the files and folders wherever focus is, as in Finder
   useBrowseKeys();
@@ -251,51 +264,69 @@ function MainPaneContent() {
 
   return (
     <div className="relative flex-1 min-w-0 flex flex-col">
-      <div style={viewStyle(viewMode)} className="flex-1 overflow-auto flex flex-col">
-        {viewMode !== "database" && !tree && (
-          <div className="flex items-center justify-center flex-1 text-neutral-500 text-sm">Loading…</div>
-        )}
-        {/* A new folder starts at the top with nothing selected, as in Finder */}
-        {viewMode === "tiles" && here && (
-          <TilesView
-            key={placeKey}
-            files={here.files}
-            folders={folders}
-            onOpenFolder={enter}
-            folderMenu={folderMenu}
-            backgroundMenu={backgroundMenu}
-            place={place}
-            folderPath={folderPath}
-            fileMenu={fileMenu}
-          />
-        )}
-        {viewMode === "list" && here && (
-          <ListView
-            key={placeKey}
-            files={here.files}
-            folders={folders}
-            onOpenFolder={enter}
-            folderMenu={folderMenu}
-            backgroundMenu={backgroundMenu}
-            place={place}
-            folderPath={folderPath}
-            fileMenu={fileMenu}
-          />
-        )}
-        {viewMode === "columns" && tree && (
-          <ColumnsView
-            tree={tree}
-            place={place}
-            onPlace={go}
-            folderMenu={folderMenuAt}
-            opens={browse.opens}
-            placeMenu={(path) => browse.levelMenu(path)}
-            fileMenu={fileMenu}
-          />
-        )}
-        {viewMode === "database" && (
-          <LocationDatabaseView files={files} place={tablePlace} locationId={activeLocationId} onChanged={refresh} />
-        )}
+      <div className="flex-1 min-h-0 flex">
+        <div style={viewStyle(viewMode)} className="flex-1 min-w-0 overflow-auto flex flex-col">
+          {viewMode !== "database" && !tree && (
+            <div className="flex items-center justify-center flex-1 text-neutral-500 text-sm">Loading…</div>
+          )}
+          {/* A new folder starts at the top with nothing selected, as in Finder */}
+          {viewMode === "tiles" && here && (
+            <TilesView
+              key={placeKey}
+              files={here.files}
+              folders={folders}
+              onOpenFolder={enter}
+              folderMenu={folderMenu}
+              backgroundMenu={backgroundMenu}
+              place={place}
+              folderPath={folderPath}
+              fileMenu={fileMenu}
+            />
+          )}
+          {viewMode === "list" && here && (
+            <ListView
+              key={placeKey}
+              files={here.files}
+              folders={folders}
+              onOpenFolder={enter}
+              folderMenu={folderMenu}
+              backgroundMenu={backgroundMenu}
+              place={place}
+              folderPath={folderPath}
+              fileMenu={fileMenu}
+            />
+          )}
+          {viewMode === "columns" && tree && (
+            <ColumnsView
+              tree={tree}
+              place={place}
+              onPlace={go}
+              folderMenu={folderMenuAt}
+              opens={browse.opens}
+              placeMenu={(path) => browse.levelMenu(path)}
+              fileMenu={fileMenu}
+            />
+          )}
+          {viewMode === "gallery" && here && (
+            <GalleryView
+              key={placeKey}
+              files={here.files}
+              folders={folders}
+              onOpenFolder={enter}
+              folderMenu={folderMenu}
+              backgroundMenu={backgroundMenu}
+              place={place}
+              folderPath={folderPath}
+              fileMenu={fileMenu}
+            />
+          )}
+          {viewMode === "database" && (
+            <LocationDatabaseView files={files} place={tablePlace} locationId={activeLocationId} onChanged={refresh} />
+          )}
+        </div>
+        {/* View ▸ Show Preview: at the right of every mode but Columns, which has its preview column.
+            Gallery's large preview holds the one live view, so its pane shows a still picture */}
+        {previewShown && <PreviewPane files={files} preview={viewMode === "gallery" ? "still" : "live"} />}
       </div>
       <div style={{ ...INSET, ...CLEAR_PANEL }} className="relative">
         <DropDetails />

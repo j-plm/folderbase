@@ -12,12 +12,15 @@ import { ActivityProvider } from "../../contexts/ActivityContext";
 import { useLaunchLocation } from "../../hooks/useLaunchLocation";
 import { useSettingsBridge } from "../../hooks/useSettingsBridge";
 import { useBackupMenu } from "../../hooks/useBackupMenu";
+import { useViewMenu } from "../../hooks/useViewMenu";
 
 export default function AppShell() {
   const { masterEditorOpen, activeLocationId } = useNavigation();
   useLaunchLocation();
   useSettingsBridge();
   useBackupMenu({ main: true });
+  // View ▸ as Icons … as Database, Show Preview
+  useViewMenu();
 
   const shell = (
     <div className="relative flex h-screen bg-neutral-900 text-neutral-100">

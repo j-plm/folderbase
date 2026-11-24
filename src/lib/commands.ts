@@ -704,7 +704,7 @@ export async function quickLookUpdate(paths: string[], index: number, frames: Ic
 }
 
 /** The view mode a location opens in the first time (Settings ▸ General). */
-export type FirstViewMode = "database" | "tiles" | "list" | "columns";
+export type FirstViewMode = "database" | "tiles" | "list" | "columns" | "gallery";
 
 /** What a new view starts with (Settings ▸ New Views); existing views keep their own. */
 export interface NewViewDefaults {
@@ -858,6 +858,11 @@ export async function previewViewHide(): Promise<void> {
   return invoke<void>("preview_view_hide", { ticket: previewTicket() });
 }
 
+/** Puts the main window's view mode and Preview pane into View's checkmarks and Show / Hide Preview (macOS). */
+export async function setViewMenuState(mode: string, preview: boolean): Promise<void> {
+  return invoke<void>("set_view_menu_state", { mode, preview });
+}
+
 /** A backup's location, as its manifest lists it. */
 export interface BackupLocation {
   name: string;
@@ -920,4 +925,54 @@ export async function pickBackupFile(folder?: string): Promise<string | null> {
   const result = await open({ multiple: false, directory: false, defaultPath: folder, filters: [{ name: "Folderbase Backup", extensions: ["zip"] }] });
   if (Array.isArray(result)) return result[0] ?? null;
   return result ?? null;
+}
+
+// ── Get Info and the Inspector (info_window.rs) ──────────────────────────────
+
+/** Opens an Info window per file (or brings forward the one already showing it). */
+export async function openInfoWindows(paths: string[]): Promise<void> {
+  return invoke<void>("open_info_windows", { paths });
+}
+
+/** Shows the Inspector, or closes it when it's open. */
+export async function toggleInspector(): Promise<void> {
+  return invoke<void>("toggle_inspector_window");
+}
+
+/** The file this Info window shows (null in the Inspector). */
+export async function infoWindowPath(): Promise<string | null> {
+  return invoke<string | null>("info_window_path");
+}
+
+/** Records come from Rust with `metadata` and `tags` as JSON text; this parses them. */
+export function parseFileRecord(f: FileRecord): FileRecord {
+  const parse = (raw: unknown) => {
+    if (typeof raw !== "string") return raw;
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  };
+  const metadata = parse((f as unknown as { metadata: unknown }).metadata);
+  const tags = parse((f as unknown as { tags: unknown }).tags);
+  return {
+    ...f,
+    metadata: metadata && typeof metadata === "object" ? (metadata as Record<string, unknown>) : null,
+    tags: Array.isArray(tags) ? (tags as string[]) : [],
+  };
+}
+
+/** Files by path, in the order asked; paths not indexed are left out. */
+export async function getFilesByPaths(paths: string[]): Promise<FileRecord[]> {
+  const files = await invoke<FileRecord[]>("get_files_by_paths", { paths });
+  return files.map(parseFileRecord);
+}
+
+/**
+ * Makes `app` the app these files open in (Open With in Get Info, Always Open With),
+ * or with `allOfKind` every file of their kinds (Change All…). The system's own setting.
+ */
+export async function setDefaultApp(paths: string[], app: string, allOfKind: boolean): Promise<void> {
+  return invoke<void>("set_default_app", { paths, app, allOfKind });
 }

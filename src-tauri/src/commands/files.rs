@@ -158,6 +158,29 @@ pub async fn get_files_for_location(
     Ok(files)
 }
 
+/// The records of files by their paths, in the order asked (paths not indexed are left out).
+/// Get Info and the Inspector look their files up this way.
+pub async fn files_by_paths_impl(pool: &DbPool, paths: &[String]) -> Result<Vec<crate::models::FileRecord>, String> {
+    let mut out = Vec::with_capacity(paths.len());
+    for path in paths {
+        let found = sqlx::query_as::<_, crate::models::FileRecord>("SELECT * FROM files WHERE file_path = ? LIMIT 1")
+            .bind(path)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        out.extend(found);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn get_files_by_paths(
+    paths: Vec<String>,
+    db: State<'_, DbPool>,
+) -> Result<Vec<crate::models::FileRecord>, String> {
+    files_by_paths_impl(db.inner(), &paths).await
+}
+
 #[tauri::command]
 pub async fn get_location_properties(
     location_id: String,

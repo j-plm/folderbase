@@ -6,7 +6,8 @@
 //! unsaved edits (`set_save_view_enabled`), File ▸ Back Up Database… and
 //! Restore from Backup… (`commands/backup.rs`; the window in front runs them,
 //! so their panels open over it), and Folderbase ▸ Settings… (Cmd-,),
-//! which opens the Settings window (`settings_window`).
+//! which opens the Settings window (`settings_window`), and File ▸ Get Info
+//! (Cmd-I) and Show Inspector (Opt-Cmd-I) (`info_window`).
 
 use tauri::menu::{Menu, MenuItem, MenuItemKind, PredefinedMenuItem};
 use tauri::{App, Emitter, Manager, Wry};
@@ -17,6 +18,8 @@ pub const SAVE_VIEW_ID: &str = "file-save-view";
 pub const SETTINGS_ID: &str = "app-settings";
 pub const BACK_UP_ID: &str = "file-back-up";
 pub const RESTORE_ID: &str = "file-restore";
+pub const GET_INFO_ID: &str = "file-get-info";
+pub const INSPECTOR_ID: &str = "file-inspector";
 
 /// The Undo and Redo items, kept so their titles can change.
 pub struct EditMenu {
@@ -68,6 +71,12 @@ pub fn install(app: &App, menu: &Menu<Wry>) -> tauri::Result<()> {
             file.insert(&back_up, 2)?;
             file.insert(&restore, 3)?;
             file.insert(&PredefinedMenuItem::separator(handle)?, 4)?;
+            // Get Info (the selection, which the main window knows) and Show Inspector, as in Finder's File menu
+            let get_info = MenuItem::with_id(handle, GET_INFO_ID, "Get Info", true, Some("CmdOrCtrl+I"))?;
+            let inspector = MenuItem::with_id(handle, INSPECTOR_ID, "Show Inspector", true, Some("CmdOrCtrl+Alt+I"))?;
+            file.insert(&get_info, 5)?;
+            file.insert(&inspector, 6)?;
+            file.insert(&PredefinedMenuItem::separator(handle)?, 7)?;
             Some(item)
         }
         None => None,
@@ -87,6 +96,17 @@ pub fn install(app: &App, menu: &Menu<Wry>) -> tauri::Result<()> {
             SAVE_VIEW_ID => "menu-save-view",
             BACK_UP_ID => "menu-back-up",
             RESTORE_ID => "menu-restore",
+            GET_INFO_ID => {
+                // Whichever window is in front, Get Info is about the main window's selection
+                let _ = app.emit_to("main", "menu-get-info", ());
+                return;
+            }
+            INSPECTOR_ID => {
+                if let Err(e) = crate::info_window::toggle_inspector(app) {
+                    eprintln!("couldn't open the Inspector: {e}");
+                }
+                return;
+            }
             SETTINGS_ID => {
                 if let Err(e) = crate::settings_window::open(app, None) {
                     eprintln!("couldn't open Settings: {e}");

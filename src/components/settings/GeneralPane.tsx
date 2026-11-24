@@ -18,6 +18,7 @@ const VIEW_MODES: Choice<FirstViewMode>[] = [
   { value: "tiles", label: "Icons" },
   { value: "list", label: "List" },
   { value: "columns", label: "Columns" },
+  { value: "gallery", label: "Gallery" },
 ];
 
 const LAUNCH: Choice<"last" | "first">[] = [

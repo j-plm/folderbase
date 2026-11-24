@@ -638,7 +638,7 @@ Example — navigating to `2024 → Rig-A → Component-B → Front` and droppin
 - **Overwrites ask first**: a drop that would replace values the user couldn't see (a file dragged from elsewhere that already holds another value, or a Multi-select's other values when dropped into "No X") opens a sheet listing them: **Replace**, **Keep Existing** (file only the others) or Cancel
 - **Only where it will show**: a file is filed only where it will appear afterwards, worked out as the view works out its folders (filters included). Levels read from the file (Kind, Created, Path Tags) can't be set by a drop, so they limit how far a file can move: a file created in 2023 can go into any folder under 2023, not under 2024. Files that can't go are left as they are, and the drop says why
 - **Date properties**: a folder of one day sets that day; a month, quarter, week or year asks which day (only its own days can be chosen). Folders that repeat (March of every year) can't give a date, so they refuse
-- **Right-click on files**, in every view mode (in the Database view, on any cell of the row): **Open**, **Open With ▸** (the apps that can open them all, the default first, then Other… to choose one) and **Show in Finder**, on the file or the selection it's in. In the Database view the column's own menu follows as a submenu. A file that can't be opened says why, as Finder does: no app set to open it (offering Choose Application…), or not found on disk
+- **Right-click on files**, in every view mode (in the Database view, on any cell of the row): **Open**, **Open With ▸** (the apps that can open them all, the default first, then Other… to choose one; with ⌥ held as the menu opens it's **Always Open With ▸**, which also makes that app the one they open in, as Finder's does) and **Show in Finder**, on the file or the selection it's in. In the Database view the column's own menu follows as a submenu. A file that can't be opened says why, as Finder does: no app set to open it (offering Choose Application…), or not found on disk
 - **Remove from “Folder”** (right-click on files) takes away the folder's value only, as dragging them into the enclosing folder does, even if the view's filters then leave them out
 - **In the Database view**, a row's Name drags the selected rows (other cells drag to select). Group headings take drops: a folder group (Group by Hierarchy) as its folder, and a group by a Select, Text or Number property as that value
 - **Folders** drop their files, from themselves (a folder onto a sibling moves its files there); a folder can't go inside itself. Dragging a folder changes its files' values, never the Hierarchy or the values themselves. Dragging up to an enclosing folder takes a file out of the folders below it
@@ -684,8 +684,9 @@ Navigating and organising never touch the disk. Changing a file itself is always
   - **Folders**: every folder the file shows in under the open view's Hierarchy ("Acme › 2024 › Invoices"; a Multi-select can put it in several). Click one to go there
   - **Properties**: the location's custom properties and the file's values, edited with the same editors as the Database view's cells. A conditional property appears only where it applies. Add Property… at the end
   - **More Info**: the media properties, grouped as in the Database view (Camera, Music, Video). Those the file can hold are editable (see [Editing Media Properties](#editing-media-properties)); the others are plain text
-  - **Open With**: the file's default app, with the Open With list to change it for this file, and **Change All…** to make that app the default for every file of this kind, as Finder does. Both change the system's own setting (Launch Services on macOS, file associations on Windows), so Finder and every other app follow it. There's no Settings row, because the setting belongs to the OS
+  - **Open With**: the file's default app, with the Open With list to change it for this file (macOS keeps a per-file choice, as Finder sets it), and **Change All…** to make that app the default for every file of this kind, as Finder does. Both change the system's own setting (Launch Services on macOS, file associations on Windows), so Finder and every other app follow it. There's no Settings row, because the setting belongs to the OS
   - **Preview**: a larger thumbnail; Space opens Quick Look
+  - Which sections are open is remembered for every Info window and the Inspector
 - **Several files**: Get Info opens one window per file, asking first above 10 ("Open 24 Info windows?"), as Finder does. **Show Inspector** (⌥⌘I) opens one window that follows the selection instead. With several files selected it sums them up ("3 items, 12.4 MB") and shows each value they share, or "Mixed" where they differ. An edit there applies to every selected file, so the Inspector is the bulk editor. On Windows, Properties on several files opens one dialog for all of them, as Explorer does, with the same summing up
 - **Edits are changes like any other**: they show at once in every view, and Edit ▸ Undo in the main window takes them back
 
@@ -1112,6 +1113,8 @@ These three modes replicate standard OS explorer behaviour exactly. Folder items
 
 All three share the native **Sort By** and **Group By** options, chosen from the toolbar's group button or by right-clicking the view's background. Grouping follows the OS file manager's buckets — on macOS, Kind (Documents, Images, PDF Documents, Movies, Music, Presentations, Spreadsheets, Developer, Other), Name, Date Modified, Date Created and Size.
 
+**View menu**: as Icons ⌘1, as List ⌘2, as Columns ⌘3, as Gallery ⌘4, as Database ⌘5, then Show Preview / Hide Preview ⇧⌘P, as in Finder's View menu. Their checkmarks follow the toolbar's switcher. Off macOS, Ctrl+1 … Ctrl+5 and Alt+P.
+
 #### Gallery
 
 Gallery is Finder's Gallery view, as a fifth mode in the switcher (Database | Icons | List | Columns | Gallery):
@@ -1133,7 +1136,8 @@ Gallery is Finder's Gallery view, as a fifth mode in the switcher (Database | Ic
 - **Top to bottom**: the preview, the name with Kind and size, **Information** (Created, Modified, Where, the media properties, with Show More/Show Less), **Tags**, then **Properties**: the file's custom values, editable, as in Get Info
 - **Several files selected**: "3 items" with their total size, and the values they share, editable for all of them, as in the Inspector
 - **In the Database view** it shows the file of the row holding the selection, so a photo can be looked at while it's tagged
-- Shown or hidden per view mode, and kept
+- Shown or hidden per view mode, and kept. Drag its left edge to resize it; the width is kept too
+- **One live preview at a time**: the system gives one Quick Look view to the window, so only one place shows a file live. That's Columns' preview column, the Preview pane, or Gallery's large preview, whichever is showing; Gallery's pane shows a still thumbnail instead
 - On Windows it's File Explorer's **Preview pane** (Alt+P). Explorer's **Details pane** (Alt+Shift+P) shows the same pane without the large preview
 
 #### Database View
@@ -1271,8 +1275,9 @@ Status: **exists** (built, to be listed here), **hardcoded** (built with a fixed
 | Setting | Choices (default first) | Status |
 |---------|------------------------|--------|
 | Appearance | Use System Setting / Light / Dark. Also View ▸ Appearance | exists |
-| View mode for a location opened for the first time | Database / Icons / List / Columns / Gallery (afterwards, each location opens in the mode it was left in) | exists (Gallery when built) |
+| View mode for a location opened for the first time | Database / Icons / List / Columns / Gallery (afterwards, each location opens in the mode it was left in) | exists |
 | On launch, open | The last location and view / The first location | exists |
+| Preview pane shown | Per view mode, as it was left by View ▸ Show Preview (hidden at first, except in Gallery) | hardcoded |
 | Show hidden files | Off / On (files starting with "."; indexed while on, `.DS_Store` never). Asks first, then refreshes every location | exists |
 | Show file extensions | Always / As Finder does (follows the Finder setting) | planned |
 | Check for missing location folders | Every 30 seconds and when the window comes forward / Only when the window comes forward | exists |

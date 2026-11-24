@@ -79,7 +79,7 @@ import TableHeader from "./shared/TableHeader";
 import { useSelection } from "../../hooks/useSelection";
 import { useUndo } from "../../hooks/useUndo";
 import { setUndoTarget } from "../../lib/editMenu";
-import { selectionLabel } from "../../lib/selectionStatus";
+import { selectionLabel, useReportSelectedPaths } from "../../lib/selectionStatus";
 import type { RefreshSummary } from "../../lib/refreshSummary";
 import MenuPopover, { type MenuAnchor } from "../shared/MenuPopover";
 import Dialog, { DialogButton, DialogField, dialogTextField } from "../shared/Dialog";
@@ -1633,6 +1633,13 @@ export default function LocationDatabaseView({ files, place = null, locationId, 
     if (cellSel.cells.size === 0) return sorted.filter((f) => selection.isSelected(f.file_id)).length;
     return cellRows.size;
   }, [cellSel, cellRows, sorted, selection]);
+
+  // Get Info and the Inspector act on the selected rows (or the rows holding selected cells)
+  const selectedPaths = useMemo(() => {
+    if (cellSel.cells.size === 0) return sorted.filter((f) => selection.isSelected(f.file_id)).map((f) => f.file_path);
+    return sorted.filter((f) => cellRows.has(f.file_id)).map((f) => f.file_path);
+  }, [cellSel, cellRows, sorted, selection]);
+  useReportSelectedPaths(selectedPaths);
 
   const cellValue = useCallback(
     (row: string, col: string) => metaValue(rowById.get(row), propName(col)),

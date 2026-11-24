@@ -25,7 +25,8 @@ A local desktop file management app that decouples physical file storage from lo
 src/
   components/
     shell/        # Icon rail, sidebar, toolbar, main pane
-    views/        # Icons, List, Columns, Database view modes (Icons is TilesView in code)
+    views/        # Icons, List, Columns, Gallery, Database view modes (Icons is TilesView in code)
+    info/         # Get Info / Inspector windows, and InfoPanel (Columns' preview column, the Preview pane, Gallery)
     editor/       # Local and master view editor tree components
   lib/
     commands.ts   # All invoke() calls — the only place the frontend talks to Rust

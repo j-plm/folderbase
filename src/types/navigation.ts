@@ -1,6 +1,6 @@
 import type { View, ViewNode } from "./index";
 
-export type ViewMode = "tiles" | "list" | "columns" | "database";
+export type ViewMode = "tiles" | "list" | "columns" | "gallery" | "database";
 
 export interface ShellView {
   view_id: string;
@@ -21,6 +21,12 @@ export interface NavigationState {
   diskFoldersLocationId: string | null;
   /** Whether the Database view's Rules panel is open. Only one side panel (Hierarchy, Map Disk Folders, Rules) is open at once. */
   rulesOpen: boolean;
+  /** Whether the Preview pane is shown, per view mode (lib/previewPane). */
+  previewModes: Partial<Record<ViewMode, boolean>>;
+  /** Whether the Preview pane is shown in the current view mode. */
+  previewShown: boolean;
+  /** View ▸ Show Preview / Hide Preview (⇧⌘P), in the current view mode. */
+  togglePreview: () => void;
   navigateTo: (path: string[]) => void;
   pushSegment: (segment: string) => void;
   /** Sets path to path.slice(0, index). index=0 returns to root. */

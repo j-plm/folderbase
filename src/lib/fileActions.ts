@@ -4,18 +4,21 @@ import {
   getLocations,
   ingestDirectory,
   locationAvailable,
+  openInfoWindows,
   openPaths,
   openPathsWith,
   pickApplication,
   pickDirectory,
   relocateLocation,
   revealPaths,
+  setDefaultApp,
   type Location,
   type OpenWithApp,
 } from "./commands";
 import type { MenuEntry } from "./nativeMenu";
-import { labels, quickLookLabel } from "./platform";
+import { labels, platform, quickLookLabel } from "./platform";
 import { toggleQuickLook } from "./quickLook";
+import { ASK_ABOVE } from "./info";
 
 /** Matches the error starts in `commands::admin` (`FILE_NOT_FOUND`, `NO_APPLICATION`). */
 const FILE_NOT_FOUND = "file not found: ";
@@ -36,6 +39,34 @@ export async function openFiles(paths: string[]): Promise<void> {
     await openPaths(paths);
   } catch (e) {
     await explainOpenFailure(String(e), paths);
+  }
+}
+
+/** Get Info on `paths`: an Info window each, asking first above ten, as Finder does. */
+export async function getInfo(paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
+  if (paths.length > ASK_ABOVE) {
+    const go = await ask(`This will open ${paths.length.toLocaleString()} separate windows.`, {
+      title: `Are you sure you want to open ${paths.length.toLocaleString()} Info windows?`,
+      okLabel: "OK",
+      cancelLabel: "Cancel",
+    });
+    if (!go) return;
+  }
+  await openInfoWindows(paths);
+}
+
+/**
+ * Makes `app` the one these files open in (Get Info's Open With, Always Open With),
+ * or every file of their kind with `allOfKind` (Change All…), saying why if it can't.
+ */
+export async function chooseDefaultApp(paths: string[], app: string, allOfKind: boolean): Promise<boolean> {
+  try {
+    await setDefaultApp(paths, app, allOfKind);
+    return true;
+  } catch (e) {
+    await message(String(e), { title: "The app couldn’t be changed.", kind: "error" });
+    return false;
   }
 }
 
@@ -133,22 +164,36 @@ export function openWithEntries(apps: OpenWithApp[], open: (app: string) => void
   return entries;
 }
 
-/** A file's own right-click items, wherever it's shown: Open, Open With ▸, Compress, Quick Look, Show in Finder. */
+// Native menus can't swap in an alternate item while ⌥ is held, so ⌥ is read
+// as the right-click happens: the menu built for it offers Always Open With, as Finder's does
+let optionHeld = false;
+if (typeof window !== "undefined") {
+  window.addEventListener("contextmenu", (e) => (optionHeld = e.altKey), true);
+}
+
+/** Opens files in `app` and makes it the one they always open in (⌥ Always Open With). */
+async function alwaysOpenWith(paths: string[], app: string): Promise<void> {
+  if (await chooseDefaultApp(paths, app, false)) await openFilesWith(paths, app);
+}
+
+/** A file's own right-click items, wherever it's shown: Open, Open With ▸, Get Info, Compress, Quick Look, Show in Finder. */
 export function fileEntries(paths: string[], compress?: MenuEntry): MenuEntry[] {
+  const always = optionHeld && platform === "macos";
   return [
     { type: "item", text: "Open", action: () => void openFiles(paths) },
     {
       type: "submenu",
-      text: "Open With",
+      text: always ? "Always Open With" : "Open With",
       items: [],
       load: async () =>
         openWithEntries(
           await appsForPaths(paths).catch(() => []),
-          (app) => void openFilesWith(paths, app),
-          () => void openFilesWithOther(paths)
+          (app) => void (always ? alwaysOpenWith(paths, app) : openFilesWith(paths, app)),
+          () => void (always ? pickApplication().then((app) => (app ? alwaysOpenWith(paths, app) : undefined)) : openFilesWithOther(paths))
         ),
     },
     { type: "separator" },
+    { type: "item", text: labels.getInfo, action: () => void getInfo(paths) },
     ...(compress ? [compress] : []),
     {
       type: "item",

@@ -3,6 +3,7 @@ import {
   NO_VALUE,
   folderConditions,
   folderTree,
+  foldersOf,
   pinPlace,
   enclosingPlace,
   skipSingles,
@@ -393,5 +394,32 @@ describe("seedFromGroups", () => {
       ])
     ).toEqual(level("prop:Client", { ...level("created"), direction: "desc" }));
     expect(seedFromGroups([])).toBeNull();
+  });
+});
+
+describe("foldersOf", () => {
+  const labels = (tree: ReturnType<typeof treeFor>, id: string) =>
+    foldersOf(tree, id).map((f) => f.steps.map((s) => s.label).join(" › "));
+
+  it("names the deepest folder a file shows in", () => {
+    const tree = treeFor(files, level("prop:Client", level("prop:Year")));
+    expect(labels(tree, "1")).toEqual(["Acme › 2024"]);
+    expect(labels(tree, "4")).toEqual(["No Client › No Year"]);
+  });
+
+  it("lists a folder for each value of a Multi-select", () => {
+    const tree = treeFor(files, level("prop:Project"));
+    expect(labels(tree, "1")).toEqual(["Apollo", "Hermes"]);
+    expect(foldersOf(tree, "1").map((f) => f.path)).toEqual([["Apollo"], ["Hermes"]]);
+  });
+
+  it("has nothing for a view without a Hierarchy, or a file the view leaves out", () => {
+    expect(foldersOf(treeFor(files, null), "1")).toEqual([]);
+    expect(foldersOf(treeFor(files.slice(1), level("prop:Client")), "1")).toEqual([]);
+  });
+
+  it("stops at the limit", () => {
+    const tree = treeFor(files, level("prop:Project"));
+    expect(foldersOf(tree, "1", 1)).toHaveLength(1);
   });
 });

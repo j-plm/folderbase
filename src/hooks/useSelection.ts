@@ -16,7 +16,7 @@ import {
   type SelectionState,
 } from "../lib/selection";
 import type { FileRecord } from "../types";
-import { useReportSelection } from "../lib/selectionStatus";
+import { useReportSelectedPaths, useReportSelection } from "../lib/selectionStatus";
 
 interface Options {
   /** Up/Down move the selection (lists); off for grids. */
@@ -70,6 +70,12 @@ export function useSelection(
     return (id: string) => byId.get(id);
   }, [files]);
   const previewed = () => previewTargets(order.filter((id) => selected.has(id)), pathOf, cursor.current);
+  // Get Info and the Inspector act on the selected files
+  const selectedPaths = useMemo(
+    () => (reportStatus ? order.filter((id) => selected.has(id)).flatMap((id) => pathOf(id) ?? []) : []),
+    [reportStatus, order, selected, pathOf]
+  );
+  useReportSelectedPaths(selectedPaths);
   useEffect(() => {
     followSelection(previewTargets(order.filter((id) => selected.has(id)), pathOf, cursor.current));
   }, [order, selected, pathOf]);
@@ -167,6 +173,13 @@ export function useSelection(
 
   return {
     isSelected: (id: string | undefined) => id != null && selected.has(id),
+    /** The selected ids, in the order they were selected (the last is the one clicked or moved to last). */
+    selectedIds: state.selected,
+    /** Selects one item, as a click would (Gallery keeps one selected). */
+    select: (id: string) => {
+      setState(singleSelection(id));
+      cursor.current = id;
+    },
     /**
      * What a drag or right-click on `id` acts on, in display order: the
      * selection if `id` is in it, otherwise just `id`, which becomes the

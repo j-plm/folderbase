@@ -8,6 +8,8 @@ import { arrangementMenu, propertyGroupEntries, useArrangement, useGroupProperti
 import { GROUP_OPTIONS, SORT_OPTIONS } from "../../lib/arrange";
 import { showContextMenu, type MenuEntry } from "../../lib/nativeMenu";
 import { SymbolIcon } from "../../lib/fileIcons";
+import { previewLabel } from "../../lib/platform";
+import { previewAvailable } from "../../lib/previewPane";
 import type { ViewMode } from "../../types/navigation";
 import { useSaveViewShortcut } from "../../hooks/useSaveViewShortcut";
 
@@ -16,10 +18,11 @@ const VIEW_MODES: { mode: ViewMode; label: string }[] = [
   { mode: "tiles", label: "Icons" },
   { mode: "list", label: "List" },
   { mode: "columns", label: "Columns" },
+  { mode: "gallery", label: "Gallery" },
 ];
 
 export default function Toolbar() {
-  const { viewMode, setViewMode, activeLocationId, editHierarchy, setEditHierarchy } = useNavigation();
+  const { viewMode, setViewMode, previewShown, togglePreview, activeLocationId, editHierarchy, setEditHierarchy } = useNavigation();
   const arrangementCtx = useArrangement();
   const { arrangement, setGroupBy, setSortKey } = arrangementCtx;
   const groupProperties = useGroupProperties();
@@ -33,6 +36,8 @@ export default function Toolbar() {
     ? "Folderbase"
     : (browse.steps[browse.steps.length - 1]?.label ?? (activeView.is_default ? (browse.locationName ?? "") : activeView.name));
 
+  // Gallery sorts but doesn't group, as in Finder
+  const gallery = viewMode === "gallery";
   // Finder's group button: grouping options, then Sort By.
   const groupButtonMenu: MenuEntry[] = [
     ...GROUP_OPTIONS.flatMap((o): MenuEntry[] => {
@@ -95,10 +100,10 @@ export default function Toolbar() {
                   id: "arrange",
                   node: (
                     <button
-                      onClick={() => showContextMenu(groupButtonMenu)}
+                      onClick={() => showContextMenu(gallery ? sortOnly(groupButtonMenu) : groupButtonMenu)}
                       title="Change item grouping"
                       className={`flex items-center gap-1 h-[26px] px-2 rounded-md text-neutral-300 hover:bg-neutral-700/60 ${
-                        arrangement.groupBy !== "none" ? "bg-neutral-700/60" : ""
+                        !gallery && arrangement.groupBy !== "none" ? "bg-neutral-700/60" : ""
                       }`}
                     >
                       <SymbolIcon
@@ -117,7 +122,7 @@ export default function Toolbar() {
                       <SymbolIcon name="chevron.down" size={9} />
                     </button>
                   ),
-                  menu: arrangementMenu(arrangementCtx, groupProperties),
+                  menu: gallery ? sortOnly(arrangementMenu(arrangementCtx, groupProperties)) : arrangementMenu(arrangementCtx, groupProperties),
                 },
               ]),
           // New Folder, where the folder you're in has a level that takes a typed value
@@ -190,12 +195,21 @@ export default function Toolbar() {
               {
                 type: "submenu",
                 text: "View",
-                items: VIEW_MODES.map(({ mode, label }) => ({
-                  type: "check" as const,
-                  text: `as ${label}`,
-                  checked: viewMode === mode,
-                  action: () => setViewMode(mode),
-                })),
+                items: [
+                  ...VIEW_MODES.map(({ mode, label }) => ({
+                    type: "check" as const,
+                    text: `as ${label}`,
+                    checked: viewMode === mode,
+                    action: () => setViewMode(mode),
+                  })),
+                  { type: "separator" as const },
+                  {
+                    type: "item" as const,
+                    text: previewLabel(previewShown),
+                    enabled: previewAvailable(viewMode),
+                    action: togglePreview,
+                  },
+                ],
               },
             ],
           },
@@ -203,6 +217,11 @@ export default function Toolbar() {
       />
     </div>
   );
+}
+
+/** Only the Sort By submenu of an arrangement menu. */
+function sortOnly(entries: MenuEntry[]): MenuEntry[] {
+  return entries.filter((e) => e.type === "submenu" && e.text === "Sort By");
 }
 
 /** Finder's Back and Forward: plain chevrons, dimmed when there's nowhere to go. */

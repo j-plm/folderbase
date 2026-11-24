@@ -41,3 +41,40 @@ export function selectionLabel({ selected, total }: SelectionStatus): string | n
   if (selected < 2) return null;
   return `${selected.toLocaleString()} of ${total.toLocaleString()} selected`;
 }
+
+// The selected files themselves (their paths, in display order), for Get Info
+// (⌘I) and the Inspector, which follows them. Reported alongside the count.
+
+let selectedPaths: string[] = [];
+const pathListeners = new Set<(paths: string[]) => void>();
+
+const samePaths = (a: string[], b: string[]) => a.length === b.length && a.every((p, i) => p === b[i]);
+
+export function setSelectedPaths(paths: string[]): void {
+  if (samePaths(paths, selectedPaths)) return;
+  selectedPaths = paths;
+  pathListeners.forEach((l) => l(paths));
+}
+
+export function getSelectedPaths(): string[] {
+  return selectedPaths;
+}
+
+/** Calls `listener` with the selected paths each time they change; returns a function that stops it. */
+export function onSelectedPaths(listener: (paths: string[]) => void): () => void {
+  pathListeners.add(listener);
+  return () => pathListeners.delete(listener);
+}
+
+const NO_PATHS: string[] = [];
+
+/** Reports a view's selected files while it's shown, and clears them when the view goes. */
+export function useReportSelectedPaths(paths: string[]): void {
+  const key = paths.join("\n");
+  useEffect(() => {
+    setSelectedPaths(paths);
+    // `key` stands for `paths`, so a new array with the same paths doesn't report again
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  useEffect(() => () => setSelectedPaths(NO_PATHS), []);
+}

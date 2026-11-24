@@ -527,3 +527,33 @@ export function seedFromGroups(groups: GroupLevel[]): FolderLevel | null {
     null
   );
 }
+
+/** A folder a file shows in: its path, and each folder on the way named as it shows. */
+export interface FileFolder {
+  path: string[];
+  steps: PlaceStep[];
+}
+
+/**
+ * Every folder `fileId` shows in under the view's Hierarchy, in the view's
+ * order: the deepest folder holding it on each branch (a Multi-select can put
+ * it in several). A file sitting loose beside folders shows there. Empty when
+ * the view has no Hierarchy or leaves the file out; at most `limit` folders.
+ */
+export function foldersOf(tree: FolderTree, fileId: string, limit = 50): FileFolder[] {
+  const out: FileFolder[] = [];
+  const holds = (path: string[]) => tree.filesAt(path).some((f) => f.file_id === fileId);
+  if (!holds([])) return out;
+  const walk = (path: string[]) => {
+    if (out.length >= limit) return;
+    const here = tree.contents(path);
+    const inside = here.folders.filter((f) => f.count > 0 && holds([...path, f.value]));
+    // Loose here, or no folders below hold it: this is where it shows
+    if (inside.length === 0 || here.files.some((f) => f.file_id === fileId)) {
+      if (path.length > 0) out.push({ path, steps: placeSteps(tree, path) });
+    }
+    for (const f of inside) walk([...path, f.value]);
+  };
+  walk([]);
+  return out.slice(0, limit);
+}

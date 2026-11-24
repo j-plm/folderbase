@@ -31,6 +31,7 @@ pub enum ViewMode {
     Tiles,
     List,
     Columns,
+    Gallery,
 }
 
 /// Which location shows when Folderbase opens.
@@ -531,9 +532,16 @@ mod tests {
     }
 
     #[test]
+    fn gallery_can_be_the_first_view_mode() {
+        let dir = temp_dir();
+        let settings = update_impl(&dir, &serde_json::json!({ "first_view_mode": "gallery" })).unwrap();
+        assert_eq!(settings.first_view_mode, ViewMode::Gallery);
+    }
+
+    #[test]
     fn a_wrong_value_is_refused_and_nothing_saved() {
         let dir = temp_dir();
-        assert!(update_impl(&dir, &serde_json::json!({ "first_view_mode": "gallery" })).is_err());
+        assert!(update_impl(&dir, &serde_json::json!({ "first_view_mode": "coverflow" })).is_err());
         assert!(update_impl(&dir, &serde_json::json!({ "show_hidden_files": "yes" })).is_err());
         assert!(update_impl(&dir, &serde_json::json!(["not", "an", "object"])).is_err());
         assert!(update_impl(&dir, &serde_json::json!({ "zip_folder": "/elsewhere" })).is_err());

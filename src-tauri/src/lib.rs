@@ -3,7 +3,9 @@ pub mod commands;
 pub mod db;
 pub mod edit_menu;
 pub mod models;
+pub mod info_window;
 pub mod settings_window;
+pub mod view_menu;
 
 use db::run_migrations;
 use tauri::Manager;
@@ -41,13 +43,23 @@ pub fn run() {
             app.manage(pool);
             commands::backup::start_schedule(app.handle().clone());
             app.manage(settings_window::PendingPane::default());
+            app.manage(info_window::InfoWindows::default());
             appearance::setup(app)?;
             // macOS routes Cmd-Z through the menu bar; elsewhere the frontend's shortcuts handle it
             #[cfg(target_os = "macos")]
             if let Some(menu) = app.menu() {
                 edit_menu::install(app, &menu)?;
+                view_menu::install(app, &menu)?;
             }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // An Info window closed: its file can have a new one
+            if let tauri::WindowEvent::Destroyed = event {
+                if let Some(state) = window.try_state::<info_window::InfoWindows>() {
+                    state.forget(window.label());
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::admin::clear_database,
@@ -61,6 +73,7 @@ pub fn run() {
             commands::quick_look::quick_look_close,
             commands::preview_view::preview_view_show,
             commands::preview_view::preview_view_hide,
+            view_menu::set_view_menu_state,
             commands::compress::compress_items,
             commands::compress::cancel_compress,
             commands::settings::get_app_settings,
@@ -78,6 +91,11 @@ pub fn run() {
             appearance::set_appearance,
             settings_window::open_settings,
             settings_window::settings_initial_pane,
+            info_window::open_info_windows,
+            info_window::toggle_inspector_window,
+            info_window::info_window_path,
+            commands::open_with::set_default_app,
+            commands::files::get_files_by_paths,
             commands::feedback::haptic_feedback,
             commands::files::get_libraries,
             commands::icons::get_native_icon,

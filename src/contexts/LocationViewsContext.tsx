@@ -114,6 +114,11 @@ export function LocationViewsProvider({ locationId, children }: { locationId: st
   return <LocationViewsContext.Provider value={value}>{children}</LocationViewsContext.Provider>;
 }
 
+/** The location's views, or null where no location is open. */
+export function useLocationViewsOptional(): LocationViewsValue | null {
+  return useContext(LocationViewsContext);
+}
+
 export function useLocationViews(): LocationViewsValue {
   const ctx = useContext(LocationViewsContext);
   if (!ctx) throw new Error("useLocationViews must be used within LocationViewsProvider");

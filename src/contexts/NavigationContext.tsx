@@ -10,6 +10,7 @@ import type { NavigationState, ViewMode } from "../types/navigation";
 import type { View, ViewNode } from "../types";
 import { getViews, getViewNodes } from "../lib/commands";
 import { appSettings } from "../lib/appSettings";
+import { PREVIEW_KEY, previewShown, savedPreviewModes, togglePreview, type PreviewModes } from "../lib/previewPane";
 
 /** Each location's view mode as it was left, so it opens that way again. */
 const MODES_KEY = "location-view-modes";
@@ -50,6 +51,8 @@ interface State {
   masterEditorOpen: boolean;
   diskFoldersLocationId: string | null;
   rulesOpen: boolean;
+  /** Whether the Preview pane is shown, per view mode. */
+  previewModes: PreviewModes;
 }
 
 export type NavAction =
@@ -66,7 +69,9 @@ export type NavAction =
   | { type: "SET_MASTER_EDITOR"; open: boolean }
   | { type: "OPEN_DISK_FOLDERS"; locationId: string }
   | { type: "CLOSE_DISK_FOLDERS" }
-  | { type: "SET_RULES_OPEN"; open: boolean };
+  | { type: "SET_RULES_OPEN"; open: boolean }
+  /** View ▸ Show Preview / Hide Preview, in the current view mode. */
+  | { type: "TOGGLE_PREVIEW" };
 
 /** The side panels (Hierarchy, Map Disk Folders, Rules) all closed: one opening closes the others. */
 const noSidePanel = { editHierarchy: false, diskFoldersLocationId: null, rulesOpen: false } as const;
@@ -82,6 +87,7 @@ const initialState: State = {
   masterEditorOpen: false,
   diskFoldersLocationId: null,
   rulesOpen: false,
+  previewModes: {},
 };
 
 export function navigationReducer(state: State, action: NavAction): State {
@@ -129,13 +135,23 @@ export function navigationReducer(state: State, action: NavAction): State {
       return { ...state, diskFoldersLocationId: null };
     case "SET_RULES_OPEN":
       return { ...state, ...(action.open ? noSidePanel : {}), rulesOpen: action.open };
+    case "TOGGLE_PREVIEW":
+      return { ...state, previewModes: togglePreview(state.viewMode, state.previewModes) };
   }
 }
 
 export const NavigationContext = createContext<NavigationState | null>(null);
 
 export function NavigationProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(navigationReducer, initialState);
+  const [state, dispatch] = useReducer(navigationReducer, initialState, (s) => ({ ...s, previewModes: savedPreviewModes() }));
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PREVIEW_KEY, JSON.stringify(state.previewModes));
+    } catch {
+      // Only a convenience
+    }
+  }, [state.previewModes]);
 
   // Remembered for On launch: the last location and view
   useEffect(() => {
@@ -182,6 +198,8 @@ export function NavigationProvider({ children }: { children: ReactNode }) {
   const value: NavigationState = {
     ...state,
     currentLibrary: currentView?.library ?? null,
+    previewShown: previewShown(state.viewMode, state.previewModes),
+    togglePreview: () => dispatch({ type: "TOGGLE_PREVIEW" }),
     navigateTo: (path) => dispatch({ type: "NAVIGATE_TO", path }),
     pushSegment: (segment) => dispatch({ type: "PUSH_SEGMENT", segment }),
     popToIndex: (index) => dispatch({ type: "POP_TO_INDEX", index }),
